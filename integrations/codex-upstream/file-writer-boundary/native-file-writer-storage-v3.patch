@@ -1,0 +1,1402 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -3744,9 +3744,11 @@
+  "codex-utils-template",
+  "codex-workload-identity",
+  "core_test_support",
++ "hmac 0.12.1",
+  "http 1.4.0",
+  "jsonwebtoken",
+  "keyring",
++ "libc",
+  "once_cell",
+  "os_info",
+  "pretty_assertions",
+@@ -3766,6 +3768,7 @@
+  "urlencoding",
+  "webbrowser",
+  "wiremock",
++ "zeroize",
+ ]
+ 
+ [[package]]
+diff --git a/codex-rs/login/Cargo.toml b/codex-rs/login/Cargo.toml
+--- a/codex-rs/login/Cargo.toml
++++ b/codex-rs/login/Cargo.toml
+@@ -21,7 +21,9 @@
+ codex-terminal-detection = { workspace = true }
+ codex-utils-template = { workspace = true }
+ codex-workload-identity = { workspace = true }
++hmac = { workspace = true }
+ http = { workspace = true }
++libc = { workspace = true }
+ once_cell = { workspace = true }
+ os_info = { workspace = true }
+ rand = { workspace = true }
+@@ -41,6 +43,7 @@
+ url = { workspace = true }
+ urlencoding = { workspace = true }
+ webbrowser = { workspace = true }
++zeroize = { workspace = true }
+ 
+ [dev-dependencies]
+ anyhow = { workspace = true }
+diff --git a/codex-rs/login/src/auth/managed_file_writer.rs b/codex-rs/login/src/auth/managed_file_writer.rs
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/login/src/auth/managed_file_writer.rs
+@@ -0,0 +1,779 @@
++//! Disabled, Linux-only original File writer storage boundary.
++//!
++//! There is deliberately no production enrollment/admission/successor constructor,
++//! owner RPC, issuer or scheduler. Tests alone can construct the prerequisites.
++//! A cooperating File lock does not exclude an unmodified writer. A future native
++//! trust binding and all issuer paths must be qualified before this can be enabled.
++//!
++//! Keep error strings and Debug output free of native auth, keys and identity.
++
++use std::io;
++use std::path::Path;
++
++/// A legacy backend cannot adopt authority from a sidecar. If it encounters a
++/// writer directory, refuse before side effects; do not swallow that refusal in
++/// keyring cleanup/fallback. Absence is not a managed-enrollment constructor.
++pub(super) fn reject_unbound_mutation(home: &Path) -> io::Result<()> {
++    match std::fs::symlink_metadata(home.join(".omux-native-file-writer")) {
++        Ok(_) => Err(io::Error::other("native File writer binding required")),
++        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
++        Err(_) => Err(io::Error::other("native File writer state unavailable")),
++    }
++}
++
++#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++pub(super) use linux::*;
++
++#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++#[allow(dead_code)] // Prerequisite only: no production authority constructor yet.
++mod linux {
++    use super::*;
++    use super::super::storage::AuthDotJson;
++    use codex_protocol::auth::AuthMode;
++    use hmac::Hmac;
++    use hmac::Mac;
++    use serde::Deserialize;
++    use serde::Serialize;
++    use sha2::Sha256;
++    use std::ffi::CString;
++    use std::ffi::OsStr;
++    use std::fs::File;
++    use std::fs::Metadata;
++    use std::fs::TryLockError;
++    use std::io::Read;
++    use std::io::Write;
++    use std::os::fd::AsRawFd;
++    use std::os::fd::FromRawFd;
++    use std::os::unix::ffi::OsStrExt;
++    use std::os::unix::fs::MetadataExt;
++    use std::path::Component;
++    use std::path::PathBuf;
++    use std::sync::Arc;
++    use std::time::Instant;
++    use zeroize::Zeroize;
++    use zeroize::Zeroizing;
++
++    const DIRECTORY: &str = ".omux-native-file-writer";
++    const LOCK: &str = "writer.lock";
++    const KEY: &str = "writer-capability";
++    const JOURNAL: &str = "writer-state.json";
++    const AUTH: &str = "auth.json";
++    const AUTH_LIMIT: usize = 131072;
++    const PAYLOAD_LIMIT: usize = 8192;
++    const JOURNAL_LIMIT: usize = 16384;
++    const MAGIC: &str = "omux-native-managed-file-writer-state-envelope-v1\n";
++    const MAC_DOMAIN: &[u8] = b"omux-native-managed-file-writer-state-v1\n";
++
++    fn invalid() -> io::Error {
++        io::Error::other("native File writer state unavailable")
++    }
++
++    fn require(value: bool) -> io::Result<()> {
++        if value { Ok(()) } else { Err(invalid()) }
++    }
++
++    fn deadline(until: Instant) -> io::Result<()> {
++        if Instant::now() < until { Ok(()) } else {
++            Err(io::Error::new(io::ErrorKind::TimedOut, "native File writer deadline"))
++        }
++    }
++
++    fn name(value: &OsStr) -> io::Result<CString> {
++        CString::new(value.as_bytes()).map_err(|_| invalid())
++    }
++
++    fn open(parent: i32, value: &OsStr, flags: i32) -> io::Result<File> {
++        let value = name(value)?;
++        // All callers use a held directory and a single validated component.
++        let fd = unsafe { libc::openat(parent, value.as_ptr(), flags | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK, 0o600) };
++        if fd < 0 { return Err(io::Error::last_os_error()); }
++        Ok(unsafe { File::from_raw_fd(fd) })
++    }
++
++    fn directory(path: &Path) -> io::Result<File> {
++        require(path.is_absolute() && path.as_os_str().as_bytes().len() <= 4096)?;
++        let canonical: PathBuf = path.components().collect();
++        require(canonical.as_os_str() == path.as_os_str())?;
++        let mut current = open(libc::AT_FDCWD, OsStr::new("/"), libc::O_RDONLY | libc::O_DIRECTORY)?;
++        for part in path.components().skip(1) {
++            let Component::Normal(part) = part else { return Err(invalid()); };
++            current = open(current.as_raw_fd(), part, libc::O_RDONLY | libc::O_DIRECTORY)?;
++            let m = current.metadata()?;
++            #[cfg(test)]
++            let test_tmp = part == "tmp" && m.uid() == 0 && m.mode() & 0o1000 != 0;
++            #[cfg(not(test))]
++            let test_tmp = false;
++            require((m.uid() == 0 || m.uid() == unsafe { libc::getuid() }) && (m.mode() & 0o022 == 0 || test_tmp))?;
++        }
++        Ok(current)
++    }
++
++    // Full leaf witnesses fence replacement AND in-place changes. Directory
++    // witnesses are retained too; publication rebinds only after an exact owned
++    // leaf join and unchanged directory inode/ownership/mode/link count.
++    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
++    #[serde(deny_unknown_fields)]
++    struct Witness {
++        device: String,
++        inode: String,
++        uid: String,
++        mode: String,
++        nlink: String,
++        bytes: String,
++        mtime_seconds: String,
++        mtime_nanoseconds: String,
++        ctime_seconds: String,
++        ctime_nanoseconds: String,
++    }
++
++    impl Witness {
++        fn from(m: &Metadata) -> Self {
++            Self { device: m.dev().to_string(), inode: m.ino().to_string(), uid: m.uid().to_string(), mode: m.mode().to_string(), nlink: m.nlink().to_string(), bytes: m.len().to_string(), mtime_seconds: m.mtime().to_string(), mtime_nanoseconds: m.mtime_nsec().to_string(), ctime_seconds: m.ctime().to_string(), ctime_nanoseconds: m.ctime_nsec().to_string() }
++        }
++
++        fn same_directory(&self, other: &Self) -> bool {
++            self.device == other.device && self.inode == other.inode && self.uid == other.uid && self.mode == other.mode && self.nlink == other.nlink
++        }
++
++        fn validate(&self) -> io::Result<()> {
++            for value in [&self.device, &self.inode, &self.uid, &self.mode, &self.nlink, &self.bytes] { decimal(value, false)?; }
++            for value in [&self.mtime_seconds, &self.ctime_seconds] {
++                let n: i64 = value.parse().map_err(|_| invalid())?;
++                require(n.to_string() == *value)?;
++            }
++            require(decimal(&self.mtime_nanoseconds, false)? <= 999999999 && decimal(&self.ctime_nanoseconds, false)? <= 999999999)
++        }
++    }
++
++    fn decimal(value: &str, nonzero: bool) -> io::Result<u64> {
++        let n: u64 = value.parse().map_err(|_| invalid())?;
++        require(n.to_string() == value && (!nonzero || n != 0))?;
++        Ok(n)
++    }
++
++    fn opaque(value: &str) -> io::Result<()> {
++        require(value.len() == 64 && value.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) && value.bytes().any(|c| c != b'0'))
++    }
++
++    fn hex(raw: &[u8]) -> String {
++        const DIGITS: &[u8] = b"0123456789abcdef";
++        let mut out = String::with_capacity(raw.len() * 2);
++        for &value in raw { out.push(DIGITS[usize::from(value >> 4)] as char); out.push(DIGITS[usize::from(value & 15)] as char); }
++        out
++    }
++
++    fn decode(value: &[u8]) -> io::Result<[u8; 32]> {
++        require(value.len() == 64)?;
++        let mut out = [0; 32];
++        let nibble = |v: u8| -> io::Result<u8> { match v { b'0'..=b'9' => Ok(v - b'0'), b'a'..=b'f' => Ok(v - b'a' + 10), _ => Err(invalid()) } };
++        for (index, pair) in value.chunks_exact(2).enumerate() { out[index] = nibble(pair[0])? * 16 + nibble(pair[1])?; }
++        Ok(out)
++    }
++
++    fn mac(key: &[u8], domain: &[u8], data: &[u8]) -> io::Result<String> {
++        let mut h = Hmac::<Sha256>::new_from_slice(key).map_err(|_| invalid())?;
++        h.update(domain); h.update(data);
++        Ok(hex(&h.finalize().into_bytes()))
++    }
++
++    fn leaf(parent: &File, value: &str, flags: i32, max: usize) -> io::Result<File> {
++        let file = open(parent.as_raw_fd(), OsStr::new(value), flags)?;
++        let m = file.metadata()?;
++        require(m.is_file() && m.uid() == unsafe { libc::getuid() } && m.mode() & 0o7777 == 0o600 && m.nlink() == 1 && m.len() <= max as u64)?;
++        Ok(file)
++    }
++
++    fn read_leaf(parent: &File, value: &str, max: usize) -> io::Result<(File, Witness, Zeroizing<Vec<u8>>)> {
++        let mut file = leaf(parent, value, libc::O_RDONLY, max)?;
++        let before = Witness::from(&file.metadata()?);
++        let mut bytes = Zeroizing::new(Vec::with_capacity(max.min(4096)));
++        (&mut file).take(max as u64 + 1).read_to_end(&mut bytes)?;
++        require(bytes.len() <= max && bytes.len() as u64 == decimal(&before.bytes, false)?)?;
++        let named = leaf(parent, value, libc::O_RDONLY, max)?;
++        require(before == Witness::from(&file.metadata()?) && before == Witness::from(&named.metadata()?))?;
++        Ok((file, before, bytes))
++    }
++
++    struct BoundedBytes { bytes: Zeroizing<Vec<u8>>, limit: usize }
++    impl Write for BoundedBytes {
++        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
++            require(bytes.len() <= self.limit.saturating_sub(self.bytes.len()))?;
++            self.bytes.extend_from_slice(bytes); Ok(bytes.len())
++        }
++        fn flush(&mut self) -> io::Result<()> { Ok(()) }
++    }
++
++    fn serialize<T: Serialize>(value: &T, limit: usize) -> io::Result<Zeroizing<Vec<u8>>> {
++        let mut out = BoundedBytes { bytes: Zeroizing::new(Vec::new()), limit };
++        serde_json::to_writer(&mut out, value).map_err(|_| invalid())?;
++        Ok(out.bytes)
++    }
++
++    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
++    #[serde(deny_unknown_fields)]
++    struct Enrollment { origin_id: String, enrollment_id: String, writer_protocol: String, capability_generation: String }
++
++    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
++    #[serde(deny_unknown_fields)]
++    struct Predecessor {
++        context_id: String,
++        context_generation: String,
++        home_witness: Witness,
++        auth_witness: Witness,
++        auth_state_commitment: String,
++        identity_commitment: String,
++        manager_auth_generation: String,
++        manager_owner_generation: String,
++    }
++
++    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
++    #[serde(deny_unknown_fields)]
++    struct Operation {
++        operation_id: String,
++        owner_id: String,
++        process_nonce: String,
++        endpoint_generation: String,
++        source_id: String,
++        source_generation: String,
++        consent_id: String,
++        consent_generation: String,
++        forget_epoch: String,
++        admitted_wall_time: String,
++    }
++
++    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
++    #[serde(rename_all = "snake_case")]
++    enum Phase { Clean, Issued, Uncertain }
++
++    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
++    #[serde(deny_unknown_fields)]
++    struct Terminal {
++        operation_id: String,
++        status: String,
++        #[serde(deserialize_with = "required_nullable")]
++        successor_auth_witness: Option<Witness>,
++        #[serde(deserialize_with = "required_nullable")]
++        successor_auth_state_commitment: Option<String>,
++    }
++
++    fn required_nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> { Option::<T>::deserialize(d) }
++
++    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
++    #[serde(deny_unknown_fields)]
++    struct Journal {
++        schema_version: u32,
++        kind: String,
++        sequence: String,
++        phase: Phase,
++        enrollment: Enrollment,
++        #[serde(deserialize_with = "required_nullable")]
++        predecessor: Option<Predecessor>,
++        #[serde(deserialize_with = "required_nullable")]
++        operation: Option<Operation>,
++        #[serde(deserialize_with = "required_nullable")]
++        last_terminal: Option<Terminal>,
++    }
++
++    impl Journal {
++        fn validate(&self, expected: &Enrollment) -> io::Result<()> {
++            require(self.schema_version == 1 && self.kind == "omux-native-managed-file-writer-state-v1" && &self.enrollment == expected)?;
++            decimal(&self.sequence, false)?;
++            opaque(&self.enrollment.origin_id)?; opaque(&self.enrollment.enrollment_id)?;
++            require(self.enrollment.writer_protocol == "omux-native-managed-file-writer-v1")?;
++            decimal(&self.enrollment.capability_generation, true)?;
++            require(match self.phase { Phase::Clean => self.predecessor.is_none() && self.operation.is_none(), Phase::Issued | Phase::Uncertain => self.predecessor.is_some() && self.operation.is_some() })?;
++            if let Some(p) = &self.predecessor {
++                opaque(&p.context_id)?; decimal(&p.context_generation, true)?;
++                p.home_witness.validate()?; p.auth_witness.validate()?;
++                opaque(&p.auth_state_commitment)?; opaque(&p.identity_commitment)?;
++                decimal(&p.manager_auth_generation, false)?; decimal(&p.manager_owner_generation, false)?;
++            }
++            if let Some(op) = &self.operation {
++                for value in [&op.operation_id, &op.owner_id, &op.process_nonce, &op.source_id, &op.consent_id] { opaque(value)?; }
++                for value in [&op.endpoint_generation, &op.source_generation, &op.consent_generation] { decimal(value, true)?; }
++                decimal(&op.forget_epoch, false)?;
++                require(decimal(&op.admitted_wall_time, false)? <= i64::MAX as u64)?;
++            }
++            if let Some(t) = &self.last_terminal {
++                opaque(&t.operation_id)?;
++                require(t.status == "committed" && t.successor_auth_witness.is_some() && t.successor_auth_state_commitment.is_some())?;
++                t.successor_auth_witness.as_ref().ok_or_else(invalid)?.validate()?;
++                opaque(t.successor_auth_state_commitment.as_ref().ok_or_else(invalid)?)?;
++            }
++            require(decimal(&self.sequence, false)? != 0 || (self.phase == Phase::Clean && self.last_terminal.is_none()))
++        }
++
++        fn advance(&mut self) -> io::Result<()> {
++            self.sequence = decimal(&self.sequence, false)?.checked_add(1).ok_or_else(invalid)?.to_string(); Ok(())
++        }
++    }
++
++    fn envelope(key: &[u8], journal: &Journal) -> io::Result<Zeroizing<Vec<u8>>> {
++        let raw = serialize(journal, PAYLOAD_LIMIT)?;
++        let length = raw.len().to_string();
++        let mut input = Zeroizing::new(Vec::new()); input.extend_from_slice(length.as_bytes()); input.push(b'\n'); input.extend_from_slice(&raw);
++        let proof = mac(key, MAC_DOMAIN, &input)?;
++        let mut out = Zeroizing::new(Vec::new()); out.extend_from_slice(MAGIC.as_bytes()); out.extend_from_slice(length.as_bytes()); out.push(b'\n'); out.extend_from_slice(proof.as_bytes()); out.push(b'\n'); out.extend_from_slice(&raw);
++        require(out.len() <= JOURNAL_LIMIT)?; Ok(out)
++    }
++
++    fn parse_envelope(key: &[u8], raw: &[u8], expected: &Enrollment) -> io::Result<Journal> {
++        require(raw.len() <= JOURNAL_LIMIT && raw.starts_with(MAGIC.as_bytes()))?;
++        let tail = &raw[MAGIC.len()..];
++        let split = tail.iter().position(|c| *c == b'\n').ok_or_else(invalid)?;
++        let length = std::str::from_utf8(&tail[..split]).map_err(|_| invalid())?;
++        let bytes = decimal(length, false)?;
++        require(bytes > 0 && bytes <= PAYLOAD_LIMIT as u64)?;
++        let tail = &tail[split + 1..];
++        require(tail.len() >= 65 && tail[64] == b'\n' && tail.len() - 65 == bytes as usize)?;
++        let supplied = decode(&tail[..64])?;
++        let payload = &tail[65..];
++        let mut h = Hmac::<Sha256>::new_from_slice(key).map_err(|_| invalid())?;
++        h.update(MAC_DOMAIN); h.update(length.as_bytes()); h.update(b"\n"); h.update(payload);
++        h.verify_slice(&supplied).map_err(|_| invalid())?;
++        let journal: Journal = serde_json::from_slice(payload).map_err(|_| invalid())?;
++        journal.validate(expected)?; Ok(journal)
++    }
++
++    fn identity(key: &[u8], raw: &[u8]) -> io::Result<String> {
++        let mut auth: AuthDotJson = serde_json::from_slice(raw).map_err(|_| invalid())?;
++        let result = (|| {
++            require(auth.resolved_mode() == AuthMode::Chatgpt && auth.openai_api_key.is_none() && auth.agent_identity.is_none() && auth.personal_access_token.is_none() && auth.bedrock_api_key.is_none() && auth.bedrock_access_keys.is_none())?;
++            let token = auth.tokens.as_ref().ok_or_else(invalid)?;
++            let user = token.id_token.chatgpt_user_id.as_ref().ok_or_else(invalid)?;
++            let workspace = token.id_token.chatgpt_account_id.as_ref().ok_or_else(invalid)?;
++            require(!user.trim().is_empty() && !workspace.trim().is_empty() && !token.access_token.is_empty() && !token.refresh_token.is_empty() && token.account_id.as_ref().is_none_or(|id| id == workspace))?;
++            let mut private = Zeroizing::new(Vec::new());
++            private.extend_from_slice(&(user.len() as u64).to_be_bytes()); private.extend_from_slice(user.as_bytes());
++            private.extend_from_slice(&(workspace.len() as u64).to_be_bytes()); private.extend_from_slice(workspace.as_bytes());
++            mac(key, b"omux-native-managed-file-identity-v1\n", &private)
++        })();
++        // The additional supported-mode parser copies are private and scrubbed;
++        // raw original/successor buffers and capability key also zeroize on drop.
++        if let Some(token) = &mut auth.tokens {
++            token.access_token.zeroize(); token.refresh_token.zeroize();
++            token.id_token.raw_jwt.zeroize();
++            if let Some(value) = &mut token.id_token.email { value.zeroize(); }
++            if let Some(value) = &mut token.id_token.chatgpt_user_id { value.zeroize(); }
++            if let Some(value) = &mut token.id_token.chatgpt_account_id { value.zeroize(); }
++            if let Some(value) = &mut token.account_id { value.zeroize(); }
++        }
++        if let Some(value) = &mut auth.openai_api_key { value.zeroize(); }
++        result
++    }
++
++    pub(in crate::auth) struct ManagedFileProfile {
++        home_path: PathBuf,
++        home: File,
++        writer: File,
++        lock: File,
++        capability: File,
++        home_identity: Witness,
++        writer_identity: Witness,
++        lock_identity: Witness,
++        capability_identity: Witness,
++        key: Zeroizing<[u8; 32]>,
++        enrollment: Enrollment,
++        identity_commitment: String,
++        #[cfg(test)]
++        fault: std::sync::atomic::AtomicU8,
++    }
++
++    impl ManagedFileProfile {
++        fn recheck(&self) -> io::Result<()> {
++            let named_home = directory(&self.home_path)?;
++            require(self.home_identity.same_directory(&Witness::from(&self.home.metadata()?)) && self.home_identity.same_directory(&Witness::from(&named_home.metadata()?)))?;
++            let named_writer = open(self.home.as_raw_fd(), OsStr::new(DIRECTORY), libc::O_RDONLY | libc::O_DIRECTORY)?;
++            require(self.writer_identity.same_directory(&Witness::from(&self.writer.metadata()?)) && self.writer_identity.same_directory(&Witness::from(&named_writer.metadata()?)))?;
++            let named_lock = leaf(&self.writer, LOCK, libc::O_RDWR, 0)?;
++            let (_, key_identity, bytes) = read_leaf(&self.writer, KEY, 64)?;
++            require(self.lock_identity == Witness::from(&self.lock.metadata()?) && self.lock_identity == Witness::from(&named_lock.metadata()?) && self.capability_identity == Witness::from(&self.capability.metadata()?) && self.capability_identity == key_identity && decode(&bytes)? == *self.key)
++        }
++
++        fn recheck_physical(&self) -> io::Result<()> {
++            // No raw journal/auth/key parsing after the final full read. Check
++            // actual retained and named descriptors under the original cutoff.
++            let named_home = directory(&self.home_path)?;
++            require(self.home_identity.same_directory(&Witness::from(&self.home.metadata()?)) && self.home_identity.same_directory(&Witness::from(&named_home.metadata()?)))?;
++            let named_writer = open(self.home.as_raw_fd(), OsStr::new(DIRECTORY), libc::O_RDONLY | libc::O_DIRECTORY)?;
++            require(self.writer_identity.same_directory(&Witness::from(&self.writer.metadata()?)) && self.writer_identity.same_directory(&Witness::from(&named_writer.metadata()?)))?;
++            let named_lock = leaf(&self.writer, LOCK, libc::O_RDWR, 0)?;
++            let named_key = leaf(&self.writer, KEY, libc::O_RDONLY, 64)?;
++            require(self.lock_identity == Witness::from(&self.lock.metadata()?) && self.lock_identity == Witness::from(&named_lock.metadata()?)
++                && self.capability_identity == Witness::from(&self.capability.metadata()?) && self.capability_identity == Witness::from(&named_key.metadata()?))
++        }
++
++        fn recheck_terminal(&self, journal: &Journal) -> io::Result<()> {
++            if journal.phase == Phase::Clean {
++                if let Some(terminal) = &journal.last_terminal {
++                    let (_, witness, bytes) = read_leaf(&self.home, AUTH, AUTH_LIMIT)?;
++                    require(terminal.successor_auth_witness.as_ref() == Some(&witness)
++                        && terminal.successor_auth_state_commitment.as_ref() == Some(&mac(self.key.as_ref(), b"omux-native-managed-file-auth-state-v1\n", &bytes)?)
++                        && identity(self.key.as_ref(), &bytes)? == self.identity_commitment)?;
++                }
++            }
++            Ok(())
++        }
++
++        pub(in crate::auth) fn reserve(self: &Arc<Self>, until: Instant) -> io::Result<FileReservation> {
++            deadline(until)?;
++            require(until.saturating_duration_since(Instant::now()) <= std::time::Duration::from_secs(8))?;
++            self.recheck()?;
++            let lock = leaf(&self.writer, LOCK, libc::O_RDWR, 0)?;
++            match lock.try_lock() {
++                Ok(()) => (),
++                Err(TryLockError::WouldBlock) => return Err(io::Error::new(io::ErrorKind::WouldBlock, "native File writer busy")),
++                Err(_) => return Err(invalid()),
++            }
++            self.recheck()?; require(self.lock_identity == Witness::from(&lock.metadata()?))?;
++            let (journal_file, journal_identity, raw) = read_leaf(&self.writer, JOURNAL, JOURNAL_LIMIT)?;
++            let journal = parse_envelope(self.key.as_ref(), &raw, &self.enrollment)?;
++            require(journal.phase == Phase::Clean)?;
++            self.recheck_terminal(&journal)?;
++            self.recheck()?; deadline(until)?;
++            Ok(FileReservation { profile: Arc::clone(self), _lock: lock, journal_file, journal, journal_identity, until })
++        }
++
++        // Production has NO enrollment constructor. Real source/peer/consent/all
++        // writer qualification is not supplied by a path or sidecar. Only tests
++        // can initialize/open a fixture, including reopen of actual issued state.
++        #[cfg(test)]
++        pub(in crate::auth) fn fixture(home: &Path, initialize: bool) -> io::Result<Arc<Self>> {
++            use std::os::unix::fs::PermissionsExt;
++            let home_fd = directory(home)?;
++            require(home_fd.metadata()?.uid() == unsafe { libc::getuid() } && home_fd.metadata()?.mode() & 0o022 == 0)?;
++            if initialize {
++                std::fs::create_dir(home.join(DIRECTORY))?;
++                std::fs::set_permissions(home.join(DIRECTORY), std::fs::Permissions::from_mode(0o700))?;
++            }
++            let writer = open(home_fd.as_raw_fd(), OsStr::new(DIRECTORY), libc::O_RDONLY | libc::O_DIRECTORY)?;
++            require(writer.metadata()?.uid() == unsafe { libc::getuid() } && writer.metadata()?.mode() & 0o7777 == 0o700)?;
++            if initialize {
++                let lock = leaf(&writer, LOCK, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, 0)?; lock.sync_all()?;
++                let mut cap = leaf(&writer, KEY, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, 64)?;
++                cap.write_all(&[b'a'; 64])?; cap.sync_all()?; writer.sync_all()?;
++            }
++            let lock = leaf(&writer, LOCK, libc::O_RDWR, 0)?;
++            let (capability, capability_identity, raw_key) = read_leaf(&writer, KEY, 64)?;
++            let key = Zeroizing::new(decode(&raw_key)?);
++            require(key.iter().any(|value| *value != 0))?;
++            let enrollment = Enrollment { origin_id: "1".repeat(64), enrollment_id: "2".repeat(64), writer_protocol: "omux-native-managed-file-writer-v1".into(), capability_generation: "1".into() };
++            let (_, _, raw_auth) = read_leaf(&home_fd, AUTH, AUTH_LIMIT)?;
++            let identity_commitment = identity(key.as_ref(), &raw_auth)?;
++            let profile = Arc::new(Self { home_path: home.to_path_buf(), home_identity: Witness::from(&home_fd.metadata()?), writer_identity: Witness::from(&writer.metadata()?), lock_identity: Witness::from(&lock.metadata()?), capability_identity, home: home_fd, writer, lock, capability, key, enrollment, identity_commitment, fault: std::sync::atomic::AtomicU8::new(0) });
++            if initialize {
++                let clean = Journal { schema_version: 1, kind: "omux-native-managed-file-writer-state-v1".into(), sequence: "0".into(), phase: Phase::Clean, enrollment: profile.enrollment.clone(), predecessor: None, operation: None, last_terminal: None };
++                let bytes = envelope(profile.key.as_ref(), &clean)?;
++                let mut journal = leaf(&profile.writer, JOURNAL, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, JOURNAL_LIMIT)?;
++                journal.write_all(&bytes)?; journal.sync_all()?; profile.writer.sync_all()?;
++            }
++            profile.recheck()?; Ok(profile)
++        }
++    }
++
++    pub(in crate::auth) struct FileReservation {
++        profile: Arc<ManagedFileProfile>,
++        _lock: File,
++        journal_file: File,
++        journal: Journal,
++        journal_identity: Witness,
++        until: Instant,
++    }
++
++    struct PublishedLeaf { file: File, witness: Witness, bytes: Zeroizing<Vec<u8>> }
++
++    struct HeldOriginal { _file: File, witness: Witness, home_witness: Witness, bytes: Zeroizing<Vec<u8>> }
++
++    // Neither type has a production constructor in this storage-only slice.
++    pub(in crate::auth) struct StorageIssue { operation: Operation, context_id: String, context_generation: String, auth_generation: String, owner_generation: String, expected_sequence: String }
++    pub(in crate::auth) struct ValidatedNativeSuccessor { bytes: Zeroizing<Vec<u8>>, identity_commitment: String }
++
++    pub(in crate::auth) struct IssuedFileTransaction { reservation: FileReservation, original: HeldOriginal, issue: StorageIssue }
++
++    impl FileReservation {
++        fn recheck(&self) -> io::Result<()> {
++            deadline(self.until)?; self.profile.recheck()?;
++            require(self.profile.lock_identity == Witness::from(&self._lock.metadata()?))?;
++            let (_, witness, raw) = read_leaf(&self.profile.writer, JOURNAL, JOURNAL_LIMIT)?;
++            require(witness == self.journal_identity && witness == Witness::from(&self.journal_file.metadata()?) && parse_envelope(self.profile.key.as_ref(), &raw, &self.profile.enrollment)? == self.journal)?;
++            self.profile.recheck_terminal(&self.journal)?;
++            deadline(self.until)
++        }
++
++        fn original(&self) -> io::Result<HeldOriginal> {
++            self.recheck()?;
++            let (file, witness, bytes) = read_leaf(&self.profile.home, AUTH, AUTH_LIMIT)?;
++            require(identity(self.profile.key.as_ref(), &bytes)? == self.profile.identity_commitment)?;
++            Ok(HeldOriginal { _file: file, witness, home_witness: Witness::from(&self.profile.home.metadata()?), bytes })
++        }
++
++        fn publish(&self, parent: &File, target: &str, bytes: &[u8], max: usize, mut final_check: impl FnMut(bool) -> io::Result<()>) -> io::Result<PublishedLeaf> {
++            deadline(self.until)?; require(bytes.len() <= max)?;
++            final_check(false)?;
++            let parent_before = Witness::from(&parent.metadata()?);
++            let temporary = format!(".native-writer-{:032x}.tmp", rand::random::<u128>());
++            let file = leaf(parent, &temporary, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, max)?;
++            let mut temporary_guard = Temporary { parent, file: &file, name: temporary.clone(), armed: true };
++            let parent_after_create = Witness::from(&parent.metadata()?);
++            require(parent_before.same_directory(&parent_after_create))?;
++            // Use another held reference for write without moving the cleanup guard.
++            (&file).write_all(bytes)?; file.sync_all()?;
++            let before = Witness::from(&file.metadata()?);
++            let named = leaf(parent, &temporary, libc::O_RDONLY, max)?;
++            require(before == Witness::from(&named.metadata()?))?;
++            final_check(true)?;
++            require(parent_after_create == Witness::from(&parent.metadata()?))?; deadline(self.until)?;
++            let from = name(OsStr::new(&temporary))?; let to = name(OsStr::new(target))?;
++            if unsafe { libc::renameat(parent.as_raw_fd(), from.as_ptr(), parent.as_raw_fd(), to.as_ptr()) } != 0 { return Err(invalid()); }
++            temporary_guard.armed = false;
++            parent.sync_all()?;
++            #[cfg(test)]
++            {
++                let point = if target == JOURNAL { 1 } else { 2 };
++                if self.profile.fault.compare_exchange(point, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_ok() {
++                    return Err(io::Error::other("native File writer test readback fault"));
++                }
++            }
++            let (_, witness, stored) = read_leaf(parent, target, max)?;
++            let held = Witness::from(&file.metadata()?);
++            // Rename can change ctime; all other held+named fields and contents
++            // must exactly join the actual owned temp/successor descriptor.
++            require(witness == held && witness.device == before.device && witness.inode == before.inode && witness.uid == before.uid && witness.mode == before.mode && witness.nlink == before.nlink && witness.bytes == before.bytes && stored.as_slice() == bytes)?;
++            self.profile.recheck()?; deadline(self.until)?;
++            drop(temporary_guard);
++            Ok(PublishedLeaf { file, witness, bytes: stored })
++        }
++
++        fn publish_journal(&mut self, next: Journal) -> io::Result<()> {
++            next.validate(&self.profile.enrollment)?;
++            require(decimal(&next.sequence, false)? == decimal(&self.journal.sequence, false)?.checked_add(1).ok_or_else(invalid)?)?;
++            let bytes = envelope(self.profile.key.as_ref(), &next)?;
++            let published = self.publish(&self.profile.writer, JOURNAL, &bytes, JOURNAL_LIMIT, |_| self.recheck())?;
++            self.journal = next; self.journal_identity = published.witness;
++            self.journal_file = published.file;
++            self.recheck()
++        }
++
++        fn recheck_snapshot(&self, original: &HeldOriginal, owned_temp_created: bool) -> io::Result<()> {
++            self.recheck()?;
++            let (_, witness, bytes) = read_leaf(&self.profile.home, AUTH, AUTH_LIMIT)?;
++            require(witness == original.witness && witness == Witness::from(&original._file.metadata()?) && bytes.as_slice() == original.bytes.as_slice())?;
++            let current_home = Witness::from(&self.profile.home.metadata()?);
++            require(if owned_temp_created { original.home_witness.same_directory(&current_home) } else { original.home_witness == current_home })
++        }
++
++        fn recheck_published_auth(&self, published: &PublishedLeaf) -> io::Result<()> {
++            self.recheck()?;
++            let (_, witness, bytes) = read_leaf(&self.profile.home, AUTH, AUTH_LIMIT)?;
++            require(witness == published.witness && witness == Witness::from(&published.file.metadata()?)
++                && bytes.as_slice() == published.bytes.as_slice()
++                && identity(self.profile.key.as_ref(), &bytes)? == self.profile.identity_commitment)?;
++            #[cfg(test)]
++            self.late_journal_fault_fixture()?;
++            self.recheck_final_physical(published)
++        }
++
++        fn recheck_final_physical(&self, published: &PublishedLeaf) -> io::Result<()> {
++            deadline(self.until)?;
++            self.profile.recheck_physical()?;
++            require(self.profile.lock_identity == Witness::from(&self._lock.metadata()?))?;
++            let named_journal = leaf(&self.profile.writer, JOURNAL, libc::O_RDONLY, JOURNAL_LIMIT)?;
++            require(self.journal_identity == Witness::from(&self.journal_file.metadata()?) && self.journal_identity == Witness::from(&named_journal.metadata()?))?;
++            let named_auth = leaf(&self.profile.home, AUTH, libc::O_RDONLY, AUTH_LIMIT)?;
++            require(published.witness == Witness::from(&published.file.metadata()?) && published.witness == Witness::from(&named_auth.metadata()?))?;
++            deadline(self.until)
++        }
++
++        #[cfg(test)]
++        fn late_journal_fault_fixture(&self) -> io::Result<()> {
++            if self.profile.fault.compare_exchange(5, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_err() { return Ok(()); }
++            // After final auth bytes/identity parsing, replace the actual named
++            // journal with identical bytes but a distinct inode. The retained
++            // journal descriptor must still fence the final success decision.
++            let (_, witness, bytes) = read_leaf(&self.profile.writer, JOURNAL, JOURNAL_LIMIT)?;
++            require(witness == self.journal_identity)?;
++            let temporary = "late-native-journal-fixture";
++            let mut file = leaf(&self.profile.writer, temporary, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, JOURNAL_LIMIT)?;
++            file.write_all(&bytes)?; file.sync_all()?;
++            let from = name(OsStr::new(temporary))?; let to = name(OsStr::new(JOURNAL))?;
++            if unsafe { libc::renameat(self.profile.writer.as_raw_fd(), from.as_ptr(), self.profile.writer.as_raw_fd(), to.as_ptr()) } != 0 { return Err(invalid()); }
++            self.profile.writer.sync_all()
++        }
++
++        #[cfg(test)]
++        fn late_auth_fault_fixture(&self, published: &PublishedLeaf) -> io::Result<()> {
++            let fault = self.profile.fault.load(std::sync::atomic::Ordering::SeqCst);
++            if !matches!(fault, 3 | 4) { return Ok(()); }
++            self.profile.fault.store(0, std::sync::atomic::Ordering::SeqCst);
++            if fault == 3 {
++                // Same exact bytes, different actual inode after final clean
++                // journal IO: tests the late held/name witness fence.
++                let temporary = "late-native-auth-fixture";
++                let mut file = leaf(&self.profile.home, temporary, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, AUTH_LIMIT)?;
++                file.write_all(&published.bytes)?; file.sync_all()?;
++                let from = name(OsStr::new(temporary))?; let to = name(OsStr::new(AUTH))?;
++                if unsafe { libc::renameat(self.profile.home.as_raw_fd(), from.as_ptr(), self.profile.home.as_raw_fd(), to.as_ptr()) } != 0 { return Err(invalid()); }
++                self.profile.home.sync_all()?;
++            } else {
++                // Equal-length content change in the actual current inode.
++                let text = std::str::from_utf8(&published.bytes).map_err(|_| invalid())?;
++                let changed = text.replace("fixture-access-newest", "fixture-access-mutant");
++                require(changed.len() == published.bytes.len() && changed.as_bytes() != published.bytes.as_slice())?;
++                let mut file = leaf(&self.profile.home, AUTH, libc::O_RDWR | libc::O_TRUNC, AUTH_LIMIT)?;
++                file.write_all(changed.as_bytes())?; file.sync_all()?;
++            }
++            Ok(())
++        }
++
++        pub(in crate::auth) fn save_clean(mut self, auth: &AuthDotJson) -> io::Result<()> {
++            self.recheck()?; require(self.journal.phase == Phase::Clean)?;
++            // Ordinary mutations cannot erase or reinterpret an actual committed
++            // refresh terminal. A separately qualified disposition is absent.
++            require(self.journal.last_terminal.is_none())?;
++            let original = self.original()?;
++            let mut next = self.journal.clone(); next.advance()?;
++            // Refuse exhausted sequence or oversized journal before native mutation.
++            envelope(self.profile.key.as_ref(), &next)?;
++            let bytes = serialize(auth, AUTH_LIMIT)?;
++            require(identity(self.profile.key.as_ref(), &bytes)? == self.profile.identity_commitment)?;
++            let published = self.publish(&self.profile.home, AUTH, &bytes, AUTH_LIMIT, |owned_temp| self.recheck_snapshot(&original, owned_temp))?;
++            self.publish_journal(next)?;
++            self.recheck_published_auth(&published)
++        }
++
++        pub(in crate::auth) fn delete_clean(mut self) -> io::Result<bool> {
++            self.recheck()?; require(self.journal.phase == Phase::Clean)?;
++            // Ordinary mutations cannot erase or reinterpret an actual committed
++            // refresh terminal. A separately qualified disposition is absent.
++            require(self.journal.last_terminal.is_none())?;
++            let original = self.original()?;
++            let mut next = self.journal.clone(); next.advance()?;
++            envelope(self.profile.key.as_ref(), &next)?;
++            self.recheck_snapshot(&original, false)?;
++            let target = name(OsStr::new(AUTH))?;
++            if unsafe { libc::unlinkat(self.profile.home.as_raw_fd(), target.as_ptr(), 0) } != 0 { return Err(invalid()); }
++            self.profile.home.sync_all()?; self.profile.recheck()?;
++            match open(self.profile.home.as_raw_fd(), OsStr::new(AUTH), libc::O_RDONLY) {
++                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
++                _ => return Err(invalid()),
++            }
++            self.publish_journal(next)?;
++            self.recheck()?;
++            match open(self.profile.home.as_raw_fd(), OsStr::new(AUTH), libc::O_RDONLY) {
++                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
++                _ => return Err(invalid()),
++            }
++            deadline(self.until)?; Ok(true)
++        }
++
++        pub(in crate::auth) fn issue(mut self, issue: StorageIssue) -> io::Result<IssuedFileTransaction> {
++            require(self.journal.sequence == issue.expected_sequence && self.journal.last_terminal.as_ref().is_none_or(|t| t.operation_id != issue.operation.operation_id))?;
++            let original = self.original()?;
++            let mut next = self.journal.clone(); next.advance()?; next.phase = Phase::Issued;
++            next.predecessor = Some(Predecessor { context_id: issue.context_id.clone(), context_generation: issue.context_generation.clone(), home_witness: original.home_witness.clone(), auth_witness: original.witness.clone(), auth_state_commitment: mac(self.profile.key.as_ref(), b"omux-native-managed-file-auth-state-v1\n", &original.bytes)?, identity_commitment: self.profile.identity_commitment.clone(), manager_auth_generation: issue.auth_generation.clone(), manager_owner_generation: issue.owner_generation.clone() });
++            next.operation = Some(issue.operation.clone());
++            self.publish_journal(next)?;
++            let issued = IssuedFileTransaction { reservation: self, original, issue };
++            issued.recheck_original()?; Ok(issued)
++        }
++    }
++
++    struct Temporary<'a> { parent: &'a File, file: &'a File, name: String, armed: bool }
++    impl Drop for Temporary<'_> {
++        fn drop(&mut self) {
++            if !self.armed { return; }
++            let Ok(named) = leaf(self.parent, &self.name, libc::O_RDONLY, AUTH_LIMIT.max(JOURNAL_LIMIT)) else { return; };
++            let (Ok(held), Ok(named)) = (self.file.metadata(), named.metadata()) else { return; };
++            if held.dev() == named.dev() && held.ino() == named.ino() {
++                if let Ok(name) = name(OsStr::new(&self.name)) { unsafe { libc::unlinkat(self.parent.as_raw_fd(), name.as_ptr(), 0); } }
++            }
++        }
++    }
++
++    impl IssuedFileTransaction {
++        fn recheck_original(&self) -> io::Result<()> {
++            self.recheck_original_for_publication(false)
++        }
++
++        fn recheck_original_for_publication(&self, owned_temp_created: bool) -> io::Result<()> {
++            self.reservation.recheck_snapshot(&self.original, owned_temp_created)
++        }
++
++        pub(in crate::auth) fn mark_uncertain(mut self) -> io::Result<()> {
++            let mut next = self.reservation.journal.clone(); next.advance()?; next.phase = Phase::Uncertain;
++            // Does not require unchanged original auth; uncertainty must persist
++            // even when a nonparticipating writer has changed the predecessor.
++            self.reservation.publish_journal(next)
++        }
++
++        pub(in crate::auth) fn commit(mut self, successor: ValidatedNativeSuccessor, current: &StorageIssue) -> io::Result<()> {
++            require(current.operation == self.issue.operation && current.context_id == self.issue.context_id && current.context_generation == self.issue.context_generation && current.auth_generation == self.issue.auth_generation && current.owner_generation == self.issue.owner_generation && current.expected_sequence == self.issue.expected_sequence && successor.identity_commitment == self.reservation.profile.identity_commitment)?;
++            let mut next = self.reservation.journal.clone(); next.advance()?;
++            self.recheck_original()?;
++            let published = self.reservation.publish(&self.reservation.profile.home, AUTH, &successor.bytes, AUTH_LIMIT, |owned_temp| self.recheck_original_for_publication(owned_temp))?;
++            next.phase = Phase::Clean; next.predecessor = None; next.operation = None;
++            next.last_terminal = Some(Terminal { operation_id: self.issue.operation.operation_id.clone(), status: "committed".into(), successor_auth_witness: Some(published.witness.clone()), successor_auth_state_commitment: Some(mac(self.reservation.profile.key.as_ref(), b"omux-native-managed-file-auth-state-v1\n", &successor.bytes)?) });
++            self.reservation.publish_journal(next)?;
++            #[cfg(test)]
++            self.reservation.late_auth_fault_fixture(&published)?;
++            // Keep the exact native successor descriptor AND zeroizing bytes
++            // alive across all final journal IO. Clean-on-disk is not admission
++            // evidence unless the terminal also joins current held/named auth.
++            self.reservation.recheck_published_auth(&published)
++        }
++    }
++
++    #[cfg(test)]
++    impl StorageIssue {
++        pub(in crate::auth) fn fixture() -> Self {
++            Self { operation: Operation { operation_id: "3".repeat(64), owner_id: "4".repeat(64), process_nonce: "5".repeat(64), endpoint_generation: "1".into(), source_id: "6".repeat(64), source_generation: "1".into(), consent_id: "7".repeat(64), consent_generation: "1".into(), forget_epoch: "0".into(), admitted_wall_time: "0".into() }, context_id: "8".repeat(64), context_generation: "1".into(), auth_generation: "0".into(), owner_generation: "0".into(), expected_sequence: "0".into() }
++        }
++
++        pub(in crate::auth) fn changed_owner(mut self) -> Self { self.owner_generation = "1".into(); self }
++        pub(in crate::auth) fn same_operation_sequence_fixture(mut self, sequence: &str) -> Self { self.expected_sequence = sequence.into(); self }
++        pub(in crate::auth) fn fresh_fixture(mut self, sequence: &str) -> Self { self.expected_sequence = sequence.into(); self.operation.operation_id = "9".repeat(64); self }
++    }
++
++    #[cfg(test)]
++    impl ManagedFileProfile {
++        pub(in crate::auth) fn fail_readback_fixture(&self, journal: bool) {
++            self.fault.store(if journal { 1 } else { 2 }, std::sync::atomic::Ordering::SeqCst);
++        }
++
++        pub(in crate::auth) fn change_auth_after_clean_fixture(&self, replace_inode: bool) {
++            self.fault.store(if replace_inode { 3 } else { 4 }, std::sync::atomic::Ordering::SeqCst);
++        }
++
++        pub(in crate::auth) fn replace_journal_after_final_auth_fixture(&self) {
++            self.fault.store(5, std::sync::atomic::Ordering::SeqCst);
++        }
++
++        pub(in crate::auth) fn payload_fixture(&self) -> io::Result<String> {
++            let (_, _, raw) = read_leaf(&self.writer, JOURNAL, JOURNAL_LIMIT)?;
++            let journal = parse_envelope(self.key.as_ref(), &raw, &self.enrollment)?;
++            String::from_utf8(serialize(&journal, PAYLOAD_LIMIT)?.to_vec()).map_err(|_| invalid())
++        }
++
++        pub(in crate::auth) fn replace_payload_fixture(&self, payload: &str) -> io::Result<()> {
++            let length = payload.len().to_string();
++            let mut input = Vec::new(); input.extend_from_slice(length.as_bytes()); input.push(b'\n'); input.extend_from_slice(payload.as_bytes());
++            let proof = mac(self.key.as_ref(), MAC_DOMAIN, &input)?;
++            let raw = format!("{MAGIC}{length}\n{proof}\n{payload}");
++            let mut journal = leaf(&self.writer, JOURNAL, libc::O_RDWR | libc::O_TRUNC, JOURNAL_LIMIT)?;
++            journal.write_all(raw.as_bytes())?; journal.sync_all()?; self.writer.sync_all()
++        }
++
++        pub(in crate::auth) fn successor_fixture(&self, auth: &AuthDotJson) -> io::Result<ValidatedNativeSuccessor> {
++            let bytes = serialize(auth, AUTH_LIMIT)?;
++            let identity_commitment = identity(self.key.as_ref(), &bytes)?;
++            require(identity_commitment == self.identity_commitment)?;
++            Ok(ValidatedNativeSuccessor { bytes, identity_commitment })
++        }
++
++        pub(in crate::auth) fn journal_fixture(&self) -> io::Result<(String, String)> {
++            let (_, _, raw) = read_leaf(&self.writer, JOURNAL, JOURNAL_LIMIT)?;
++            let journal = parse_envelope(self.key.as_ref(), &raw, &self.enrollment)?;
++            Ok((match journal.phase { Phase::Clean => "clean", Phase::Issued => "issued", Phase::Uncertain => "uncertain" }.into(), journal.sequence))
++        }
++    }
++}
+diff --git a/codex-rs/login/src/auth/mod.rs b/codex-rs/login/src/auth/mod.rs
+--- a/codex-rs/login/src/auth/mod.rs
++++ b/codex-rs/login/src/auth/mod.rs
+@@ -12,6 +12,7 @@
+ mod workload_identity;
+ 
+ mod external_bearer;
++mod managed_file_writer;
+ mod manager;
+ mod revoke;
+ 
+diff --git a/codex-rs/login/src/auth/storage.rs b/codex-rs/login/src/auth/storage.rs
+--- a/codex-rs/login/src/auth/storage.rs
++++ b/codex-rs/login/src/auth/storage.rs
+@@ -156,6 +156,7 @@
+ }
+ 
+ pub(super) fn delete_file_if_exists(codex_home: &Path) -> std::io::Result<bool> {
++    super::managed_file_writer::reject_unbound_mutation(codex_home)?;
+     let auth_file = get_auth_file(codex_home);
+     match std::fs::remove_file(&auth_file) {
+         Ok(()) => Ok(true),
+@@ -170,14 +171,36 @@
+     fn delete(&self) -> std::io::Result<bool>;
+ }
+ 
+-#[derive(Clone, Debug)]
+ pub(super) struct FileAuthStorage {
+     codex_home: PathBuf,
++    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++    managed: Option<(Arc<super::managed_file_writer::ManagedFileProfile>, std::time::Instant)>,
++}
++
++impl Debug for FileAuthStorage {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("FileAuthStorage").finish_non_exhaustive()
++    }
+ }
+ 
+ impl FileAuthStorage {
+     pub(super) fn new(codex_home: PathBuf) -> Self {
+-        Self { codex_home }
++        Self {
++            codex_home,
++            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++            managed: None,
++        }
++    }
++
++    // No production binding constructor exists in this prerequisite. The test
++    // binding carries the ORIGINAL deadline; backend methods never make a new clock.
++    #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
++    fn managed_fixture(
++        codex_home: PathBuf,
++        profile: Arc<super::managed_file_writer::ManagedFileProfile>,
++        until: std::time::Instant,
++    ) -> Self {
++        Self { codex_home, managed: Some((profile, until)) }
+     }
+ 
+     /// Attempt to read and parse the `auth.json` file in the given `CODEX_HOME` directory.
+@@ -204,6 +227,11 @@
+     }
+ 
+     fn save(&self, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
++        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++        if let Some((profile, until)) = &self.managed {
++            return profile.reserve(*until)?.save_clean(auth_dot_json);
++        }
++        super::managed_file_writer::reject_unbound_mutation(&self.codex_home)?;
+         let auth_file = get_auth_file(&self.codex_home);
+ 
+         if let Some(parent) = auth_file.parent() {
+@@ -223,6 +251,10 @@
+     }
+ 
+     fn delete(&self) -> std::io::Result<bool> {
++        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++        if let Some((profile, until)) = &self.managed {
++            return profile.reserve(*until)?.delete_clean();
++        }
+         delete_file_if_exists(&self.codex_home)
+     }
+ }
+@@ -299,17 +331,20 @@
+     }
+ 
+     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
++        super::managed_file_writer::reject_unbound_mutation(&self.codex_home)?;
+         let key = compute_store_key(&self.codex_home)?;
+         // Simpler error mapping per style: prefer method reference over closure
+         let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
+         self.save_to_keyring(&key, &serialized)?;
+         if let Err(err) = delete_file_if_exists(&self.codex_home) {
++            super::managed_file_writer::reject_unbound_mutation(&self.codex_home)?;
+             warn!("failed to remove CLI auth fallback file: {err}");
+         }
+         Ok(())
+     }
+ 
+     fn delete(&self) -> std::io::Result<bool> {
++        super::managed_file_writer::reject_unbound_mutation(&self.codex_home)?;
+         let key = compute_store_key(&self.codex_home)?;
+         let keyring_removed = self
+             .keyring_store
+@@ -375,6 +410,7 @@
+     }
+ 
+     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
++        super::managed_file_writer::reject_unbound_mutation(&self.codex_home)?;
+         let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
+         self.secrets_manager
+             .set(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME, &serialized)
+@@ -385,12 +421,14 @@
+                 std::io::Error::other(message)
+             })?;
+         if let Err(err) = delete_file_if_exists(&self.codex_home) {
++            super::managed_file_writer::reject_unbound_mutation(&self.codex_home)?;
+             warn!("failed to remove CLI auth fallback file: {err}");
+         }
+         Ok(())
+     }
+ 
+     fn delete(&self) -> std::io::Result<bool> {
++        super::managed_file_writer::reject_unbound_mutation(&self.codex_home)?;
+         let keyring_removed = self
+             .secrets_manager
+             .delete(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
+@@ -441,6 +479,7 @@
+     }
+ 
+     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
++        super::managed_file_writer::reject_unbound_mutation(&self.file_storage.codex_home)?;
+         match self.keyring_storage.save(auth) {
+             Ok(()) => Ok(()),
+             Err(err) => {
+@@ -451,6 +490,7 @@
+     }
+ 
+     fn delete(&self) -> std::io::Result<bool> {
++        super::managed_file_writer::reject_unbound_mutation(&self.file_storage.codex_home)?;
+         // Keyring storage will delete from disk as well
+         self.keyring_storage.delete()
+     }
+diff --git a/codex-rs/login/src/auth/storage_tests.rs b/codex-rs/login/src/auth/storage_tests.rs
+--- a/codex-rs/login/src/auth/storage_tests.rs
++++ b/codex-rs/login/src/auth/storage_tests.rs
+@@ -13,6 +13,426 @@
+ 
+ use codex_keyring_store::tests::MockKeyringStore;
+ use keyring::Error as KeyringError;
++
++// Real File/journal models for the disabled storage prerequisite. Native source
++// enrollment, same-AuthManager authority and issuer qualification are NOT supplied
++// by these cfg(test) constructors. Every marker/identity below is synthetic.
++#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++mod managed_file_writer_models {
++    use super::*;
++    use crate::auth::managed_file_writer::ManagedFileProfile;
++    use crate::auth::managed_file_writer::StorageIssue;
++    use std::os::unix::fs::PermissionsExt;
++    use std::time::Duration;
++    use std::time::Instant;
++
++    fn native_auth(marker: &str) -> anyhow::Result<AuthDotJson> {
++        let jwt = jwt_with_payload(json!({
++            "https://api.openai.com/auth": {
++                "chatgpt_user_id": "fixture-user",
++                "chatgpt_account_id": "fixture-workspace",
++            },
++        }));
++        Ok(AuthDotJson {
++            auth_mode: Some(AuthMode::Chatgpt),
++            openai_api_key: None,
++            tokens: Some(TokenData {
++                id_token: crate::token_data::parse_chatgpt_jwt_claims(&jwt)?,
++                access_token: format!("fixture-access-{marker}"),
++                refresh_token: format!("fixture-refresh-{marker}"),
++                account_id: Some("fixture-workspace".into()),
++            }),
++            last_refresh: None,
++            agent_identity: None,
++            personal_access_token: None,
++            bedrock_api_key: None,
++            bedrock_access_keys: None,
++        })
++    }
++
++    fn original_cutoff() -> Instant {
++        Instant::now() + Duration::from_secs(8)
++    }
++
++    fn fixture() -> anyhow::Result<(tempfile::TempDir, Arc<ManagedFileProfile>, AuthDotJson)> {
++        let home = tempdir()?;
++        let auth = native_auth("origin")?;
++        FileAuthStorage::new(home.path().to_path_buf()).save(&auth)?;
++        let profile = ManagedFileProfile::fixture(home.path(), true)?;
++        Ok((home, profile, auth))
++    }
++
++    fn bound_storage(home: &Path, profile: &Arc<ManagedFileProfile>, until: Instant) -> FileAuthStorage {
++        FileAuthStorage::managed_fixture(home.to_path_buf(), Arc::clone(profile), until)
++    }
++
++    #[test]
++    fn independent_descriptors_take_one_nonblocking_original_file_lock() -> anyhow::Result<()> {
++        let (home, profile, _) = fixture()?;
++        let independent = ManagedFileProfile::fixture(home.path(), false)?;
++        let until = original_cutoff();
++        let first = profile.reserve(until)?;
++        let refused = independent.reserve(until).err().context("second descriptor admitted")?;
++        assert_eq!(refused.kind(), std::io::ErrorKind::WouldBlock);
++        drop(first);
++        drop(independent.reserve(until)?);
++        assert_eq!(profile.journal_fixture()?, ("clean".into(), "0".into()));
++        Ok(())
++    }
++
++    #[test]
++    fn issued_journal_survives_drop_and_reopen_without_reissue_or_mutation() -> anyhow::Result<()> {
++        let (home, profile, original) = fixture()?;
++        let until = original_cutoff();
++        let issued = profile.reserve(until)?.issue(StorageIssue::fixture())?;
++        assert_eq!(profile.journal_fixture()?, ("issued".into(), "1".into()));
++        let raw = std::fs::read(home.path().join(".omux-native-file-writer/writer-state.json"))?;
++        assert!(!String::from_utf8(raw)?.contains("fixture-access-origin"));
++        assert!(!profile.payload_fixture()?.contains("fixture-refresh-origin"));
++        drop(issued);
++        let reopened = ManagedFileProfile::fixture(home.path(), false)?;
++        assert!(reopened.reserve(until).is_err());
++        let storage = bound_storage(home.path(), &reopened, until);
++        assert!(storage.save(&native_auth("newest")?).is_err());
++        assert!(storage.delete().is_err());
++        assert!(delete_file_if_exists(home.path()).is_err());
++        assert_eq!(Some(original), storage.load()?);
++        assert_eq!(reopened.journal_fixture()?, ("issued".into(), "1".into()));
++        Ok(())
++    }
++
++    #[test]
++    fn conditional_success_changes_only_native_file_then_clean_sequence() -> anyhow::Result<()> {
++        let (home, profile, _) = fixture()?;
++        let until = original_cutoff();
++        let next = native_auth("newest")?;
++        let successor = profile.successor_fixture(&next)?;
++        profile.reserve(until)?.issue(StorageIssue::fixture())?.commit(successor, &StorageIssue::fixture())?;
++        assert_eq!(Some(next), FileAuthStorage::new(home.path().to_path_buf()).load()?);
++        assert_eq!(profile.journal_fixture()?, ("clean".into(), "2".into()));
++        // An old operation/sequence is not made fresh by reopening a descriptor.
++        assert!(profile.reserve(until)?.issue(StorageIssue::fixture()).is_err());
++        let fresh = StorageIssue::fixture().fresh_fixture("2");
++        drop(profile.reserve(until)?.issue(fresh)?);
++        assert_eq!(profile.journal_fixture()?, ("issued".into(), "3".into()));
++        Ok(())
++    }
++
++    #[test]
++    fn changed_owner_refuses_commit_and_retains_issued_predecessor() -> anyhow::Result<()> {
++        let (home, profile, original) = fixture()?;
++        let until = original_cutoff();
++        let issued = profile.reserve(until)?.issue(StorageIssue::fixture())?;
++        let successor = profile.successor_fixture(&native_auth("newest")?)?;
++        assert!(issued.commit(successor, &StorageIssue::fixture().changed_owner()).is_err());
++        assert_eq!(Some(original), FileAuthStorage::new(home.path().to_path_buf()).load()?);
++        assert_eq!(profile.journal_fixture()?, ("issued".into(), "1".into()));
++        Ok(())
++    }
++
++    #[test]
++    fn complete_native_identity_required_and_successor_cannot_change_it() -> anyhow::Result<()> {
++        let (_home, profile, mut other) = fixture()?;
++        let token = other.tokens.as_mut().context("fixture tokens")?;
++        let jwt = jwt_with_payload(json!({
++            "https://api.openai.com/auth": {
++                "chatgpt_user_id": "different-fixture-user",
++                "chatgpt_account_id": "fixture-workspace",
++            },
++        }));
++        token.id_token = crate::token_data::parse_chatgpt_jwt_claims(&jwt)?;
++        assert!(profile.successor_fixture(&other).is_err());
++        let mut incomplete = native_auth("newest")?;
++        incomplete.tokens.as_mut().context("fixture tokens")?.id_token.raw_jwt = jwt_with_payload(json!({
++            "https://api.openai.com/auth": { "chatgpt_account_id": "fixture-workspace" },
++        }));
++        assert!(profile.successor_fixture(&incomplete).is_err());
++        assert_eq!(profile.journal_fixture()?, ("clean".into(), "0".into()));
++        Ok(())
++    }
++
++    #[test]
++    fn same_bytes_new_inode_and_same_size_in_place_edit_both_refuse_commit() -> anyhow::Result<()> {
++        for replace_inode in [true, false] {
++            let (home, profile, _) = fixture()?;
++            let until = original_cutoff();
++            let issued = profile.reserve(until)?.issue(StorageIssue::fixture())?;
++            let target = home.path().join("auth.json");
++            let original = std::fs::read(&target)?;
++            if replace_inode {
++                let replacement = home.path().join("replacement.json");
++                std::fs::write(&replacement, &original)?;
++                std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o600))?;
++                std::fs::rename(replacement, &target)?;
++            } else {
++                let altered = String::from_utf8(original)?.replace("fixture-access-origin", "fixture-access-mutant");
++                assert_eq!(std::fs::metadata(&target)?.len(), altered.len() as u64);
++                std::fs::write(&target, altered.as_bytes())?;
++            }
++            let retained = std::fs::read(&target)?;
++            let successor = profile.successor_fixture(&native_auth("newest")?)?;
++            assert!(issued.commit(successor, &StorageIssue::fixture()).is_err());
++            assert_eq!(retained, std::fs::read(&target)?);
++            assert_eq!(profile.journal_fixture()?, ("issued".into(), "1".into()));
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn trusted_profile_never_downgrades_after_directory_or_lock_replacement() -> anyhow::Result<()> {
++        for replace_lock in [true, false] {
++            let (home, profile, original) = fixture()?;
++            let until = original_cutoff();
++            let storage = bound_storage(home.path(), &profile, until);
++            if replace_lock {
++                let lock = home.path().join(".omux-native-file-writer/writer.lock");
++                std::fs::rename(&lock, lock.with_extension("old"))?;
++                std::fs::write(&lock, [])?;
++                std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600))?;
++            } else {
++                // Retained typed binding survives marker absence; no legacy fallback.
++                std::fs::rename(home.path().join(".omux-native-file-writer"), home.path().join("retired-writer"))?;
++            }
++            assert!(storage.save(&native_auth("newest")?).is_err());
++            assert!(storage.delete().is_err());
++            assert!(profile.reserve(until).is_err());
++            assert_eq!(Some(original), storage.load()?);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn original_cutoff_is_not_restarted_by_storage_and_large_budget_refused() -> anyhow::Result<()> {
++        let (home, profile, original) = fixture()?;
++        let expired = Instant::now() - Duration::from_millis(1);
++        let storage = bound_storage(home.path(), &profile, expired);
++        assert_eq!(storage.save(&native_auth("newest")?).err().context("expired save admitted")?.kind(), std::io::ErrorKind::TimedOut);
++        assert!(profile.reserve(Instant::now() + Duration::from_secs(9)).is_err());
++        assert_eq!(Some(original), storage.load()?);
++        assert_eq!(profile.journal_fixture()?, ("clean".into(), "0".into()));
++        Ok(())
++    }
++
++    #[test]
++    fn authenticated_unknown_duplicate_missing_and_bad_sequence_payloads_refuse() -> anyhow::Result<()> {
++        for corruption in ["unknown", "duplicate", "missing", "overflow", "leading-zero"] {
++            let (_home, profile, _) = fixture()?;
++            let original = profile.payload_fixture()?;
++            let changed = match corruption {
++                "unknown" => original.replacen('{', "{\"extra\":true,", 1),
++                "duplicate" => original.replacen('{', "{\"sequence\":\"0\",", 1),
++                "missing" => original.replace("\"predecessor\":null,", ""),
++                "overflow" => original.replace("\"sequence\":\"0\"", "\"sequence\":\"18446744073709551616\""),
++                "leading-zero" => original.replace("\"sequence\":\"0\"", "\"sequence\":\"00\""),
++                _ => anyhow::bail!("unrecognized fixture corruption"),
++            };
++            assert_ne!(original, changed);
++            // The test signer creates valid MAC over the wrong literal bytes,
++            // so these cases exercise closed typed semantics, not merely HMAC.
++            profile.replace_payload_fixture(&changed)?;
++            assert!(profile.reserve(original_cutoff()).is_err());
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn symlink_hardlink_writable_leaf_and_missing_journal_refuse() -> anyhow::Result<()> {
++        for corruption in ["symlink", "hardlink", "writable", "missing", "key"] {
++            let (home, profile, _) = fixture()?;
++            let journal = home.path().join(".omux-native-file-writer/writer-state.json");
++            match corruption {
++                "symlink" => {
++                    let other = journal.with_extension("old");
++                    std::fs::rename(&journal, &other)?;
++                    std::os::unix::fs::symlink(other, &journal)?;
++                }
++                "hardlink" => std::fs::hard_link(&journal, journal.with_extension("alias"))?,
++                "writable" => std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o666))?,
++                "missing" => std::fs::remove_file(&journal)?,
++                "key" => std::fs::write(home.path().join(".omux-native-file-writer/writer-capability"), [b'b'; 64])?,
++                _ => anyhow::bail!("unrecognized fixture corruption"),
++            }
++            assert!(profile.reserve(original_cutoff()).is_err());
++            if corruption == "missing" { assert!(!journal.exists()); }
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn lost_journal_readback_never_returns_an_issued_transaction() -> anyhow::Result<()> {
++        let (home, profile, original) = fixture()?;
++        let until = original_cutoff();
++        profile.fail_readback_fixture(true);
++        assert!(profile.reserve(until)?.issue(StorageIssue::fixture()).is_err());
++        assert_eq!(profile.journal_fixture()?, ("issued".into(), "1".into()));
++        let reopened = ManagedFileProfile::fixture(home.path(), false)?;
++        assert!(reopened.reserve(until).is_err());
++        assert_eq!(Some(original), FileAuthStorage::new(home.path().to_path_buf()).load()?);
++        Ok(())
++    }
++
++    #[test]
++    fn lost_successor_readback_preserves_new_file_and_blocks_predecessor_retry() -> anyhow::Result<()> {
++        let (home, profile, _) = fixture()?;
++        let until = original_cutoff();
++        let issued = profile.reserve(until)?.issue(StorageIssue::fixture())?;
++        let next = native_auth("newest")?;
++        let successor = profile.successor_fixture(&next)?;
++        profile.fail_readback_fixture(false);
++        assert!(issued.commit(successor, &StorageIssue::fixture()).is_err());
++        // Real atomic successor publication+parent sync happened; it is not
++        // rolled back to the possibly spent predecessor when readback fails.
++        assert_eq!(Some(next), FileAuthStorage::new(home.path().to_path_buf()).load()?);
++        assert_eq!(profile.journal_fixture()?, ("issued".into(), "1".into()));
++        assert!(ManagedFileProfile::fixture(home.path(), false)?.reserve(until).is_err());
++        Ok(())
++    }
++
++    #[test]
++    fn explicit_uncertainty_is_durable_and_never_a_recovery_api() -> anyhow::Result<()> {
++        let (home, profile, _) = fixture()?;
++        let until = original_cutoff();
++        profile.reserve(until)?.issue(StorageIssue::fixture())?.mark_uncertain()?;
++        assert_eq!(profile.journal_fixture()?, ("uncertain".into(), "2".into()));
++        assert!(ManagedFileProfile::fixture(home.path(), false)?.reserve(until).is_err());
++        Ok(())
++    }
++
++    #[test]
++    fn enrolled_unsupported_cleanup_refuses_before_keyring_or_fallback_effects() -> anyhow::Result<()> {
++        let (home, profile, original) = fixture()?;
++        let until = original_cutoff();
++        let issued = profile.reserve(until)?.issue(StorageIssue::fixture())?;
++        let mock = MockKeyringStore::default();
++        let direct = DirectKeyringAuthStorage::new(home.path().to_path_buf(), Arc::new(mock.clone()));
++        assert!(direct.save(&native_auth("newest")?).is_err());
++        assert!(direct.delete().is_err());
++        assert!(direct.load()?.is_none());
++        let secrets = SecretsKeyringAuthStorage::new(home.path().to_path_buf(), Arc::new(mock.clone()));
++        assert!(secrets.save(&native_auth("newest")?).is_err());
++        assert!(secrets.delete().is_err());
++        assert!(!encrypted_auth_file(home.path()).exists());
++        let auto = AutoAuthStorage::new(home.path().to_path_buf(), Arc::new(mock), AuthKeyringBackendKind::Direct);
++        assert!(auto.save(&native_auth("newest")?).is_err());
++        assert!(auto.delete().is_err());
++        assert_eq!(Some(original), FileAuthStorage::new(home.path().to_path_buf()).load()?);
++        assert_eq!(profile.journal_fixture()?, ("issued".into(), "1".into()));
++        drop(issued);
++        Ok(())
++    }
++
++    #[test]
++    fn clean_native_save_and_delete_share_reservation_without_authority_promotion() -> anyhow::Result<()> {
++        let (home, profile, _) = fixture()?;
++        let until = original_cutoff();
++        let storage = bound_storage(home.path(), &profile, until);
++        let held = profile.reserve(until)?;
++        assert!(storage.save(&native_auth("newest")?).is_err());
++        assert!(storage.delete().is_err());
++        drop(held);
++        let next = native_auth("newest")?;
++        storage.save(&next)?;
++        assert_eq!(Some(next), storage.load()?);
++        assert_eq!(profile.journal_fixture()?, ("clean".into(), "1".into()));
++        assert!(storage.delete()?);
++        assert!(storage.load()?.is_none());
++        assert_eq!(profile.journal_fixture()?, ("clean".into(), "2".into()));
++        assert!(profile.reserve(until)?.issue(StorageIssue::fixture().fresh_fixture("2")).is_err());
++        Ok(())
++    }
++
++    #[test]
++    fn sequence_exhaustion_refuses_before_any_native_publication() -> anyhow::Result<()> {
++        for enter_issued in [false, true] {
++            let (home, profile, original) = fixture()?;
++            let initial_sequence = if enter_issued { "18446744073709551614" } else { "18446744073709551615" };
++            let payload = profile.payload_fixture()?.replace("\"sequence\":\"0\"", &format!("\"sequence\":\"{initial_sequence}\""));
++            profile.replace_payload_fixture(&payload)?;
++            let until = original_cutoff();
++            if enter_issued {
++                let issue = StorageIssue::fixture().fresh_fixture(initial_sequence);
++                let issued = profile.reserve(until)?.issue(issue)?;
++                let successor = profile.successor_fixture(&native_auth("newest")?)?;
++                assert!(issued.commit(successor, &StorageIssue::fixture().fresh_fixture(initial_sequence)).is_err());
++                assert_eq!(profile.journal_fixture()?, ("issued".into(), "18446744073709551615".into()));
++            } else {
++                let storage = bound_storage(home.path(), &profile, until);
++                assert!(storage.save(&native_auth("newest")?).is_err());
++                assert!(storage.delete().is_err());
++                assert!(profile.reserve(until)?.issue(StorageIssue::fixture().fresh_fixture(initial_sequence)).is_err());
++                assert_eq!(profile.journal_fixture()?, ("clean".into(), initial_sequence.into()));
++            }
++            assert_eq!(Some(original), FileAuthStorage::new(home.path().to_path_buf()).load()?);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn auth_mutation_after_clean_journal_never_returns_success_or_readmits() -> anyhow::Result<()> {
++        for replace_inode in [true, false] {
++            let (home, profile, _) = fixture()?;
++            let until = original_cutoff();
++            let issued = profile.reserve(until)?.issue(StorageIssue::fixture())?;
++            let successor = profile.successor_fixture(&native_auth("newest")?)?;
++            // Production commit publishes/authenticates clean journal, then this
++            // cfg(test) checkpoint physically replaces/edits actual auth.json.
++            profile.change_auth_after_clean_fixture(replace_inode);
++            assert!(issued.commit(successor, &StorageIssue::fixture()).is_err());
++            assert_eq!(profile.journal_fixture()?, ("clean".into(), "2".into()));
++            // A clean enum alone is insufficient: the authenticated terminal
++            // must still match exact held/named physical and full current bytes.
++            assert!(profile.reserve(until).is_err());
++            let reopened = ManagedFileProfile::fixture(home.path(), false)?;
++            assert!(reopened.reserve(until).is_err());
++            let storage = bound_storage(home.path(), &reopened, until);
++            let retained = std::fs::read(home.path().join("auth.json"))?;
++            assert!(storage.save(&native_auth("origin")?).is_err());
++            assert!(storage.delete().is_err());
++            assert_eq!(retained, std::fs::read(home.path().join("auth.json"))?);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn journal_replacement_after_final_auth_read_refuses_commit_and_old_operation() -> anyhow::Result<()> {
++        let (home, profile, _) = fixture()?;
++        let until = original_cutoff();
++        let next = native_auth("newest")?;
++        let successor = profile.successor_fixture(&next)?;
++        profile.replace_journal_after_final_auth_fixture();
++        assert!(profile.reserve(until)?.issue(StorageIssue::fixture())?.commit(successor, &StorageIssue::fixture()).is_err());
++        assert_eq!(profile.journal_fixture()?, ("clean".into(), "2".into()));
++        assert_eq!(Some(next), FileAuthStorage::new(home.path().to_path_buf()).load()?);
++        // The unchanged authenticated terminal is an actual native commit; it
++        // cannot authorize replay of the failed caller's old issued operation.
++        // A new trust/admission constructor is still absent in production.
++        let reopened = ManagedFileProfile::fixture(home.path(), false)?;
++        assert!(reopened.reserve(until)?.issue(StorageIssue::fixture()).is_err());
++        assert!(reopened.reserve(until)?.issue(StorageIssue::fixture().same_operation_sequence_fixture("2")).is_err());
++        assert!(bound_storage(home.path(), &reopened, until).save(&native_auth("origin")?).is_err());
++        assert!(bound_storage(home.path(), &reopened, until).delete().is_err());
++        Ok(())
++    }
++
++    #[test]
++    fn ordinary_mutation_cannot_erase_or_reinterpret_committed_refresh_terminal() -> anyhow::Result<()> {
++        let (home, profile, _) = fixture()?;
++        let until = original_cutoff();
++        let next = native_auth("newest")?;
++        let successor = profile.successor_fixture(&next)?;
++        profile.reserve(until)?.issue(StorageIssue::fixture())?.commit(successor, &StorageIssue::fixture())?;
++        let storage = bound_storage(home.path(), &profile, until);
++        assert!(storage.save(&native_auth("origin")?).is_err());
++        assert!(storage.delete().is_err());
++        assert_eq!(Some(next), storage.load()?);
++        assert_eq!(profile.journal_fixture()?, ("clean".into(), "2".into()));
++        // Only a fresh typed transaction remains in scope; no recovery/reset is
++        // inferred from a native ordinary-save/delete caller or operation ID.
++        drop(profile.reserve(until)?.issue(StorageIssue::fixture().fresh_fixture("2"))?);
++        assert_eq!(profile.journal_fixture()?, ("issued".into(), "3".into()));
++        Ok(())
++    }
++}
+ 
+ #[tokio::test]
+ async fn file_storage_load_returns_auth_dot_json() -> anyhow::Result<()> {

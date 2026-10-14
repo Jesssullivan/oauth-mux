@@ -35,6 +35,10 @@ The current local control protocol is version 2, defined by
 local channels with bounded framing and peer-user checks. This is a fresh local
 API, not the deleted managed-harness JSON-RPC contract. General control replies
 contain redacted metadata and opaque handles, never credential payloads.
+Account snapshots expose the stored `identity.verified` boolean alongside
+`identity.provider`; issuer, subject and tenant remain private. Consumers must
+require boolean `true` before treating an account as verified. Installed runtime
+support for this field requires qualification of the exact delivered bytes.
 
 | Surface | Implemented methods and limits |
 | --- | --- |
@@ -42,7 +46,9 @@ contain redacted metadata and opaque handles, never credential payloads.
 | Trusted adapter channel | `credential.import`, `adapter.owner.register`, `adapter.acquire`, `adapter.materialize`, `adapter.report`, `adapter.metadata`, `adapter.releaseBinding`, `adapter.gitGet`, `adapter.gitErase`; owner registration requires fresh socket-derived process proof |
 | Public lifecycle and usage | `account.pause`, `account.resume`, `account.drain`, `account.forget`, source operations, `usage.summary`, `system.health`, `reliability.export` and `operation.status`; upstream revoke is not an implemented method |
 | Shared setup control | `setup.readiness`, `setup.plan`, `setup.evidence`, `setup.refresh` are implemented in source. Refresh starts one bounded background installation probe using immutable launch selectors; evidence reports cached observations and freshness. Plans do not rewrite managed files. Source presence does not prove installed readiness or successful filesystem collection. |
+| Fresh OAuth intent control | `oauth.enrollment.prepare.v1` and `oauth.enrollment.retire.v1` persist distinct encrypted PKCE intent or retire its unissued capsules. Registration remains unqualified; these source handlers initiate no browser/provider request and activate no grant. |
 | Current Codex owner V2 endpoint | `owner/capabilities`, `owner/threads`, `owner/identify`, `owner/register`, `owner/unregister`, `owner/announce`; private authenticated Unix packet transport with an explicit endpoint, bounded at 64 KiB |
+| Experimental Codex source-context extensions | `owner/source/context` supplies read-only owner-bound context metadata; `owner/source/origin` requires verified runtime/image authority; `owner/source/acquire` additionally requires explicit source-acquisition consent. Omux daemon and candidate source implement these boundaries; exact native compilation, packaging, installed enrollment and ordinary-launch qualification remain separate gates. |
 | Separate candidate read-only status extension | `owner/attachment/status` has two passing local Rust predicates in epoch `cd8c87d7-85f4-4c41-836c-18d8a6f7585c`; installed discovery and ordinary TUI/resume remain unproved. It must expose exact committed attachment attribution, never infer retirement from absence. The preserved164-change/installed4b pair does not supply this method's proof. |
 | Preserved Codex protocol-1 candidate extension | `omux/broker/capabilities`, `omux/broker/register`, `omux/broker/unregister`, `omux/broker/thread/status`; belongs to the preserved upstream patch candidate, absent from stock Codex; legacy WebSocket inspection confers no current owner custody |
 | Intent requiring later implementation | Explicit refresh adoption/renewal ownership transfer, upstream revocation and a general adapter observation publication interface; no method names or executable guarantee are declared here |
@@ -54,6 +60,15 @@ authority. [catalog.zig](../../src/catalog.zig) distinguishes declared,
 implemented, synthetic-proven and live-proven capabilities. Its `normal_launch`
 flag describes intended entrypoints, not a passed ordinary-launch gate.
 
+Resident validation is declared in [delivery/BUILD.bazel](../../delivery/BUILD.bazel):
+`//delivery:resident_namespace_qualification` checks the provider-free namespace,
+and `//delivery:resident_codex_live_continuity` evaluates ordinary TUI preparation,
+cold native resume and two completed turns in the same resumed process after an
+explicit account-A drain. The [controller](../../delivery/resident_codex_live_controller.py)
+and [guardian](../../tools/guard_resident_continuity_profile.py) require verified
+resident accounts and independently qualified native and daemon artifacts.
+Declared targets and their source models do not establish installed or live proof.
+
 Control mutations require a stable opaque `operation_id` and nonnegative
 `expected_revision`. JSON-RPC `id` remains response correlation only. Query
 `operation.status` after response loss; mismatched reuse, stale revisions and
@@ -61,6 +76,94 @@ indeterminate operations fail closed. Poisoned custody refuses outcome queries
 rather than reporting an uncommitted cache. Cancellation uses `target_operation_id`
 separately from its own mutation ID. The native adapter capability protocol and browser native messaging remain
 version 1; neither inherits control version 2.
+
+## Planned Omux-owned account sign-in and API-Responses profile
+
+Omux owns implementation of its open-source ChatGPT-plan enrollment using the provider's
+[registration/sign-in contract](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
+Initial `dynamic_agent_client` registration under Omux's actual app identity and
+stable host ID returns an issued client ID bound to the validated registration;
+it is distinct from borrowing the native Codex public client.
+The selected host, app identity, exact loopback callback, state, nonce, S256,
+scopes and resource belong to the owned transaction. A source constant, caller
+digest or decoded token claim does not qualify that profile.
+
+This route requires a separate versioned provider/native profile for
+`https://api.openai.com/v1/responses`, with resource/audience
+`https://api.openai.com/v1`, following [official inference requirements](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+It cannot reuse the ChatGPT-backend endpoint, wham identity recipe or legacy
+native-client registration as authority. Preserve both profiles' exact identity,
+audience, request-schema and capability guards. Unsupported request fields/tools
+need explicit capability handling; endpoint replacement alone is insufficient.
+
+The maintained request hook must materialize fresh daemon access authority per
+broker-bound request while retaining the same native AuthManager, home, process,
+session/history, tools and approvals. No wrapper, native auth-file copyback,
+replacement auth cache or restart proves this outcome. The provider's
+[app-server refresh example](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)
+uses restart/resume; Omux owns the stronger same-process integration.
+
+At `2c7ee2cd`, [oauth_enrollment.zig](../../src/oauth_enrollment.zig),
+[control.zig](../../src/control.zig) and [engine.zig](../../src/engine.zig)
+implement only intent/custody preparation and retirement. There is no qualified
+profile producer, callback listener or exchange dispatcher in that runtime.
+Private callback/transport/verification/native work is not installed proof.
+Actual issuance, cryptographic identity, paired-grant renewal, genuine native
+package, ordinary accepted-history resume and live handoff remain separate gates.
+The [lifecycle contract](native-lifecycle-and-custody.md#planned-omux-owned-chatgpt-plan-grants)
+owns producer responsibilities and activation requirements; no additional wire
+method or supported Boolean is created by this plan.
+
+## Native credential-source context acceptance gap
+
+Daemon-default enrollment and verified active-application source context are
+separate. Omitted Codex `source_path` in [engine.zig](../../src/engine.zig)
+resolves from the daemon's `HOME`/`CODEX_HOME`; it does not identify the context
+used by an independently ordinary-started application. Current experimental
+source in [native_probe.zig](../../src/integrations/native_probe.zig) and
+[engine.zig](../../src/engine.zig) implements authenticated owner-bound context
+declarations, supervised selected-context acquisition and opaque discovery
+metadata. Read-only context discovery does not authorize credential acquisition.
+The acquisition path separately requires explicit source consent, retained
+runtime/image authority and original owner/context checks before and after
+transfer. Native conversational context reconstruction and session/history
+preservation remain separate from credential-source discovery. These source
+implementations and candidate extensions require version-bound native/daemon
+compilation, package and installed qualification; ordinary launch/resume, retained
+normal custody and live handoff remain unproved. This contract records source
+behavior and adds no execution proof. The product requires discovery without
+asking users for raw profile locations, and ordinary launch without an Omux
+wrapper or alternate home.
+
+Acceptance requires:
+
+- The compatible native owner declares its actual resolved source context through
+  the existing authenticated owner boundary. Opaque source-context authority is
+  bound to owner, process nonce, peer witness and endpoint generation, plus thread
+  incarnation when applicable. Hints, guessed home/profile paths or arbitrary
+  process/environment scanning cannot establish this authority.
+- Explicit source acquisition consent precedes credential access. Controls pass
+  opaque authenticated context authority, never raw paths, credentials or identity
+  PII. Trusted daemon acquisition validates bounded owned native-store custody and
+  rechecks original owner/context identity before and after; stale, replaced,
+  ambiguous or unsupported contexts refuse.
+- The [source lifecycle contract](native-lifecycle-and-custody.md) still requires
+  provider identity verification before activation, same-identity deduplication,
+  ambiguity quarantine and forget tombstones. Native import keeps renewal
+  ownership external; source consent, verified identity, refresh adoption and
+  native attachment remain separate. Accepted requests/tools and history are not
+  replayed.
+- Exact source-bound tests cover different ordinary-native/daemon homes, missing
+  consent/custody, forged context/path, stale owner/thread/generation, replacement,
+  ambiguity and lost replies without repeated mutations. Actual ordinary launch,
+  authenticated source selection, verification and retained normal custody need
+  separate evidence before attachment or same-process handoff claims.
+
+Existing daemon-default and explicitly selected sources retain their narrower
+meaning. Missing native declarations report the gap; stock Codex and experimental
+candidates gain no support from these requirements. Existing TIN-5338 native and
+TIN-2063 account-lifecycle carriers retain implementation/evidence ownership;
+no new ticket or completed acceptance is implied.
 
 ## Common lifecycle and safety requirements
 
@@ -257,6 +360,10 @@ before effects, with no pagination promised for this slice.
 
 Automatic discovery returns `owners`, with `owner_id`, `process_nonce`,
 `endpoint_generation`, `owner_endpoint`, `native_version`, `support` and `threads`.
+Experimental source-context discovery may also populate `source_context` with
+status and nullable opaque context ID/generation and store-presence metadata.
+Its `credential_acquisition_authorized` remains false. These read-only facts do
+not authorize acquisition or establish installed support.
 Each thread has `thread_id`, `thread_instance_generation`, diagnostic
 `attachment_generation` and nullable `native_ref`. Only an exact currently
 committed attachment matching the fresh observation can populate `native_ref`.
@@ -436,21 +543,69 @@ Git request.
 
 ## Evidence and promotion
 
+Native build inputs have three separate obligations: **source provenance**
+identifies the exact upstream tree and ordered maintained changes; **current
+SOURCE custody** freshly verifies the complete declared input/output bytes,
+inventory, logical modes, link literals, aliases and named/held physical
+identities under the current action's original clock; **runtime evidence**
+qualifies only the exact compiled application, platform and execution epoch.
+Neither source composition nor a historical producer pass supplies current
+compiler, installed, ordinary-resume or same-process authority.
+
+The selected-N10 content-source contract admits the independently pinned retained
+N10 source only after authenticating its literal source receipt, complete
+inventory, upstream commit, ordered ten-patch provenance, build graph and
+original producer/evidence/XML joins, with fresh full-content and full-nine
+physical custody checks. It then applies the exact reviewed SIWC V4 and catalog
+changes and regenerates the complete HUB using independently qualified complete
+SDK, NAR, JDK and query-tool inputs. Source, proof, SDK and output owners remain
+held through final readbacks and terminal fences; existing clocks and resource
+caps remain binding. This is a distinct source-input family: the historical
+`SourceProofSession` contract and its refusal remain unchanged. Old ancestor
+reconstruction is not asserted to have rerun, and old receipts do not become new
+execution qualification. Declaring this contract does not establish that the new
+producer or native application has passed.
+
+Direct intake from the retained `c188ba31` execution is a tactical local source
+route. Portable delivery additionally requires digest-addressed, declared full
+SOURCE/provenance transfer with its own qualified transport/custody receipt,
+complete qualified SDK/tool transfer, and a clean second-environment build that
+does not require historical operator directories. A committed upstream plus
+ordered-change descriptor must cover the complete maintained baseline and binary
+overlays as well as later patches. Transport binds new physical custody; it
+cannot claim to recreate original source inodes or inherit runtime proof.
+
+These build-input distinctions leave all `NAC-001`–`NAC-018` acceptance gates and
+authorization, consent, permission, renewal-writer and no-accepted-replay
+invariants intact. Omux owns the native integration; ordinary native launch and
+resume retain native home/session/history authority without an Omux launch
+requirement or a vendor hook to await. Fresh compilation and exact-build
+installed, ordinary-resume and live same-process evidence remain separate gates.
+
 Selected-runtime authority and live executable attribution are separate
 requirements. The current Codex package already binds source/producer inputs,
-upstream commit and packaged executable/runtime digests. Its missing installed
-selection must derive from verified artifact/ownership evidence and bind
-channel/target, manifest/archive/source/producer digests, backend/loader
-identities, installation transaction and adapter epoch. It must refuse
-selection drift during mutation/recovery while preserving native custody and
-history. No selection wire method or registry migration is implemented here.
+upstream commit and packaged executable/runtime digests. Experimental source in
+[setup.zig](../../src/integrations/setup.zig) now implements retained internal
+runtime-selection records and verification, binding channel/target,
+manifest/archive/source/producer digests, backend/loader identities, installation
+transaction and adapter epoch to verified artifact/ownership evidence. The actor
+retains qualified evidence in its persisted state; verification and rechecks
+refuse selection drift while preserving native custody and history. These
+internal records are not a public selection wire method. Source presence does
+not qualify a genuine installed selection, complete native package, ordinary
+launch/resume or live handoff; those exact-artifact gates remain open.
 
 The portable Codex launcher explicitly executes a bundled loader. A hash of
 `/proc/PID/exe` alone cannot be presumed to attest its backend; the actual launch
-profile requires a version-bound proof. Existing fresh socket-derived peer
-evidence establishes process incarnation and message writer, not executable
-identity. Peer-claimed version/digest fields and a persisted selection do not
-close that gap. See the [delivery audit](../../integrations/codex-adapter-delivery/README.md)
+profile requires a version-bound proof. Current Linux source distinguishes that
+explicit-loader profile from a Nix direct-main profile with retained closure,
+deployment and executable-role checks. The source-acquisition image verifier
+requires the qualified direct-main profile and fresh peer/image rechecks; an
+evaluation-only selection cannot enable acquisition. Fresh socket-derived peer
+evidence alone establishes process incarnation and message writer, not executable
+identity. Peer-claimed version/digest fields or a persisted selection alone do
+not close that gap. These implemented checks still require genuine package and
+installed qualification. See the [delivery audit](../../integrations/codex-adapter-delivery/README.md)
 and its primary kernel reference. Experimental conformance may retain exact
 fixture-launched artifact provenance; it cannot silently become runtime delivery
 qualification or continuity support.
@@ -469,3 +624,166 @@ proof. Live provider work requires its own authorized, exact-build evaluation;
 none is performed by declaring this contract. Capability promotion must update
 source metadata and committed evidence together; website/API rendering, an
 upstream patch schema or a passing fixture cannot promote support.
+
+### Planned complete transported SDK/JDK custody (2026-10-12)
+
+The new content-source/native-driver SDK route is planned and unshipped. Its
+SDK-side inputs are the existing complete four-leaf carrier (`payload.bin`,
+`manifest.json`, `origin-receipt.json`, `receipt.json`), the five independently
+declared producer proof roles (outer receipt, test evidence, test log, test XML
+and program report), and the complete independently declared query-tool closure.
+These identify the selected origin and authenticate transport provenance; they
+do not make the original host's SDK/JDK inode identities current consumer
+authority. The new route must establish distinct, owned, freshly extracted
+complete SDK/JDK content custody under its current producer context. Historical
+routes, their physical predicates and their evidence remain unchanged.
+
+Admission and final acceptance require every packed byte, member SHA, logical
+mode, literal symlink and offset to match the authenticated complete membership.
+Validate any path rebase against exact origin provenance and membership; an
+arbitrarily rewritten manifest, sparse SDK or ambient original-host SDK/JDK read
+is not an admissible substitute. Fresh extraction must retain the full SDK/JDK
+content/NAR verification, including full final NAR readback, and newly extracted
+named/held full-nine physical witnesses before and after use. Hold the complete
+carrier, declared aliases, proof, context, namespace and output owners through
+final readbacks and fences. New physical witnesses attest the extracted objects;
+they neither recreate old host identities nor replay historical physical proof.
+Remove the original per-member SDK DATA edge only from the new route after its
+typed reader and declared transport inputs cover every required content join.
+
+The original-entry SOURCE/SDK cutoff of 600 seconds, action cap of 840 seconds,
+outer envelope of 1,200 seconds and reserved resource limits remain unchanged;
+no member or extraction phase restarts the clock. This engineering contract
+does not establish genuine budget fit, a compiled native consumer, portable
+executable external-reference closure, or a clean second-environment build.
+Full SOURCE/provenance transport and the portability gates above remain required.
+It confers no installed, ordinary native launch/resume, accepted-history or live
+same-process handoff proof. All `NAC-001`–`NAC-018`, authorization, permission,
+consent, renewal ownership and no-accepted-replay requirements continue to apply,
+with Omux owning the integration and native session/history authority preserved.
+
+
+### Distinct retained public SDK TreeArtifact input route
+
+The retained-tree route is separate from the transported carrier route above.
+It is an unqualified implementation route until its declared producer, current
+SOURCE consumer and native execution gates have actual evidence. Historical
+carrier, SDK, SOURCE, compilation and native failures remain evidence for their
+exact inputs. A failed producer output cannot be selected or admitted here.
+
+The dependency producer `//tools:codex_native_retained_sdk_tree_producer` owns
+one finite original 1200-second envelope, with 1170 seconds for work and the
+existing cleanup allowance. Its materialization action authenticates the four
+selected carrier leaves and the original five successful seal-proof roles,
+reads the carrier fully at initial and final binding, performs the existing
+durable extraction and registered final fresh proof, then publishes one
+same-filesystem owned tree. It proves the complete published tree again after
+rename. The tree is a declared Bazel Directory input, with separately declared
+recipe, inventory, receipt and creator context files. There is no second SDK
+copy into test outputs or a per-member undeclared host-directory alias.
+
+The recipe commits the complete declared code, tool, proof and four-carrier
+byte inputs and their logical roles. Its input digest is a canonical semantic
+commitment, not a claim to be Bazel's protobuf Action digest. The logical SDK
+inventory and canonical SDK/JDK NAR descriptors come from the authenticated
+original carrier. The qualifier independently rechecks the recipe and provenance,
+then reads every current post-Bazel tree byte and current namespace, validates
+SHA and canonical NAR, and checks original module/registry/recipe semantics.
+Bazel's all-regular-0555 retention mode is an explicit physical policy: canonical
+NAR executable bits use authenticated logical modes, while actual streams and
+FD witnesses require current physical 0555 modes. It is not inferred from a
+previous successful scan. A genuine action/qualifier gate must establish this
+normalization behavior; a fixture's chmod only models it.
+
+Successful metadata is copied under the producer epoch as immutable
+`sdk-tree-created/{receipt,inventory,recipe,creator-context}.json`, with an
+actual source-to-copy hash/size ledger. Selection binds that successful outer
+receipt, collector index, log, aggregate/child XML counters, executed program
+marker and all four metadata copies. Shared test-output paths are not durable
+creator history and cannot substitute for those copies. The repository
+selector remains NULL until actual producer success and physical retention are
+joined. Presence of cached files, a Boolean, PID, schema name or model fixture
+cannot select a creator.
+
+Terminal publication is prepared under an unselectable pending receipt. Initial
+worker/admission/SDK qualification and evidence checks, their mandatory input-FD
+drains, final graph readback and the original publication cutoff must all
+succeed before the fixed canonical receipt rename. The staged receipt file and its directory
+are fsynced before the rename. The canonical rename commits artifact provenance;
+it does not by itself make a creator admissible. This route makes no post-rename
+directory-fsync or power-loss durability claim for that publication.
+
+A failure before a commit attempt refuses acknowledgement. Refused metadata
+with no artifact origin or qualified dependency disposition is published only
+when an intact owned candidate and epoch permit safe publication. Candidate
+construction/fsync failure or lost epoch custody instead yields diagnostic-only
+refusal, without publishing a canonical refusal receipt or writing into a
+substitute or custody-lost path. An exception from the canonical rename is
+commit-unknown, not proof that publication did or did not occur. A canonical
+receipt left by a late finalizer, an unconfirmed result or a crash before
+qualification confirmation remains historical provenance and cannot select a
+producer. A release or reply failure does not fabricate rollback or rewrite a
+committed receipt into an uncommitted result.
+
+Admission also requires the independently held ninth proof role
+`qualification_confirmation`, selected by an exact path/SHA/size row for
+`EPOCH/sdk-tree-qualified.json` and declared as
+`proof/qualification-confirmation.json`. Its bounded record binds the exact
+canonical outer-receipt SHA and byte extent, epoch, profile, source commit,
+graph, original creator context and original entry/deadline clocks. It records
+an actual observed qualification time satisfying original entry <= observed
+qualification < original deadline minus the existing 30-second cleanup
+allowance. After canonical publication, the parent opens a new receipt reader
+through its retained epoch writer FD. It proves current receipt bytes/SHA,
+full-nine FD and held/named joins, then successfully closes that reader. Final
+held/named and graph observations and the original 1170-second qualification
+cutoff follow the reader close; only then is the confirmation formed. Epoch,
+cache and coordinator writer FDs remain held through confirmation delivery.
+Confirmation metadata attests that already-observed timely proof; its later
+delivery does not claim a measured rename timestamp or timeliness for the
+delivery syscall. The original 1200-second outer envelope bounds this later
+small metadata delivery, not renewed SDK or SOURCE work.
+
+Missing, late, unconfirmed or crash-before-confirmation results cannot admit a
+creator, even if a canonical receipt contains exit zero or artifact provenance.
+After confirmation publication, writer-release or reply loss preserves the
+historical proved fact and refuses acknowledgement; it creates no new clock or
+successful acknowledgement. Admission requires both the exact
+`omux-retained-sdk-tree-terminal-publication-v1` publication record and the
+independently acquired confirmation, with their exact receipt/context join.
+Pending or refused records cannot select a producer. These are historical
+publication and qualification facts, not a child claim to a live parent lock.
+The child's complete current physical SDK proof and independent original SOURCE
+clock remain mandatory.
+
+The new fixed SOURCE cohort uses profile
+`native-retained-sdk-tree-source-reserved` and the two declared targets
+`//tools:codex_native_siwc_catalog_tree_source_test` and
+`//tools:codex_native_siwc_catalog_tree_source_producer`. Each consumer keeps its
+own fresh original SOURCE 600-second work cutoff, 840-second action timeout and
+1200-second outer envelope. It admits the declared TreeArtifact, selected
+successful creator evidence and pinned logical expectations, then performs a
+complete current namespace/type/mode/link-text/byte-SHA/NAR/semantic proof with
+bounded FD ownership. Its last full scan precedes the final held/named/root and
+metadata fences and mandatory cleanup; no poll, scan or reuse renews the clock.
+The flat carrier is creator provenance and is not reread or recopied by this
+new consumer. This difference is permitted only by this separately typed proof
+route; all transported-reader and carrier predicates remain unchanged.
+
+The parent coordinator uses a new strictly owned two-cohort dependency/artifact
+lease over one checkout/output base/toolchain/isolation policy. It proves actual
+exclusive cache lock and lifetime separately. The child proves current declared
+public data and compatible creator-origin facts; it does not claim the parent's
+live lock or receive credential ownership through this route. Existing content
+leases and generic disk/remote-cache settings remain unchanged. A warm declared
+action may supply bytes only. Missing, evicted or incompatible data, or an
+expired creator cold replay, refuses and requires a fresh finite dependency
+producer. Failed materialization or qualification never gains authority by
+reuse.
+
+SDK links remain inert public data. Absolute executable references, compilation,
+SOURCE publication, native resume, accepted history and same-process continuity
+need their own exact gates. This local route makes no future RBE portability or
+original-600 timing-fit promise. Future remote execution must use the same
+fully declared directory/metadata/proof graph and qualify tool/link relocation
+and creator-origin compatibility independently.

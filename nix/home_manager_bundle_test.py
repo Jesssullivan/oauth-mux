@@ -617,6 +617,206 @@ class BundleTests(unittest.TestCase):
         self.assertIs(caught.exception, primary)
         self.assertEqual(primary.cleanup_category, "acquisition-copy-sync-cleanup-refused")
 
+    def test_pending_selection_refuses_real_loader_before_bundle_or_evaluator_io(self):
+        configuration = {"schema_version": 1, "kind": "omux-home-manager-compact-input-configuration-v1",
+                         "status": "awaiting-qualified-bundle", "selection": None}
+        selected = self.base / "selection.json"
+        self.write(selected, bundle.encoded(configuration))
+        with patch.object(bundle, "evaluate_bundle", side_effect=AssertionError("selected input IO")) as run:
+            with self.assertRaisesRegex(ValueError, "^bundle-selection-pending$"):
+                bundle.evaluate_selection(str(selected), "/absent/bundle", "/absent/receipt.json",
+                    str(self.lock_path), "/absent/nix", self.modules, str(self.scratch),
+                    deadline=time.monotonic() + 900)
+            run.assert_not_called()
+        for change in ({"selection": {}}, {"schema_version": True}, {"extra": True}):
+            with self.assertRaises(ValueError): bundle.selected_bundle({**configuration, **change})
+
+    def test_selected_bundle_real_byte_join_and_configuration_mutation_refusal(self):
+        result = self.pack()
+        selected = self.base / "selection.json"
+        row = {"root": str(self.outputs), "bundle_sha256": result["bundleSha256"],
+               "receipt_sha256": result["receiptSha256"]}
+        configuration = {"schema_version": 1, "kind": "omux-home-manager-compact-input-configuration-v1",
+                         "status": "selected-bundle", "selection": row}
+        raw = bundle.encoded(configuration)
+        self.write(selected, raw)
+        def run():
+            return bundle.evaluate_selection(str(selected), str(self.outputs / "bundle"),
+                str(self.outputs / "receipt.json"), str(self.lock_path), "/declared/native-nix",
+                self.modules, str(self.scratch), deadline=time.monotonic() + 900)
+        with patch.object(bundle, "CONFIG_ROOTS", (str(self.base) + "/",)), self.model_nix():
+            self.assertTrue(run()["sourceCustodyBeforeAfterMatched"])
+        def mutation(*args, **kwargs):
+            self.write(selected, raw)  # Equal bytes cannot excuse changed custody.
+            return {name: True for name in bundle.evaluator.PREDICATES}
+        with patch.object(bundle, "CONFIG_ROOTS", (str(self.base) + "/",)), self.model_nix(), \
+                patch.object(bundle.evaluator, "evaluate", side_effect=mutation):
+            with self.assertRaisesRegex(ValueError, "bundle-selection-changed"): run()
+        self.write(selected, bundle.encoded({**configuration, "selection": {**row, "bundle_sha256": "0" * 64}}))
+        with patch.object(bundle, "CONFIG_ROOTS", (str(self.base) + "/",)), self.model_nix():
+            with self.assertRaisesRegex(ValueError, "bundle-selected-scope"): run()
+
+    def test_actual_pending_cli_reports_literal_refusal_without_selected_io(self):
+        selected = self.base / "selection.json"
+        self.write(selected, bundle.encoded({"schema_version": 1,
+            "kind": "omux-home-manager-compact-input-configuration-v1",
+            "status": "awaiting-qualified-bundle", "selection": None}))
+        entry = time.monotonic_ns()
+        environment = {"OMUX_EXECUTION_GUARD": "modeled", "TEST_TMPDIR": str(self.scratch),
+            "OMUX_HM_ROOT_ENTRY_NS": str(entry), "OMUX_HM_ROOT_DEADLINE_NS": str(entry + 1200 * 10**9),
+            "OMUX_HM_RESERVED_PROFILE": "home-manager-evaluation-reserved"}
+        output = io.StringIO()
+        arguments = ["evaluate", "--selection", str(selected), "--bundle", "/absent/bundle",
+            "--bundle-receipt", "/absent/receipt.json", "--lock", str(self.lock_path), "--nix", "/absent/nix"]
+        for name, path in self.modules.items(): arguments += ["--module", name + "=" + path]
+        with patch.dict(os.environ, environment), redirect_stdout(output), \
+                patch.object(bundle, "evaluate_bundle", side_effect=AssertionError("selected IO")) as run:
+            self.assertEqual(bundle.main(arguments), 2)
+            run.assert_not_called()
+        row = json.loads(output.getvalue())
+        self.assertIs(row["passed"], False)
+        self.assertEqual(row["category"], "bundle-selection-pending")
+        self.assertLess(len(output.getvalue()), 512)
+        self.assertNotIn("/absent", output.getvalue())
+
+    def test_original_action_clock_intersects_local_and_outer_cleanup_before_io(self):
+        entry, end = 100 * 10**9, 1300 * 10**9
+        environment = {"OMUX_HM_ROOT_ENTRY_NS": str(entry), "OMUX_HM_ROOT_DEADLINE_NS": str(end),
+                       "OMUX_HM_RESERVED_PROFILE": "home-manager-evaluation-reserved"}
+        self.assertEqual(bundle.action_deadline("evaluate", environment, clock=lambda: 200 * 10**9), 1100)
+        self.assertEqual(bundle.action_deadline("evaluate", environment, clock=lambda: 1000 * 10**9), 1270)
+        with patch.object(bundle.time, "monotonic", return_value=1000):
+            self.assertEqual(bundle.bounds(1270), (1210, 1270))
+        for changed, now in ((environment, 1210 * 10**9), (environment, entry - 1),
+                ({**environment, "OMUX_HM_ROOT_DEADLINE_NS": str(end + 1)}, 200 * 10**9),
+                ({**environment, "OMUX_HM_RESERVED_PROFILE": "standard"}, 200 * 10**9), ({}, 200 * 10**9)):
+            with self.assertRaises(ValueError): bundle.action_deadline("evaluate", changed, clock=lambda: now)
+        with patch.object(bundle.time, "monotonic", return_value=1210), \
+                patch.object(bundle.acquisition.os, "mkdir", side_effect=AssertionError("late allocation")) as mkdir:
+            with self.assertRaises(ValueError):
+                with bundle.private_tree(self.scratch, 1270, admission_deadline=1210): pass
+            mkdir.assert_not_called()
+
+    def test_absolute_child_verifiers_refuse_expired_parent_before_metadata(self):
+        with patch.object(acquired.time, "monotonic", return_value=100), \
+                patch.object(acquired, "decode", side_effect=AssertionError("pair metadata")) as decode:
+            with self.assertRaises(ValueError):
+                acquired.verify_acquired_pair(b"", b"", "0" * 64, b"", {}, deadline_seconds=300, deadline=100)
+            decode.assert_not_called()
+        with patch.object(artifact.time, "monotonic", return_value=100), \
+                patch.object(artifact, "validate_receipt", side_effect=AssertionError("artifact metadata")) as read:
+            with self.assertRaises(ValueError): artifact.verify_artifact("/absent", b"", "0" * 64, deadline=100)
+            read.assert_not_called()
+
+    def test_real_materialize_refuses_clock_expiry_after_custody_before_namespace_writes(self):
+        self.pack()
+        compact = {"pairReceiptSha256": bundle.PAIR_SHA, "artifactReceiptSha256": bundle.ARTIFACT_SHA}
+        for stage in ("worker-custody", "retained-custody"):
+            with self.subTest(stage=stage):
+                worker_root = self.base / ("late-" + stage)
+                worker_root.mkdir(mode=0o700)
+                with bundle.acquisition.HeldDirectory(worker_root) as worker:
+                    original_check = worker.check
+                    calls = [0]
+                    with open(self.outputs / "bundle", "rb") as stream, \
+                            patch.object(bundle.time, "monotonic", return_value=100) as clock:
+                        def worker_check():
+                            original_check()
+                            calls[0] += 1
+                            # The explicit check before local_tick remains timely.
+                            # Expire inside local_tick's second real custody check.
+                            if calls[0] == 2 and stage == "worker-custody":
+                                clock.return_value = 200
+                        def retained_check():
+                            if calls[0] == 2 and stage == "retained-custody":
+                                # Read the real retained fixture, then model its latency.
+                                (self.outputs / "receipt.json").read_bytes()
+                                clock.return_value = 200
+                        with patch.object(worker, "check", side_effect=worker_check), \
+                                patch.object(bundle.os, "mkdir", side_effect=AssertionError("late directory write")) as mkdir, \
+                                patch.object(bundle.os, "open", wraps=bundle.os.open) as opened:
+                            with self.assertRaisesRegex(ValueError, "acquired-verification-deadline"):
+                                bundle.materialize(stream, retained_check, worker, self.lock,
+                                    compact, 200)
+                            self.assertEqual(calls[0], 2)
+                            mkdir.assert_not_called()
+                            self.assertFalse(any(call.args[1] & os.O_CREAT for call in opened.call_args_list))
+                self.assertEqual(list(worker_root.iterdir()), [])
+
+    def test_real_materialize_refuses_receipt_create_after_held_pair_lookup_expires(self):
+        self.pack()
+        compact = {"pairReceiptSha256": bundle.PAIR_SHA, "artifactReceiptSha256": bundle.ARTIFACT_SHA}
+        worker_root = self.base / "late-receipt-worker"
+        worker_root.mkdir(mode=0o700)
+        pair = worker_root / "pair"
+        original_check = bundle.acquisition.HeldDirectory.check
+        with bundle.acquisition.HeldDirectory(worker_root) as worker, \
+                open(self.outputs / "bundle", "rb") as stream, \
+                patch.object(bundle.time, "monotonic", return_value=100) as clock:
+            pair_owners = []
+            def expire_second_pair_lookup(held):
+                original_check(held)
+                if held.path == pair and all(held is not owner for owner in pair_owners):
+                    pair_owners.append(held)
+                    if len(pair_owners) == 2:
+                        clock.return_value = 200
+            original_open = bundle.os.open
+            def observe_open(path, flags, *args, **kwargs):
+                if flags & os.O_CREAT and path in ("receipt.json", "inventory.json"):
+                    self.fail("receipt creation after expired held pair lookup")
+                return original_open(path, flags, *args, **kwargs)
+            with patch.object(bundle.acquisition.HeldDirectory, "check", new=expire_second_pair_lookup), \
+                    patch.object(bundle.os, "open", side_effect=observe_open):
+                with self.assertRaisesRegex(ValueError, "acquired-verification-deadline"):
+                    bundle.materialize(stream, lambda: None, worker, self.lock, compact, 200)
+            self.assertEqual(len(pair_owners), 2)
+        self.assertFalse((pair / "receipt.json").exists())
+        self.assertFalse((pair / "inventory.json").exists())
+
+    def test_real_materialize_refuses_directory_mode_after_descriptor_lookup_expires(self):
+        self.pack()
+        compact = {"pairReceiptSha256": bundle.PAIR_SHA, "artifactReceiptSha256": bundle.ARTIFACT_SHA}
+        worker_root = self.base / "late-mode-worker"
+        worker_root.mkdir(mode=0o700)
+        original_dup = bundle.os.dup
+        original_chmod = bundle.os.fchmod
+        original_drain = bundle.acquisition.FileSyncOwner.drain
+        original_parent_fd = bundle.parent_fd
+        parent_lookup = [False]
+        drained = [False]
+        expired = [False]
+        with bundle.acquisition.HeldDirectory(worker_root) as worker, \
+                open(self.outputs / "bundle", "rb") as stream, \
+                patch.object(bundle.time, "monotonic", return_value=100) as clock:
+            def expire_root_lookup(fd):
+                result = original_dup(fd)
+                if drained[0] and not parent_lookup[0] and stat.S_ISDIR(os.fstat(fd).st_mode):
+                    # After the real file-sync drain, materialize duplicates a
+                    # source root immediately before its directory mode write.
+                    clock.return_value = 200
+                    expired[0] = True
+                return result
+            def observe_parent_lookup(fd, path):
+                parent_lookup[0] = True
+                try:
+                    return original_parent_fd(fd, path)
+                finally:
+                    parent_lookup[0] = False
+            def observe_drain(owner):
+                result = original_drain(owner)
+                drained[0] = True
+                return result
+            def observe_mode(fd, mode):
+                self.assertFalse(expired[0], "mode write after expired descriptor lookup")
+                return original_chmod(fd, mode)
+            with patch.object(bundle.os, "dup", side_effect=expire_root_lookup), \
+                    patch.object(bundle, "parent_fd", side_effect=observe_parent_lookup), \
+                    patch.object(bundle.acquisition.FileSyncOwner, "drain", new=observe_drain), \
+                    patch.object(bundle.os, "fchmod", side_effect=observe_mode):
+                with self.assertRaisesRegex(ValueError, "acquired-verification-deadline"):
+                    bundle.materialize(stream, lambda: None, worker, self.lock, compact, 200)
+            self.assertTrue(expired[0])
+
     def test_cli_failure_reports_finite_redacted_cleanup_and_no_success(self):
         primary = EvaluationFailure("module-evaluation", "evaluation-deadline",
                                     stderr=b"/private/path" + b"x" * 10000)

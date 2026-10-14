@@ -23,15 +23,17 @@ struct ControlWindow: View {
                 Button("Reconnect") { Task { await store.refresh() } }
                     .disabled(store.refreshing)
             }
-            if !store.connected {
-                Text("Displayed account data may be stale until the service reconnects.")
+            if !store.connected || !store.snapshotCurrent {
+                Text("Displayed account data is unverified or stale until a current snapshot is loaded. Account and routing changes remain disabled.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if store.connected && !store.custodyAvailable {
                 Text("Credential custody is unavailable. Account data may be stale; account and routing changes are disabled until custody is restored.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("Unlock or restore the existing Keychain key. If the key is permanently lost, preserve this installation and arrange explicit fresh enrollment into separate custody. Fresh-custody recovery is not implemented in these controls; never replace the key over the existing database.")
+                Text(store.custodyGuidance)
                     .font(.caption).foregroundStyle(.secondary)
+                Button(store.reopeningCustody ? "Reopening custody…" : "Reopen custody") { store.reopenCustody() }
+                    .disabled(!store.canReopenCustody)
             }
             if !store.message.isEmpty {
                 Text(store.message).font(.callout).textSelection(.enabled)
@@ -72,7 +74,7 @@ struct ControlWindow: View {
         .confirmationDialog("Disconnect the selected source context?", isPresented: $disconnectConfirmation) {
             Button("Disconnect source", role: .destructive) { sourceAction("source.disconnect") }
         } message: {
-            Text("Ends acquisition authority for this source and removes secrets retained through it. Independent grants and native conversation history retain their own authority. Browser disappearance alone uses detachment semantics.")
+            Text("Ends acquisition authority for this source and removes secrets retained through it. Independent grants and native conversation history retain their own authority. Closing the browser does not end this source's acquisition authority or revoke access at the provider.")
         }
     }
 
@@ -92,7 +94,7 @@ struct ControlWindow: View {
             }
             Text("Service: \(store.connectionMessage)")
             Text("Custody: \(store.custodyAvailable && store.connected ? "Available" : "Unavailable or unverified")")
-            Text("Sources: \(store.connected ? String(store.rows("sources").count) : "Unverified")")
+            Text("Sources: \(store.connected && store.snapshotCurrent ? String(store.rows("sources").count) : "Unverified")")
             Text("These counts do not establish usable grants, renewal ownership or native continuity. Inspect Sources, Grants and Integrations for separate evidence.")
                 .foregroundStyle(.secondary)
             Text("Chromium enrollment starts in the extension after native host registration. Browser read consent does not authorize application calls. Omux owns each application adapter; Codex candidates are experimental and unmodified Codex continuity is unproved.")
@@ -148,9 +150,10 @@ struct ControlWindow: View {
                 TableColumn("Remaining") { Text($0.text("remaining")) }
                 TableColumn("Unit") { Text($0.text("resource.unit")) }
                 TableColumn("Window") { Text($0.text("window")) }
-                TableColumn("Freshness") { Text(store.connected && store.custodyAvailable ? $0.text("freshness") : "Stale: service or custody unavailable") }
+                TableColumn("Freshness") { Text(store.connected && store.custodyAvailable && store.snapshotCurrent ? $0.text("freshness") : "Stale: current account snapshot unavailable") }
+                TableColumn("Observation status") { Text($0.text("status")) }
             }
-            Text("Totals include compatible units, scopes and windows only. Unknown or stale values are shown explicitly.")
+            Text("Totals describe retained account observations, not request eligibility. Only matching units, scopes and windows combine; shared buckets count once. Percentages and provider decisions are not additive quotas. Observation status and freshness remain separate.")
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(10)
     }

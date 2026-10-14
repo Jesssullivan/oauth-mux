@@ -1,0 +1,129 @@
+{
+  "kind": "actual_current_flake93_evaluation_result",
+  "recorded_at": "2026-10-08T14:19:38.659633+00:00",
+  "authority": "Ongoing user implementation; AGENTS.md/R-N13",
+  "source_commit": "93ca04e58796f73e9c780f56c1c793ce27120a49",
+  "source_tree": "6a3bfbd6cb1239c8fa1fddc90a075ab105f58ea9",
+  "source_dirty": false,
+  "epoch": "e626d96f-6973-4f12-997a-2c0fcd5d52d0",
+  "executor_session": 70192,
+  "exit": 3,
+  "workload_exit": 3,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "limits": {
+    "CPUQuotaPerSecUSec": "2s",
+    "KillMode": "control-group",
+    "MemoryMax": "4294967296",
+    "MemorySwapMax": "0",
+    "OOMPolicy": "kill",
+    "RuntimeMaxUSec": "20min",
+    "SendSIGKILL": "yes",
+    "TasksMax": "512",
+    "TimeoutStopUSec": "10s"
+  },
+  "receipt": {
+    "path": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/e626d96f-6973-4f12-997a-2c0fcd5d52d0/receipt.json",
+    "bytes": 22885,
+    "sha256": "ab22d2de421e93e88d675d89b0581937ed140874c71299fc430294c8b7ef9e63"
+  },
+  "evidence": {
+    "path": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/e626d96f-6973-4f12-997a-2c0fcd5d52d0/test-evidence.json",
+    "bytes": 980,
+    "sha256": "edb157171202acd8488236e9821d1aa558001ba599aec7f7b5334ce437aa1050"
+  },
+  "verified_files": [
+    {
+      "bytes": 1324,
+      "file": "672ffcdd2b4cd4381ba1bcb95ae88bd6dd82a4a2b41f18fecd5e8461bbf0b62b.evidence",
+      "sha256": "6eff657f990bd55f85bdd782171c70b790669fe42a2b1a59d02fdc4362da298c",
+      "source": "test.log",
+      "state": "copied",
+      "actual_bytes_and_sha256_verified": true
+    },
+    {
+      "bytes": 1801,
+      "file": "7c45ba2784dfa32d8503f790ca6879bf97a4dfa0bf5793998742fd12d012f300.evidence",
+      "sha256": "d165f7513a4693160e54a6a770b14a80a82db5f4198d09d3301832c0b567489b",
+      "source": "test.xml",
+      "state": "copied",
+      "actual_bytes_and_sha256_verified": true
+    }
+  ],
+  "diagnostic": {
+    "child": {
+      "child_exit": 1,
+      "stderr_bytes": 138,
+      "stderr_classification_truncated": false,
+      "stderr_reason": "unclassified",
+      "stderr_sha256": "352b07014d7d05e845fccbbfe0680072d8451ade735addbcfc7496078833d919",
+      "stdout_bytes": 0,
+      "streams_complete": true,
+      "transport_reason": "child-exit"
+    },
+    "elapsed": {
+      "clamped": false,
+      "elapsed_ms": 476153
+    },
+    "phase": "current-flake-evaluation",
+    "phase_elapsed": [
+      {
+        "clamped": false,
+        "elapsed_ms": 1105,
+        "phase": "source-verify"
+      },
+      {
+        "clamped": false,
+        "elapsed_ms": 107707,
+        "phase": "runtime-seed-byte-proof"
+      },
+      {
+        "clamped": false,
+        "elapsed_ms": 111280,
+        "phase": "seed-copy"
+      },
+      {
+        "clamped": false,
+        "elapsed_ms": 155616,
+        "phase": "source-copy"
+      },
+      {
+        "clamped": false,
+        "elapsed_ms": 370059,
+        "phase": "registration-import"
+      },
+      {
+        "clamped": false,
+        "elapsed_ms": 370595,
+        "phase": "registration-readback"
+      },
+      {
+        "clamped": false,
+        "elapsed_ms": 370681,
+        "phase": "source-store-import"
+      },
+      {
+        "clamped": false,
+        "elapsed_ms": 450238,
+        "phase": "current-flake-evaluation"
+      },
+      {
+        "clamped": false,
+        "elapsed_ms": 450288,
+        "phase": "private-cleanup"
+      }
+    ]
+  },
+  "undeclared_artifact_files": [],
+  "accepted_native_build_inputs": false,
+  "failure_cause": "unclassified child exit1 at current-flake-evaluation; public diagnostic has no established cause",
+  "retry_dispatched": false,
+  "native_failed_lane_reset": false,
+  "whole_goal_closed": false
+}

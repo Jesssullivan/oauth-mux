@@ -271,10 +271,14 @@ def _nix_repo_impl(ctx):
     ], timeout = 120)
     if selection.return_code:
         fail("declared interpreter closure selection failed: " + selection.stdout)
-    interpreter_groups = json.decode(selection.stdout)["groups"]
+    selection_report = json.decode(selection.stdout)
+    interpreter_groups = selection_report["groups"]
     declared_inventory_files = {path: True for path in inventory_files}
     for name, group in interpreter_groups.items():
-        if name not in ["python", "node", "bash"] + capability_names or name not in resolved_tools:
+        if name == "codex_metadata_query":
+            if "query_tools" not in selection_report or selection_report["query_tools"].get("roots") != group["roots"]:
+                fail("metadata query closure binding absent")
+        elif name not in ["python", "node", "bash"] + capability_names or name not in resolved_tools:
             fail("undeclared capability closure group: " + name)
         if any([path not in store_inputs for path in group["roots"]]) or any([path not in declared_inventory_files for path in group["files"]]):
             fail("capability closure contains undeclared inputs: " + name)
@@ -284,6 +288,8 @@ def _nix_repo_impl(ctx):
         ctx.file(name + "-registration", group["registration"])
         interpreter_summary[name] = {"roots": group["roots"], "file_count": len(group["files"])}
     ctx.file("interpreter-closures.json", json.encode_indent({"schemaVersion": 1, "groups": interpreter_summary}, indent = "  ") + "\n")
+    if "codex_metadata_query" in interpreter_groups:
+        ctx.file("codex-metadata-query-tools.json", json.encode(selection_report["query_tools"]) + "\n")
     closure_files = [path for path in inventory_files if path.startswith("closure/") or path.startswith("packages/")]
     zig_framework_files = [path for path in closure_files if zig_framework_prefix and path.startswith(zig_framework_prefix)]
     if zig_framework_prefix and not zig_framework_files:
@@ -376,11 +382,14 @@ def _nix_repo_impl(ctx):
         ),
     ]
     for name, group in interpreter_groups.items():
-        wrappers = ["tool_wrappers/bash"] if name == "bash" else ["tool_wrappers/" + name, "tool_wrappers/bash"]
+        wrappers = (["codex-metadata-query-tools.json"] if name == "codex_metadata_query" else
+                    ["tool_wrappers/bash"] if name == "bash" else ["tool_wrappers/" + name, "tool_wrappers/bash"])
         build.append('filegroup(name = {}, srcs = {})'.format(
             repr(name + "_tools"),
             repr(group["files"] + wrappers + ["native.json", "interpreter-closures.json", name + "-store-paths", name + "-registration"]),
         ))
+    if "codex_metadata_query" in interpreter_groups:
+        build.append('exports_files(["codex-metadata-query-tools.json"])')
     for name, spec in _PACKAGES.items():
         if name not in packages:
             continue

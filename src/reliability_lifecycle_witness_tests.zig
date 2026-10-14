@@ -86,28 +86,42 @@ test "lifecycle witness restoration preserves original result revision without r
 test "lifecycle persisted witness omission cannot inherit optimistic typed defaults" {
     var ledger = try mutation.Ledger.init(allocator, 1);
     defer ledger.deinit();
+    const request_start = std.Io.Clock.awake.now(io);
     const slot = (try ledger.begin("generated-original", witness.method, @splat(8), 7, 7, .external)).execute;
-    var session = try witness.Session.begin(io, ledger.data.records[slot], .{});
+    var legacy_session = try witness.Session.begin(io, ledger.data.records[slot], .{});
+    var owned_session = try witness.Session.beginOwnedRequest(io, ledger.data.records[slot], .{}, request_start);
     try ledger.complete(slot, "{\"disconnected\":true}");
-    const fact = try session.afterCommitted(io, allocator, ledger.data.records[slot], 8);
-    const encoded = try std.json.Stringify.valueAlloc(allocator, fact, .{});
-    defer allocator.free(encoded);
-    inline for (@typeInfo(witness.Witness).@"struct".field_names) |name| {
-        var shape = try std.json.parseFromSlice(std.json.Value, allocator, encoded, .{ .allocate = .alloc_always });
-        defer shape.deinit();
-        try std.testing.expect(shape.value.object.swapRemove(name));
-        const missing = try std.json.Stringify.valueAlloc(allocator, shape.value, .{});
-        defer allocator.free(missing);
-        try std.testing.expectError(error.InvalidLifecycleWitness, witness.read(allocator, missing));
-    }
-    inline for (.{ "elapsed", "local_work", "user_provider_wait" }) |name| {
-        var shape = try std.json.parseFromSlice(std.json.Value, allocator, encoded, .{ .allocate = .alloc_always });
-        defer shape.deinit();
-        const duration = shape.value.object.getPtr(name).?;
-        try std.testing.expect(duration.object.swapRemove("missing"));
-        const missing = try std.json.Stringify.valueAlloc(allocator, shape.value, .{});
-        defer allocator.free(missing);
-        try std.testing.expectError(error.InvalidLifecycleWitness, witness.read(allocator, missing));
+    const facts = [_]witness.Witness{
+        try legacy_session.afterCommitted(io, allocator, ledger.data.records[slot], 8),
+        try owned_session.afterCommitted(io, allocator, ledger.data.records[slot], 8),
+    };
+    for (facts) |fact| {
+        const encoded = try std.json.Stringify.valueAlloc(allocator, fact, .{});
+        defer allocator.free(encoded);
+        inline for (@typeInfo(witness.Witness).@"struct".field_names) |name| {
+            var shape = try std.json.parseFromSlice(std.json.Value, allocator, encoded, .{ .allocate = .alloc_always });
+            defer shape.deinit();
+            try std.testing.expect(shape.value.object.swapRemove(name));
+            const missing = try std.json.Stringify.valueAlloc(allocator, shape.value, .{});
+            defer allocator.free(missing);
+            if (fact.schema_version == 1 and std.mem.eql(u8, name, "daemon_request_elapsed")) {
+                const accepted = try witness.read(allocator, missing);
+                defer accepted.deinit();
+                try std.testing.expectEqualDeep(witness.Duration{}, accepted.value.daemon_request_elapsed);
+                try std.testing.expectEqualDeep(fact, accepted.value);
+            } else try std.testing.expectError(error.InvalidLifecycleWitness, witness.read(allocator, missing));
+        }
+        inline for (.{ "elapsed", "local_work", "user_provider_wait", "daemon_request_elapsed" }) |name| {
+            inline for (.{ "ns", "missing" }) |field| {
+                var shape = try std.json.parseFromSlice(std.json.Value, allocator, encoded, .{ .allocate = .alloc_always });
+                defer shape.deinit();
+                const duration = shape.value.object.getPtr(name).?;
+                try std.testing.expect(duration.object.swapRemove(field));
+                const missing = try std.json.Stringify.valueAlloc(allocator, shape.value, .{});
+                defer allocator.free(missing);
+                try std.testing.expectError(error.InvalidLifecycleWitness, witness.read(allocator, missing));
+            }
+        }
     }
 }
 
@@ -155,4 +169,54 @@ test "existing ledger prepays witness restore requires authenticated revision an
     try std.testing.expect(ledger.data.records[unknown].lifecycle_witness == null);
     try std.testing.expect(!ledger.data.records[unknown].lifecycle_witness_reserved);
     try std.testing.expectEqual(retained - (try witness.maximumSerializedBytes() - "null".len), ledger.reservedSnapshotBytes());
+}
+
+test "owned daemon request producer captures real clock subinterval and preserves unknown external waits" {
+    var ledger = try mutation.Ledger.init(allocator, 1);
+    defer ledger.deinit();
+    const request_start = std.Io.Clock.awake.now(io);
+    const slot = (try ledger.begin("owned-request", witness.method, @splat(8), 7, 7, .external)).execute;
+    var session = try witness.Session.beginOwnedRequest(io, ledger.data.records[slot], .{}, request_start);
+    try ledger.complete(slot, "{\"disconnected\":true}");
+    const fact = try session.afterCommitted(io, allocator, ledger.data.records[slot], 8);
+    try std.testing.expectEqual(@as(u8, 2), fact.schema_version);
+    try std.testing.expect(fact.local_work.ns != null and fact.daemon_request_elapsed.ns != null);
+    try std.testing.expect(fact.local_work.ns.? <= fact.daemon_request_elapsed.ns.?);
+    try std.testing.expect(fact.user_provider_wait.ns == null and !fact.user_end_to_end_measured);
+    const encoded = try std.json.Stringify.valueAlloc(allocator, fact, .{});
+    defer allocator.free(encoded);
+    const restored = try witness.read(allocator, encoded);
+    defer restored.deinit();
+    try std.testing.expectEqualDeep(fact, restored.value);
+    var invalid = fact;
+    invalid.local_work = .{ .ns = std.math.maxInt(u64), .missing = null };
+    invalid.elapsed = invalid.local_work;
+    invalid.daemon_request_elapsed = .{ .ns = 0, .missing = null };
+    try std.testing.expectError(error.InvalidLifecycleWitness, invalid.validate());
+    invalid = fact;
+    invalid.user_provider_wait = .{ .ns = 0, .missing = null };
+    try std.testing.expectError(error.InvalidLifecycleWitness, invalid.validate());
+}
+
+test "historical raw schema1 preserves absent request timing and schema2 requires it" {
+    var ledger = try mutation.Ledger.init(allocator, 1);
+    defer ledger.deinit();
+    const slot = (try ledger.begin("legacy-request", witness.method, @splat(8), 7, 7, .external)).execute;
+    var session = try witness.Session.begin(io, ledger.data.records[slot], .{});
+    try ledger.complete(slot, "{\"disconnected\":true}");
+    const fact = try session.afterCommitted(io, allocator, ledger.data.records[slot], 8);
+    const bytes = try std.json.Stringify.valueAlloc(allocator, fact, .{});
+    defer allocator.free(bytes);
+    var shape = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .allocate = .alloc_always });
+    defer shape.deinit();
+    try std.testing.expect(shape.value.object.swapRemove("daemon_request_elapsed"));
+    const historical = try std.json.Stringify.valueAlloc(allocator, shape.value, .{});
+    defer allocator.free(historical);
+    const restored = try witness.read(allocator, historical);
+    defer restored.deinit();
+    try std.testing.expect(restored.value.daemon_request_elapsed.ns == null);
+    shape.value.object.getPtr("schema_version").?.* = .{ .integer = 2 };
+    const incomplete = try std.json.Stringify.valueAlloc(allocator, shape.value, .{});
+    defer allocator.free(incomplete);
+    try std.testing.expectError(error.InvalidLifecycleWitness, witness.read(allocator, incomplete));
 }

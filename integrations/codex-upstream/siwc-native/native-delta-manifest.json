@@ -1,0 +1,64 @@
+{
+  "kind": "native-siwc-five-path-delta-v4",
+  "patch": {
+    "bytes": 55075,
+    "sha256": "77442e9a0eb931dfd0fe8ae9f6ea844cbfa5aaf39fed3270e628e0231b27e730"
+  },
+  "paths": [
+    {
+      "after": {
+        "bytes": 140610,
+        "sha256": "7ff880b2e45d7b3e407e6281728beda83190f005431c3f698d0d66d2aada2316"
+      },
+      "before": {
+        "bytes": 111330,
+        "sha256": "e24edb39659373ded3d54f70aef59e4038a54299edfc1db55f21e0b3a2716637"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/auth_broker.rs"
+    },
+    {
+      "after": {
+        "bytes": 6089,
+        "sha256": "c640256c8c6a326364899dd55f8babaf8a13dc32ec5203792f7d1d7644799f48"
+      },
+      "before": null,
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/broker_request_profile.rs"
+    },
+    {
+      "after": {
+        "bytes": 6865,
+        "sha256": "34e85ecf7d87a5119cb1194dc4ec28743a2f125a99f75ba01a85eec48692a487"
+      },
+      "before": null,
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/broker_request_profile_tests.rs"
+    },
+    {
+      "after": {
+        "bytes": 132868,
+        "sha256": "3a46b2fdc7ccc318b4a801def6fdac2e9183da2cc028193e9039c979b83d9d65"
+      },
+      "before": {
+        "bytes": 130472,
+        "sha256": "7a7b72c10a8330f5025bd27ef1501e480309117dbe9c87a1436f6a09e909a217"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/client.rs"
+    },
+    {
+      "after": {
+        "bytes": 8849,
+        "sha256": "b682d28c086784077b3128a9cc4416e20b30f89d260b44b9816b707577d3b502"
+      },
+      "before": {
+        "bytes": 8821,
+        "sha256": "457f430a3ec21ea5c54e2a84e382e8f258df4e7d0778a0f25163a672609e3e99"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/core/src/lib.rs"
+    }
+  ],
+  "schema_version": 1
+}

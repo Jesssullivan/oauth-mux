@@ -167,6 +167,21 @@ The release-channel artifacts are `bazel-bin/extensions/chromium_package.zip` an
 and shared modules. Tests use synthetic browser APIs and verify package contents;
 they do not establish live browser or application handoff support.
 
+The unsigned local Firefox development artifact is
+`//extensions:firefox_dev_package`, producing
+`bazel-bin/extensions/firefox_dev_package.xpi`. It retains the release permission
+scope and uses the existing exact development identity
+`browser-sources-dev@omux.xoxd.ai`, channel `development`, instance `dev` and host
+`ai.xoxd.omux.dev`. Register that exact ID with `//extensions:host_setup` using
+`--browser firefox --channel development`, the installed development host alias
+and an explicit destination ending in `ai.xoxd.omux.dev.json`. Runtime launch
+validation admits the Firefox ID for its selected instance only. The release
+identity remains `browser-sources@omux.xoxd.ai` / `ai.xoxd.omux` / default.
+This package supplies no signing or store identity and does not establish Firefox
+installation, consent, account acquisition or fleet activation. Chromium remains
+the first installed-browser proof lane; Firefox temporary installation and future
+Mozilla-signed delivery retain their separate requirements.
+
 ## Register the native host
 
 Use a stable, installed executable or alias named `omux-native-host`. Its absolute
@@ -235,11 +250,67 @@ provider/context and refuses ambiguous context selection. It records pending
 disconnect for retry after a lost host response and releases optional access
 only when no authorized contexts still need it. Disconnect ends that source's
 acquisition authority and removes source-retained secrets; independently valid
-grants and native history retain their own authority. Browser disappearance uses
-detachment semantics. The C8 Chromium tuple above covers synthetic pending
+grants and native history retain their own authority. Browser disappearance is
+intended to use detachment semantics; a production presence observer and actual
+disappearance transition remain unimplemented/unproved. The C8 Chromium tuple above covers synthetic pending
 recovery and context disconnect; human consent, production authority transitions
 and committed daemon mutation with lost-reply recovery remain unproved.
 Removing host registration is a separate action.
+
+The popup also offers **Disconnect saved context** for an explicit opaque context
+within the selected provider. This uses validated local source metadata when
+provider read permission or the provider tab is gone. The service rechecks exact
+source/provider membership at dispatch, without reading cookies, capturing a
+grant or sending Connect. A stale or foreign-provider selection is refused.
+Changing the provider or saved context clears Connect consent. Delayed status
+and removal replies cannot replace feedback for a newer UI selection.
+
+An unknown original Connect outcome is distinct from an unconfirmed Disconnect
+reply. A recovery-capable daemon advertises `connect_recovery` in provider-free
+health. A fresh consent-bound Connect then carries a separate opaque operation
+ID and an exact expected revision; its effect and immutable source-generation
+receipt commit together in the existing bounded mutation ledger. JSON-RPC IDs
+remain correlation only. Exact operation retries return the original receipt
+without renewing source authority; changing context or intent with that ID is
+refused. Authority revisions/generations use canonical decimal strings on this
+wire to preserve u64 precision in browser JavaScript.
+
+`browser.connectOutcome` is a read-only native-messaging query for that retained
+operation and exact browser/extension/provider/source context. It reports the
+original committed generation separately from current generation and current
+clock-checked source authorization. After a lost reply or worker/popup restart,
+the extension recovers source connection only when that generation is still
+current and provider permission still holds. Startup and removal never replay
+Connect or a credential capsule. Recovery establishes no verified identity,
+usable grant, renewal ownership or application capability.
+
+Revoked permission or explicit saved-context removal can use a committed matching
+generation to send removal with its own operation ID, expected revision and
+generation fence. The retained original identity remains attached until genuine
+removal ACK. A lost removal reply retries that removal operation; it does not
+advance source generation again or reconnect. The removal descriptor stays saved
+through metadata/state retirement and is cleared only after source metadata is
+observed absent; interrupted local retirement cannot create a fresh unfenced
+removal. A removal receipt proves that original generation was removed at its
+commit, not that a later independently authorized generation is absent. Other
+source/grant authority stays
+independent. Eight-operation/ten-second startup bounds remain; a separate durable
+opaque continuation hint prevents failed outcome queries from starving later
+contexts across workers. Neither continuation hint is source authority.
+
+Connection recovery stays held for unknown outcome, custody failure and
+stale/unauthorized current generations. Historical pending Connect records without the operation contract remain
+uncertain: a current connected label or an ordinary Disconnect ACK cannot settle
+them or cancel a delayed original Connect. New clients retain the previous
+explicit-gesture connection behavior against hosts without the recovery
+capability; those connections have no new outcome guarantee. Older clients reject
+the added capability field, so extension and native host must be updated together.
+The saved list and pending-outcome labels are local categorical metadata; only
+the bounded daemon query establishes recovery evidence at its readback point.
+Production grant export remains disabled; browser-presence detachment remains
+unimplemented and unproved. These source models are not an installed recovery or
+human-consent proof.
+
 Use the exact browser, extension ID, binary and destination from installation:
 
 ```bash

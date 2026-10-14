@@ -207,7 +207,10 @@ def enrollment_facts(snapshot, source_id, now):
             "isolated enrolled authority cardinality differs")
     account, source, grant, job = accounts[0], sources[0], grants[0], jobs[0]
     account_id, grant_id = handle(account["id"]), handle(grant["id"])
-    require(account["identity"] == {"provider": "codex"} and account["source_ids"] == [source_id]
+    identity = account["identity"]
+    require(type(identity) is dict and set(identity) == {"provider", "verified"}
+            and identity["provider"] == "codex" and identity["verified"] is True
+            and account["source_ids"] == [source_id]
             and account["lifecycle"] == "active" and source["id"] == source_id
             and source["kind"] == "native_store" and source["status"] == "connected"
             and source["provider"] == "codex" and grant["account_id"] == account_id

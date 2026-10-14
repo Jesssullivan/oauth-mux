@@ -1,0 +1,373 @@
+//! Opaque immutable source context and independent per-user owner hint.
+//! No credential contents are opened/read and no account authority is created.
+use codex_core::auth_broker::ProcessOwner;
+use std::io;
+use std::path::Path;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod linux {
+    use super::*;
+    use codex_core::native_peer;
+    use serde::Serialize;
+    use std::ffi::CString;
+    use std::fs::{File, Metadata};
+    use std::io::Write;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use std::path::{Component, PathBuf};
+
+    // Linux-only libc ABI, already linked by the native owner carrier. No
+    // additional crate, executable, path traversal helper or tool is selected.
+    unsafe extern "C" {
+        fn openat(dir: i32, path: *const std::ffi::c_char, flags: i32, ...) -> i32;
+        fn mkdirat(dir: i32, path: *const std::ffi::c_char, mode: u32) -> i32;
+        fn unlinkat(dir: i32, path: *const std::ffi::c_char, flags: i32) -> i32;
+        fn getuid() -> u32;
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    const AT_FDCWD: i32 = -100;
+    const O_PATH: i32 = 0x200000;
+    const O_DIRECTORY: i32 = 0x10000;
+    const O_NOFOLLOW: i32 = 0x20000;
+    const O_CLOEXEC: i32 = 0x80000;
+    const O_WRONLY: i32 = 1;
+    const O_CREAT: i32 = 0x40;
+    const O_EXCL: i32 = 0x80;
+    const DIR_FLAGS: i32 = O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+
+    #[derive(Clone, PartialEq, Eq)]
+    struct Identity(u64, u64, u32, u32, u64, u64, i64, i64, i64, i64);
+    fn identity(m: &Metadata) -> Identity {
+        Identity(m.dev(), m.ino(), m.uid(), m.mode(), m.nlink(), m.len(),
+                 m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec())
+    }
+    fn invalid() -> io::Error { io::Error::other("native source context unavailable") }
+    fn require(value: bool) -> io::Result<()> { if value { Ok(()) } else { Err(invalid()) } }
+    fn uid() -> u32 { unsafe { getuid() } }
+    fn name(value: &std::ffi::OsStr) -> io::Result<CString> {
+        CString::new(value.as_bytes()).map_err(|_| invalid())
+    }
+    fn open(parent: i32, value: &std::ffi::OsStr, flags: i32) -> io::Result<File> {
+        let value = name(value)?;
+        let fd = unsafe { openat(parent, value.as_ptr(), flags, 0o600u32) };
+        if fd < 0 { return Err(io::Error::last_os_error()); }
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+    fn directory(path: &Path) -> io::Result<File> {
+        require(path.is_absolute() && path.as_os_str().as_bytes().len() <= 4096)?;
+        let canonical: PathBuf = path.components().collect();
+        require(canonical.as_os_str() == path.as_os_str())?;
+        let mut current = open(AT_FDCWD, std::ffi::OsStr::new("/"), DIR_FLAGS)?;
+        for component in path.components().skip(1) {
+            let Component::Normal(part) = component else { return Err(invalid()); };
+            current = open(current.as_raw_fd(), part, DIR_FLAGS)?;
+            let m = current.metadata()?;
+            #[cfg(test)]
+            let temporary = part == "tmp" && m.uid() == 0 && m.mode() & 0o1000 != 0;
+            #[cfg(not(test))]
+            let temporary = false;
+            require((m.uid() == 0 || m.uid() == uid()) && (m.mode() & 0o022 == 0 || temporary))?;
+        }
+        Ok(current)
+    }
+    fn private_directory(path: &Path) -> io::Result<File> {
+        let file = directory(path)?;
+        let m = file.metadata()?;
+        require(m.uid() == uid() && m.mode() & 0o777 == 0o700)?;
+        Ok(file)
+    }
+    fn owned_home(path: &Path) -> io::Result<File> {
+        let file = directory(path)?;
+        require(file.metadata()?.is_dir() && file.metadata()?.uid() == uid()
+                && file.metadata()?.mode() & 0o022 == 0)?;
+        Ok(file)
+    }
+    fn private(m: &Metadata) -> bool { m.is_dir() && m.uid() == uid() && m.mode() & 0o777 == 0o700 }
+    fn auth_metadata(home: &File) -> io::Result<Option<(File, Identity)>> {
+        match open(home.as_raw_fd(), std::ffi::OsStr::new("auth.json"), O_PATH | O_NOFOLLOW | O_CLOEXEC) {
+            Ok(file) => {
+                let m = file.metadata()?;
+                require(m.is_file() && m.uid() == uid() && m.nlink() == 1
+                    && matches!(m.mode() & 0o777, 0o400 | 0o600) && m.len() > 0 && m.len() <= 1024 * 1024)?;
+                Ok(Some((file, identity(&m))))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Hint<'a> {
+        protocol_version: u32,
+        context_id: &'a str,
+        context_generation: &'a str,
+        owner_id: &'a str,
+        process_nonce: &'a str,
+        endpoint_generation: &'a str,
+        owner_endpoint: &'a Path,
+    }
+
+    pub struct SourceContext {
+        pub context_id: String,
+        pub generation: String,
+        pub store_present: bool,
+        pub store_identity: Option<(u64, u64)>,
+        owner: ProcessOwner,
+        home_path: PathBuf,
+        home: File,
+        home_identity: (u64, u64),
+        auth_identity: Option<Identity>,
+        auth_file: Option<File>,
+        endpoint_parent: File,
+        endpoint_parent_identity: (u64, u64),
+        endpoint: File,
+        endpoint_identity: Identity,
+        runtime_path: PathBuf,
+        runtime: File,
+        runtime_identity: (u64, u64),
+        hints: File,
+        hints_identity: (u64, u64),
+        hint_name: String,
+        hint: File,
+        hint_identity: Identity,
+    }
+    fn inode(m: &Metadata) -> (u64, u64) { (m.dev(), m.ino()) }
+    struct HintPreparation { parent: File, name: String, original: (u64, u64), armed: bool }
+    impl Drop for HintPreparation {
+        fn drop(&mut self) {
+            if !self.armed { return; }
+            let Ok(named) = open(self.parent.as_raw_fd(), std::ffi::OsStr::new(&self.name), O_PATH | O_NOFOLLOW | O_CLOEXEC) else { return; };
+            if named.metadata().map(|m| inode(&m) == self.original).unwrap_or(false) {
+                if let Ok(name) = name(std::ffi::OsStr::new(&self.name)) {
+                    unsafe { unlinkat(self.parent.as_raw_fd(), name.as_ptr(), 0); }
+                }
+            }
+        }
+    }
+    impl SourceContext {
+        pub fn prepare(home: &Path, owner: &ProcessOwner, endpoint: &Path) -> io::Result<Self> {
+            let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(invalid)?;
+            Self::prepare_at(home, owner, endpoint, Path::new(&runtime))
+        }
+        #[cfg(test)]
+        pub(crate) fn prepare_fixture(home: &Path, owner: &ProcessOwner, endpoint: &Path, runtime: &Path) -> io::Result<Self> {
+            Self::prepare_at(home, owner, endpoint, runtime)
+        }
+        fn prepare_at(home_path: &Path, owner: &ProcessOwner, endpoint_path: &Path, runtime_path: &Path) -> io::Result<Self> {
+            Self::prepare_checked(home_path, owner, endpoint_path, runtime_path, || Ok(()))
+        }
+        fn prepare_checked(home_path: &Path, owner: &ProcessOwner, endpoint_path: &Path, runtime_path: &Path,
+                           final_check: impl FnOnce() -> io::Result<()>) -> io::Result<Self> {
+            require(endpoint_path == owner.owner_endpoint && endpoint_path.is_absolute())?;
+            let home = owned_home(home_path)?;
+            let home_identity = inode(&home.metadata()?);
+            let auth = auth_metadata(&home)?;
+            let auth_identity = auth.as_ref().map(|(_, id)| id.clone());
+            let auth_file = auth.map(|(file, _)| file);
+            let endpoint_parent = endpoint_path.parent().ok_or_else(invalid)?;
+            let endpoint_directory = private_directory(endpoint_parent)?;
+            let endpoint_parent_identity = inode(&endpoint_directory.metadata()?);
+            let endpoint = open(endpoint_directory.as_raw_fd(), endpoint_path.file_name().ok_or_else(invalid)?, O_PATH | O_NOFOLLOW | O_CLOEXEC)?;
+            let m = endpoint.metadata()?;
+            require(m.file_type().is_socket() && m.uid() == uid() && m.mode() & 0o777 == 0o600)?;
+            let endpoint_identity = identity(&m);
+            let runtime = private_directory(runtime_path)?;
+            let runtime_identity = inode(&runtime.metadata()?);
+            let child = CString::new("omux-native-owners").map_err(|_| invalid())?;
+            if unsafe { mkdirat(runtime.as_raw_fd(), child.as_ptr(), 0o700) } != 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::AlreadyExists { return Err(error); }
+            }
+            let hints = open(runtime.as_raw_fd(), std::ffi::OsStr::new("omux-native-owners"), DIR_FLAGS & !O_PATH)?;
+            let m = hints.metadata()?;
+            require(m.uid() == uid() && m.mode() & 0o777 == 0o700)?;
+            let hints_identity = inode(&m);
+            // Nonblocking per-directory publication lock makes the count/create
+            // cap exact among cooperating native publishers. Never wait/retry.
+            if unsafe { flock(hints.as_raw_fd(), 2 | 4) } != 0 { return Err(io::Error::last_os_error()); }
+            let mut count = 0;
+            for entry in std::fs::read_dir(format!("/proc/self/fd/{}", hints.as_raw_fd()))?.take(1025) {
+                entry?;
+                count += 1;
+            }
+            require(count < 1024)?;
+            let context_id = native_peer::random_handle()?;
+            let generation = "1".to_string();
+            let hint_name = format!("{context_id}.json");
+            let raw = serde_json::to_vec(&Hint { protocol_version: 1, context_id: &context_id,
+                context_generation: &generation, owner_id: &owner.owner_id, process_nonce: &owner.process_nonce,
+                endpoint_generation: &owner.endpoint_generation, owner_endpoint: endpoint_path }).map_err(|_| invalid())?;
+            require(raw.len() <= 8192)?;
+            let cleanup_parent = hints.try_clone()?;
+            let mut hint = open(hints.as_raw_fd(), std::ffi::OsStr::new(&hint_name), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC)?;
+            let mut preparation = HintPreparation { parent: cleanup_parent, name: hint_name.clone(),
+                original: inode(&hint.metadata()?), armed: true };
+            hint.write_all(&raw)?;
+            hint.sync_all()?;
+            let hint_metadata = hint.metadata()?;
+            require(hint_metadata.is_file() && hint_metadata.uid() == uid() && hint_metadata.nlink() == 1
+                && hint_metadata.mode() & 0o777 == 0o600 && hint_metadata.len() == raw.len() as u64)?;
+            let hint_identity = identity(&hint_metadata);
+            let result = Self { context_id, generation, store_present: auth_identity.is_some(),
+                store_identity: auth_identity.as_ref().map(|id| (id.0, id.1)), owner: owner.clone(),
+                home_path: home_path.to_path_buf(), home, home_identity, auth_identity, auth_file,
+                endpoint_parent: endpoint_directory, endpoint_parent_identity,
+                endpoint, endpoint_identity, runtime_path: runtime_path.to_path_buf(), runtime, runtime_identity,
+                hints, hints_identity, hint_name, hint, hint_identity };
+            result.recheck(owner)?;
+            final_check()?;
+            if unsafe { flock(result.hints.as_raw_fd(), 8) } != 0 { return Err(io::Error::last_os_error()); }
+            preparation.armed = false;
+            Ok(result)
+        }
+        pub fn recheck(&self, owner: &ProcessOwner) -> io::Result<()> {
+            require(owner == &self.owner)?;
+            require(inode(&owned_home(&self.home_path)?.metadata()?) == self.home_identity
+                && inode(&self.home.metadata()?) == self.home_identity
+                && self.home.metadata()?.is_dir() && self.home.metadata()?.uid() == uid() && self.home.metadata()?.mode() & 0o022 == 0
+                && auth_metadata(&self.home)?.map(|(_, id)| id) == self.auth_identity
+                && self.auth_file.as_ref().map(|file| file.metadata().map(|m| identity(&m))).transpose()? == self.auth_identity)?;
+            let parent = private_directory(self.owner.owner_endpoint.parent().ok_or_else(invalid)?)?;
+            let named = open(parent.as_raw_fd(), self.owner.owner_endpoint.file_name().ok_or_else(invalid)?, O_PATH | O_NOFOLLOW | O_CLOEXEC)?;
+            require(inode(&parent.metadata()?) == self.endpoint_parent_identity
+                && inode(&self.endpoint_parent.metadata()?) == self.endpoint_parent_identity
+                && private(&self.endpoint_parent.metadata()?))?;
+            require(identity(&named.metadata()?) == self.endpoint_identity && identity(&self.endpoint.metadata()?) == self.endpoint_identity)?;
+            require(inode(&private_directory(&self.runtime_path)?.metadata()?) == self.runtime_identity
+                && inode(&self.runtime.metadata()?) == self.runtime_identity && private(&self.runtime.metadata()?))?;
+            let hints = open(self.runtime.as_raw_fd(), std::ffi::OsStr::new("omux-native-owners"), DIR_FLAGS)?;
+            require(inode(&hints.metadata()?) == self.hints_identity && inode(&self.hints.metadata()?) == self.hints_identity
+                && private(&hints.metadata()?) && private(&self.hints.metadata()?))?;
+            let named = open(self.hints.as_raw_fd(), std::ffi::OsStr::new(&self.hint_name), O_PATH | O_NOFOLLOW | O_CLOEXEC)?;
+            require(identity(&named.metadata()?) == self.hint_identity && identity(&self.hint.metadata()?) == self.hint_identity)
+        }
+    }
+    impl Drop for SourceContext {
+        fn drop(&mut self) {
+            // Never remove the shared per-user directory or another owner's hint.
+            let Ok(named) = open(self.hints.as_raw_fd(), std::ffi::OsStr::new(&self.hint_name), O_PATH | O_NOFOLLOW | O_CLOEXEC) else { return; };
+            if named.metadata().map(|m| identity(&m) == self.hint_identity).unwrap_or(false) {
+                if let Ok(name) = name(std::ffi::OsStr::new(&self.hint_name)) {
+                    unsafe { unlinkat(self.hints.as_raw_fd(), name.as_ptr(), 0); }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        use std::os::unix::net::UnixListener;
+        fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, ProcessOwner, UnixListener) {
+            let root = tempfile::tempdir().unwrap();
+            let home = root.path().join("different-native-home");
+            let runtime = root.path().join("runtime");
+            let owner_dir = home.join("owner");
+            for path in [&home, &runtime, &owner_dir] {
+                std::fs::create_dir(path).unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let socket = owner_dir.join("owner.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let owner = ProcessOwner { owner_id: "a".repeat(64), process_nonce: "b".repeat(64),
+                owner_endpoint: socket, endpoint_generation: "1".into() };
+            (root, home, runtime, owner, listener)
+        }
+        #[test]
+        fn different_home_publication_is_opaque_and_missing_store_never_becomes_authority() {
+            let (_root, home, runtime, owner, _listener) = fixture();
+            let context = SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &runtime).unwrap();
+            assert!(!context.store_present);
+            let hint = runtime.join("omux-native-owners").join(&context.hint_name);
+            let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&hint).unwrap()).unwrap();
+            assert!(value.get("home").is_none() && value.get("authPath").is_none());
+            assert_eq!(value["contextId"], context.context_id);
+            assert_eq!(std::fs::metadata(&hint).unwrap().mode() & 0o777, 0o600);
+            context.recheck(&owner).unwrap();
+            drop(context);
+            assert!(!hint.exists());
+        }
+        #[test]
+        fn replaced_or_appeared_store_wrong_owner_and_runtime_links_refuse() {
+            let (_root, home, runtime, owner, _listener) = fixture();
+            let context = SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &runtime).unwrap();
+            let mut changed = owner.clone(); changed.process_nonce = "c".repeat(64);
+            assert!(context.recheck(&changed).is_err());
+            let auth = home.join("auth.json");
+            std::fs::write(&auth, b"synthetic test-only material").unwrap();
+            std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(context.recheck(&owner).is_err());
+            drop(context);
+            let context = SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &runtime).unwrap();
+            assert!(context.store_present);
+            std::fs::remove_file(&auth).unwrap();
+            symlink(home.join("absent"), &auth).unwrap();
+            assert!(context.recheck(&owner).is_err());
+            drop(context);
+            std::fs::remove_file(&auth).unwrap();
+            let alias = runtime.with_extension("alias");
+            symlink(&runtime, &alias).unwrap();
+            assert!(SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &alias).is_err());
+        }
+        #[test]
+        fn hint_replacement_is_neither_accepted_nor_removed() {
+            let (_root, home, runtime, owner, _listener) = fixture();
+            let context = SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &runtime).unwrap();
+            let hint = runtime.join("omux-native-owners").join(&context.hint_name);
+            std::fs::remove_file(&hint).unwrap();
+            std::fs::write(&hint, b"replacement").unwrap();
+            assert!(context.recheck(&owner).is_err());
+            drop(context);
+            assert_eq!(std::fs::read(&hint).unwrap(), b"replacement");
+        }
+        #[test]
+        fn changed_runtime_mode_endpoint_and_full_registry_refuse_without_overwrite() {
+            let (_root, home, runtime, owner, listener) = fixture();
+            let context = SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &runtime).unwrap();
+            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(context.recheck(&owner).is_err());
+            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+            drop(listener);
+            std::fs::remove_file(&owner.owner_endpoint).unwrap();
+            let _replacement = UnixListener::bind(&owner.owner_endpoint).unwrap();
+            std::fs::set_permissions(&owner.owner_endpoint, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(context.recheck(&owner).is_err());
+            drop(context);
+            let hints = runtime.join("omux-native-owners");
+            for index in 0..1024 { std::fs::write(hints.join(format!("public-{index}")), b"inert").unwrap(); }
+            assert!(SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &runtime).is_err());
+            assert_eq!(std::fs::read_dir(&hints).unwrap().count(), 1024);
+        }
+        #[test]
+        fn failed_final_preparation_removes_only_own_published_hint() {
+            let (_root, home, runtime, owner, _listener) = fixture();
+            assert!(SourceContext::prepare_checked(&home, &owner, &owner.owner_endpoint, &runtime,
+                                                  || Err(io::Error::other("injected final stage"))).is_err());
+            let hints = runtime.join("omux-native-owners");
+            assert_eq!(std::fs::read_dir(&hints).unwrap().count(), 0);
+            let context = SourceContext::prepare_at(&home, &owner, &owner.owner_endpoint, &runtime).unwrap();
+            context.recheck(&owner).unwrap();
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub use linux::SourceContext;
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+pub struct SourceContext {
+    pub context_id: String, pub generation: String,
+    pub store_present: bool, pub store_identity: Option<(u64, u64)>,
+}
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+impl SourceContext {
+    pub fn prepare(_home: &Path, _owner: &ProcessOwner, _endpoint: &Path) -> io::Result<Self> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "native source context unavailable"))
+    }
+    pub fn recheck(&self, _owner: &ProcessOwner) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "native source context unavailable"))
+    }
+}

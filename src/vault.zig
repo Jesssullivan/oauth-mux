@@ -22,7 +22,7 @@ pub const VaultError = error{
     InvalidRoot,
 };
 
-const Backend = struct {
+pub const Backend = struct {
     context: ?*anyopaque,
     load_fn: *const fn (?*anyopaque, [:0]const u8) VaultError!Key,
     create_fn: *const fn (?*anyopaque, [:0]const u8) VaultError!Key,
@@ -94,6 +94,11 @@ fn loadOrCreateWith(backend: Backend, root_id: [:0]const u8, existing_database: 
         },
         else => failure,
     };
+}
+
+pub fn loadOrCreateForTest(backend: Backend, root_id: [:0]const u8, existing_database: bool) !Key {
+    if (!@import("builtin").is_test) return error.TestOnly;
+    return loadOrCreateWith(backend, root_id, existing_database);
 }
 
 pub const Vault = struct {

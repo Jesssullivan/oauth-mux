@@ -56,6 +56,11 @@ HARNESS_PHASES = {
     "chromium-uncertain-service-outcome", "chromium-uncertain-source-metadata", "chromium-uncertain-source-state",
     "chromium-uncertain-request-identity", "chromium-uncertain-redacted-status",
     "chromium-uncertain-no-mutations", "chromium-uncertain-permissions",
+    "chromium-v4-outcome-preflight", "chromium-v4-committed-reply-loss", "chromium-v4-exact-retry",
+    "chromium-v4-changed-intent-refusal", "chromium-v4-stale-generation-refusal",
+    "chromium-v4-pending-source-seed", "chromium-v4-current-removal-readback",
+    "chromium-v4-old-ack-new-generation", "chromium-v4-final-explicit-removal",
+    "chromium-historical-pending-seed", "chromium-historical-pending-retained",
 }
 SUBPHASES = HARNESS_PHASES | {
     "none", "harness-invocation", "harness-completion", "receipt-bound", "receipt-json",
@@ -300,11 +305,14 @@ def inside(bundle, extension_archive, chromium, node, harness, keyring, root, re
             SUBPHASE = "receipt-json"
             receipt = json.loads(receipt_payload)
         SUBPHASE = "receipt-contract"
-        require(receipt == {"scope": "installed-chromium-synthetic-browser-service-recovery",
+        require(receipt == {"scope": "installed-chromium-synthetic-browser-outcome-v4",
                             "browserVersion": "Chrome/147.0.7727.116", "extensionId": identity,
                             "channel": "development", "providerAccess": False, "grantExport": False,
                             "restarted": True, "permissionGranted": False, "toolbarConsentProved": False,
-                            "retainedConnectId": True, "distinctDisconnectId": True},
+                            "committedReplyLost": True, "exactRetryImmutable": True,
+                            "changedIntentRefused": True, "staleGenerationRefused": True,
+                            "startupConnectReplay": False, "fencedRemoval": True,
+                            "oldAckCurrentAuthority": False, "historicalOutcomeHeld": True},
                 "actual browser receipt scope/version mismatch")
         SUBPHASE = "journal-bound"
         journal_payload = journal.read_bytes()
@@ -312,17 +320,33 @@ def inside(bundle, extension_archive, chromium, node, harness, keyring, root, re
         SUBPHASE = "journal-json"
         rows = [json.loads(value) for value in journal_payload.splitlines()]
         SUBPHASE = "journal-fields"
-        require(len(rows) <= 64 and all(set(row) == {"id", "method", "sourceId"} for row in rows),
+        common = {"id", "method", "sourceId"}
+        require(len(rows) <= 64 and all(common <= set(row) <= common | {
+            "operationId", "expectedRevision", "expectedGeneration"} for row in rows),
                 "native observer retained unexpected fields")
+        require(all(set(row) == common and row["sourceId"] is None for row in rows
+                    if row["method"] == "browser.health"), "health observer retained source metadata")
         SUBPHASE = "journal-mutation-order"
-        mutations = [row for row in rows if row["method"] != "browser.health"]
-        require(len(mutations) == 2 and mutations[0] == {
-            "id": "chromium-recovery-connect", "method": "browser.connect",
-            "sourceId": "installed-chromium-synthetic-context"}
-                and mutations[1]["method"] == "browser.disconnect"
-                and mutations[1]["sourceId"] == mutations[0]["sourceId"]
-                and mutations[1]["id"] != mutations[0]["id"],
-                "shipped worker did not replay retained connect before distinct disconnect")
+        requests = [row for row in rows if row["method"] != "browser.health"]
+        require(len(requests) == 16 and all(row["sourceId"] == "installed-chromium-synthetic-context"
+                    and "operationId" in row for row in requests)
+                and [row["method"] for row in requests] == [
+                    "browser.connectOutcome", "browser.connect", "browser.connectOutcome",
+                    "browser.connect", "browser.connect", "browser.disconnect", "browser.connectOutcome",
+                    "browser.connectOutcome", "browser.disconnect", "browser.connectOutcome",
+                    "browser.connect", "browser.connectOutcome", "browser.disconnect",
+                    "browser.connectOutcome", "browser.disconnect", "browser.connectOutcome"]
+                and requests[1]["id"] == "chromium-lost-connect"
+                and requests[3]["id"] == "chromium-exact-retry"
+                and requests[4]["id"] == "chromium-changed-intent"
+                and requests[5]["id"] == "chromium-stale-removal"
+                and requests[7]["operationId"] == "chromium-original-operation"
+                and requests[8]["operationId"] != requests[7]["operationId"]
+                and requests[8]["expectedGeneration"] == "1"
+                and requests[12]["operationId"] == requests[8]["operationId"]
+                and requests[12]["expectedRevision"] == requests[8]["expectedRevision"]
+                and requests[12]["expectedGeneration"] == requests[8]["expectedGeneration"],
+                "shipped worker outcome/removal or immutable replay scope changed")
         SUBPHASE = "snapshot-query"
         snapshot = cli("state.snapshot")
         SUBPHASE = "snapshot-source-isolation"

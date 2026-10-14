@@ -31,13 +31,13 @@ CLOSURE = re.compile(r"[a-z0-9]{32}-omux-bazel-closure")
 PLATFORM = re.compile(r"@@?(?:omux_nix|\+omux_nix_repository\+omux_nix)//:execution_platform")
 NIX_REPOSITORIES = {"omux_nix", "+omux_nix_repository+omux_nix"}
 REPOSITORY = re.compile(r"external/([a-zA-Z0-9_.+-]+)/")
-REQUIRED = {"OmuxSwiftUI", "OmuxMacOSBundle", "OmuxMacOSArchive", "ZigBuildExe"}
+REQUIRED = {"OmuxSwiftUI", "OmuxMacOSBundle", "OmuxMacOSArchive", "ZigBuildExe", "OmuxRuntimeImageCopy"}
 REQUIRED_TARGETS = {
     ("//clients/macos:control", "OmuxSwiftUI"),
     ("//clients/macos:Omux", "OmuxMacOSBundle"),
     ("//clients/macos:archive", "OmuxMacOSArchive"),
     ("//:omux", "ZigBuildExe"),
-    ("//:omuxd", "ZigBuildExe"),
+    ("//:omuxd", "OmuxRuntimeImageCopy"),
 }
 NON_SPAWN = {"FileWrite", "FileWriteAction", "ParameterFileWrite", "ExecutableSymlink", "RepoMappingManifest", "SourceSymlinkManifest", "SymlinkTree", "RunfilesTree", "Symlink", "UnresolvedSymlink", "SolibSymlink", "TemplateExpand", "Middleman"}
 
@@ -388,6 +388,22 @@ def action_plan(graph, manifest, store_paths):
             product_targets.add((label, mnemonic))
     if not REQUIRED_TARGETS <= product_targets:
         fail("complete application/archive action plan missing")
+    # The named daemon must depend on this graph's fresh target runtime image;
+    # merely seeing an independent compile and copy somewhere is insufficient.
+    core = [index for index in reachable if
+        targets.get(str(actions[index].get("targetId")), {}).get("label") == "//:omux"
+        and actions[index].get("mnemonic") == "ZigBuildExe"]
+    daemon = [index for index in reachable if
+        targets.get(str(actions[index].get("targetId")), {}).get("label") == "//:omuxd"
+        and actions[index].get("mnemonic") == "OmuxRuntimeImageCopy"]
+    if len(core) != 1 or len(daemon) != 1:
+        fail("one fresh runtime and named daemon copy required")
+    copied_inputs = set()
+    for identifier in array(actions[daemon[0]].get("inputDepSetIds", [])):
+        copied_inputs.update(inputs(str(identifier)))
+    core_outputs = {artifact(identifier) for identifier in array(actions[core[0]].get("outputIds", []))}
+    if not core_outputs or not core_outputs <= copied_inputs:
+        fail("named daemon copy lacks freshly compiled runtime input")
     summary = {
         "spawn_actions": sum(plan.values()), "product_actions": sum(mnemonics.values()),
         "scope": "archive_artifact_producer_dependencies",

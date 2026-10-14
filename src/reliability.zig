@@ -270,6 +270,68 @@ pub const LifecycleCell = struct {
 };
 pub const LifecycleCells = [phase_count][lifecycle_outcome_count]LifecycleCell;
 const empty_lifecycle_cells: LifecycleCells = @splat(@splat(.{}));
+/// Projection of the SAME durable recorder, not a second accounting ledger.
+/// These populations cover recorded terminal facts, never all supported demands.
+pub const PhaseCoverage = enum { unobserved, partial_verified_enrollment, partial_source_detachment };
+pub const LifecyclePhaseSummary = struct {
+    phase: Phase,
+    coverage: PhaseCoverage,
+    recorded_outcomes: u128,
+    successful_user_outcomes: u64,
+    safe_refusals: u64,
+    failed_admitted: u64,
+    unobserved: u64,
+    cancelled: u64,
+    outcomes: [lifecycle_outcome_count]LifecycleCell,
+    supported_user_demands: ?u64 = null,
+    ready_supported_user_demands: ?u64 = null,
+    complete_user_demand_denominator: bool = false,
+    user_end_to_end_elapsed_measured: bool = false,
+    achieved_slo: bool = false,
+};
+pub const PhaseSummaryUnavailable = enum { recorder_unavailable, clock_anomaly, counter_saturated, custody_unavailable };
+pub const LifecyclePhaseExport = struct {
+    phases: ?[phase_count]LifecyclePhaseSummary,
+    unavailable_reason: ?PhaseSummaryUnavailable,
+};
+/// Diagnostic projection failure must not hide the authenticated checkpoint or
+/// independently retained operation facts exported by the caller.
+pub fn lifecycleExport(recorder: ?*LifecycleRecorder, now_s: i64) LifecyclePhaseExport {
+    const current = recorder orelse return .{ .phases = null, .unavailable_reason = .recorder_unavailable };
+    const cells = current.window(now_s) catch |err| return .{
+        .phases = null,
+        .unavailable_reason = switch (err) {
+            error.ClockAnomaly => .clock_anomaly,
+            error.CounterSaturated => .counter_saturated,
+        },
+    };
+    return .{ .phases = lifecycleSummary(cells), .unavailable_reason = null };
+}
+pub fn lifecycleSummary(cells: LifecycleCells) [phase_count]LifecyclePhaseSummary {
+    var result: [phase_count]LifecyclePhaseSummary = undefined;
+    inline for (@typeInfo(Phase).@"enum".field_names, 0..) |name, index| {
+        const phase = @field(Phase, name);
+        const outcomes = cells[index];
+        var population: u128 = 0;
+        for (outcomes) |cell| population += cell.count;
+        result[index] = .{
+            .phase = phase,
+            .coverage = switch (phase) {
+                .enroll => .partial_verified_enrollment,
+                .remove => .partial_source_detachment,
+                .install, .renew, .@"resume", .update => .unobserved,
+            },
+            .recorded_outcomes = population,
+            .successful_user_outcomes = outcomes[@backingInt(LifecycleOutcome.success)].count,
+            .safe_refusals = outcomes[@backingInt(LifecycleOutcome.safe_refusal)].count,
+            .failed_admitted = outcomes[@backingInt(LifecycleOutcome.failed_admitted)].count,
+            .unobserved = outcomes[@backingInt(LifecycleOutcome.unobserved)].count,
+            .cancelled = outcomes[@backingInt(LifecycleOutcome.cancelled)].count,
+            .outcomes = outcomes,
+        };
+    }
+    return result;
+}
 pub const LifecycleDay = struct { utc_day: ?i64 = null, cells: LifecycleCells = empty_lifecycle_cells };
 pub const LifecycleRecorder = struct {
     schema_version: u32 = 1,

@@ -2,18 +2,31 @@ load("@omux_nix//:tool_paths.bzl", "NIX_BASH", "NIX_COREUTILS_BIN", "NIX_ZIG_LIN
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
-load("//tools:rules.bzl", "python_test", "source_archive", "stdout_capture")
+load("//tools:rules.bzl", "python_test", "source_archive")
+load("//tools:reference_bundle.bzl", "reference_bundle")
 load("//tools:runtime_zig.bzl", "zig_binary", "zig_test")
+load("//tools:runtime_image_copy.bzl", "runtime_image_copy")
 load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
+load("//tools:oauth_oidc_targets.bzl", "oauth_oidc_targets")
+# Genuine Bazel load/parser prerequisite; no evaluator/producer instantiation.
+load("//:nix/darwin-hm-evaluation.bzl", "darwin_home_manager_evaluation")
 
 package(default_visibility = ["//visibility:public"])
+
+# Public invocation-scoped evidence linked by the installed runtime checkpoint.
+INSTALLED_RUNTIME_RECORDS = [
+    "docs/agent-notes/2026-10-08-current-flake93-actual-evaluation-result.json",
+    "docs/agent-notes/2026-10-08-installed-closure-models-partial-result.json",
+    "docs/agent-notes/2026-10-08-runtime-custody-qualification-result.json",
+]
 
 # Current declared code/build inputs; excludes docs, checkpoints and artifacts.
 filegroup(
     name = "selected_runtime_source_inputs",
-    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "flake.lock", ".bazelrc", ".bazelversion", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "nix/**/*.nix", "nix/*.py"], allow_empty = True) + [
+    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "flake.lock", ".bazelrc", ".bazelversion", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "nix/**/*.nix", "nix/*.py", "nix/*.bzl", "nix/*.json"], allow_empty = True) + [
         "//tools:source_receipt_inputs", "//delivery:source_receipt_inputs", "//extensions:source_receipt_inputs",
         "//clients/linux:public_sources", "//clients/macos:public_sources",
+        "//clients/macos/darwin_delivery:public_sources", "//tools/darwin_artifact:public_sources",
         "//integrations/codex-upstream:source_receipt_inputs",
         "//integrations/codex-owner-runtime:source_receipt_inputs",
         "//integrations/codex-adapter-delivery:source_receipt_inputs",
@@ -21,20 +34,64 @@ filegroup(
 )
 
 exports_files([
+    "nix/home_manager_realization_inputs.py", "nix/home_manager_realization_inputs_test.py",
+    "nix/home_manager_generation_catalogue.py", "nix/home_manager_generation_catalogue_test.py", "nix/home-manager-generation.nix",
+    "nix/home_manager_generation_module_owner.py",
+    "src/platform/native_peer_runtime_bridge.c",
+    "src/platform/native_peer.c",
+    "src/platform/native_peer.h",
     "docs/agent-notes/2026-10-06-omux-resumed-execution-selection.json",
     "docs/agent-notes/2026-10-06-yoga-controller-selection.json",
     "nix/home-manager-qualified-evaluation.nix", "nix/consume-bazel-artifact.nix",
     "nix/home-manager.nix", "nix/ownership-witness.nix", "nix/service-witness.nix",
     "nix/home_manager_inputs.py", "nix/home_manager_inputs_test.py",
     "nix/home_manager_acquired_inputs.py", "nix/home_manager_acquired_inputs_test.py",
-    "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py",
-    "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
+    "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py", "nix/home_manager_source_pack.py",
+    "nix/home_manager_current_retained_artifact.py", "nix/home_manager_current_retained_artifact_test.py", "nix/home_manager_current_pair_bundle.py", "nix/home_manager_current_pair_bundle_test.py", "nix/home_manager_current_artifact.py", "nix/home_manager_current_evaluation.py", "nix/home_manager_current_artifact_test.py", "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
     "nix/home_manager_acquired_evaluation.py", "nix/home_manager_acquired_evaluation_test.py",
     "nix/home_manager_bundle.py", "nix/home_manager_bundle_test.py",
     "nix/home_manager_evaluation_runner.py", "nix/home_manager_evaluation_runner_test.py",
     "nix/home_manager_io.py", "nix/home_manager_source_probe.py", "nix/home_manager_source_probe_test.py",
     "nix/evaluation_runner.py",
+    "nix/home-manager-darwin-candidate.nix", "nix/home-manager-darwin-candidate-evaluation.nix",
+    "nix/darwin-launchd-definition.nix", "nix/darwin-ownership-witness.nix", "nix/darwin-service-witness.nix",
+    "nix/home_manager_darwin_generation.py", "nix/home_manager_darwin_generation_test.py",
+    "nix/darwin-generated-inputs.bzl", "nix/home-manager-darwin-generated-inputs.json",
+    "nix/darwin-hm-evaluation.bzl", "nix/home_manager_darwin_evaluation.py", "nix/home_manager_darwin_evaluation_test.py",
+    "nix/consume-darwin-bazel-artifact.nix",
 ])
+
+# Isolated candidate only; no flake export or Linux gate change. The consumer
+# import is supplied by the separately reviewed Darwin artifact packet.
+filegroup(
+    name = "darwin_home_manager_candidate_sources",
+    srcs = ["nix/home-manager-darwin-candidate.nix", "nix/home-manager-darwin-candidate-evaluation.nix",
+        "nix/darwin-launchd-definition.nix", "nix/darwin-ownership-witness.nix", "nix/darwin-service-witness.nix",
+        "nix/consume-darwin-bazel-artifact.nix", "nix/darwin-generated-inputs.bzl",
+        "nix/home-manager-darwin-generated-inputs.json", "nix/home_manager_darwin_generation.py",
+        "nix/darwin-hm-evaluation.bzl", "nix/home_manager_darwin_evaluation.py", "nix/evaluation_runner.py",
+        "//tools/darwin_artifact:public_sources", "//tools:macho.py"],
+)
+python_test(
+    name = "home_manager_darwin_evaluation_test",
+    main = "nix/home_manager_darwin_evaluation_test.py",
+    srcs = ["nix/home_manager_darwin_evaluation.py", "nix/home_manager_darwin_generation.py", "nix/evaluation_runner.py"],
+)
+python_test(
+    name = "home_manager_darwin_generation_test",
+    main = "nix/home_manager_darwin_generation_test.py",
+    srcs = ["nix/home_manager_darwin_generation.py"],
+)
+python_test(
+    name = "home_manager_darwin_generated_observation",
+    main = "nix/home_manager_darwin_generation.py",
+    data = ["@omux_darwin_hm_generated//:layout.json", "@omux_darwin_hm_generated//:inputs"],
+    args = ["--layout", "$(location @omux_darwin_hm_generated//:layout.json)"],
+    env_inherit = ["OMUX_DARWIN_HM_ENTRY_NS", "OMUX_DARWIN_HM_DEADLINE_NS"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
 
 zig_test(
     name = "browser_attempt_test",
@@ -46,18 +103,21 @@ zig_test(
 # Git metadata, operator state, captured browser data or credential fixtures.
 source_archive(
     name = "public_source_archive",
-    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + [
+    srcs = glob(["*.bazel", "MODULE.bazel.lock", "*.nix", "nix/**/*.nix", "nix/*.bzl", "nix/*.json", "flake.lock", ".bazelrc", ".bazelversion", "*.md", "LICENSE*", "NOTICE*", "src/**/*.zig", "src/**/*.c", "src/**/*.h", "src/**/*.sh", "docs/**/*.md", "docs/authority.json", "docs/agent-notes/2026-10-11-estate-review-index.json", "docs/agent-notes/2026-10-11-product-reality-reattachment-index.json", "docs/tracker-updates/native-*.json", ".goal/*.json"], allow_empty = True) + INSTALLED_RUNTIME_RECORDS + [
+        "nix/home_manager_darwin_generation.py", "nix/home_manager_darwin_generation_test.py",
+        "nix/home_manager_darwin_evaluation.py", "nix/home_manager_darwin_evaluation_test.py",
         "clients/README.md", "nix/README.md", "nix/evaluation_runner.py", "nix/evaluation_runner_test.py",
         "nix/home_manager_inputs.py", "nix/home_manager_inputs_test.py",
         "nix/home_manager_acquired_inputs.py", "nix/home_manager_acquired_inputs_test.py",
-        "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py",
-        "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
+        "nix/home_manager_acquisition.py", "nix/home_manager_acquisition_test.py", "nix/home_manager_source_pack.py",
+        "nix/home_manager_current_retained_artifact.py", "nix/home_manager_current_retained_artifact_test.py", "nix/home_manager_current_pair_bundle.py", "nix/home_manager_current_pair_bundle_test.py", "nix/home_manager_current_artifact.py", "nix/home_manager_current_evaluation.py", "nix/home_manager_current_artifact_test.py", "nix/home_manager_artifact.py", "nix/home_manager_artifact_test.py",
         "nix/home_manager_acquired_evaluation.py", "nix/home_manager_acquired_evaluation_test.py",
         "nix/home_manager_bundle.py", "nix/home_manager_bundle_test.py",
         "nix/home_manager_evaluation_runner.py", "nix/home_manager_evaluation_runner_test.py",
         "nix/home_manager_io.py", "nix/home_manager_source_probe.py", "nix/home_manager_source_probe_test.py",
         "//tools:public_sources", "//delivery:public_sources", "//extensions:public_sources",
         "//clients/linux:public_sources", "//clients/macos:public_sources",
+        "//clients/macos/darwin_delivery:public_sources", "//tools/darwin_artifact:public_sources",
         "//integrations/codex-upstream:public_sources",
         "//integrations/codex-owner-candidate:public_sources",
         "//integrations/codex-owner-runtime:public_sources",
@@ -112,13 +172,15 @@ python_test(
     data = glob([
         "docs/**/*.md",
         "docs/authority.json",
+        "docs/agent-notes/2026-10-11-estate-review-index.json",
+        "docs/agent-notes/2026-10-11-product-reality-reattachment-index.json",
         "docs/tracker-updates/*.json",
         ".goal/*.json",
         "src/**/*.c",
         "src/**/*.h",
         "nix/**/*.nix",
         "nix/**/*.md",
-    ]) + [
+    ]) + INSTALLED_RUNTIME_RECORDS + [
         "AGENTS.md", "README.md", "CHANGELOG.md", "BUILD.bazel", "flake.nix", "flake.lock",
         "docs/agent-notes/2026-10-06-omux-resumed-execution-selection.json",
         "docs/agent-notes/2026-10-06-yoga-controller-selection.json",
@@ -138,6 +200,21 @@ python_test(
 ZIG_NATIVE_LINKOPTS = ["-lc"] + NIX_ZIG_LINKOPTS
 ZIG_RUNTIME_DATA = ["@omux_nix//:runtime_libraries"]
 ZIG_SOURCES = glob(["src/**/*.zig"])
+
+zig_test(
+    name = "siwc_cli_test",
+    # daemon -> Engine imports the complete owned OAuth signer fixtures.
+    timeout = "long",
+    main = "src/siwc_cli.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"],
+    env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+zig_test(name = "native_deployment_arguments_test", main = "src/native_deployment_arguments.zig")
 
 zig_test(
     name = "toolchain_test",
@@ -168,6 +245,15 @@ zig_test(
 zig_test(name = "snapshot_admission_test", main = "src/snapshot_admission.zig")
 
 zig_test(
+    name = "native_source_consent_test",
+    main = "src/native_source_consent_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
     name = "native_owner_test",
     main = "src/native_owner_tests.zig",
     srcs = ZIG_SOURCES,
@@ -182,7 +268,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -200,7 +286,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -209,7 +295,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(name = "request_authority_test", main = "src/request_authority.zig", srcs = ZIG_SOURCES, deps = [":native_api"], linkopts = ZIG_NATIVE_LINKOPTS, data = ZIG_RUNTIME_DATA)
@@ -227,7 +313,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "reliability_lifecycle_native_removal_test",
@@ -237,7 +323,7 @@ zig_test(
     # Exercise the daemon's mode without extending native or test deadlines.
     zigopts = ["-O", "ReleaseSafe"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "terminal_removal_test",
@@ -245,8 +331,9 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
+zig_test(name = "enrollment_wait_test", main = "src/enrollment_wait.zig")
 zig_test(name = "reliability_test", main = "src/reliability.zig")
 zig_test(name = "reliability_lifecycle_test", main = "src/reliability_lifecycle_tests.zig", srcs = ["src/reliability.zig"])
 zig_test(name = "onboarding_test", main = "src/onboarding_tests.zig", srcs = ["src/onboarding.zig"])
@@ -265,7 +352,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "runtime_selection_producer_test",
@@ -282,7 +369,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "reliability_adapter_setup_test",
@@ -290,7 +377,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "reliability_readiness_test",
@@ -298,7 +385,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(name = "setup_evidence_test", main = "src/setup_evidence_tests.zig", srcs = ["src/setup_evidence.zig", "src/onboarding.zig"])
 
@@ -335,7 +422,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 zig_test(
     name = "recovery_test",
@@ -429,8 +516,21 @@ zig_test(
 
 cc_test(
     name = "native_peer_bridge_test",
-    srcs = ["src/platform/native_peer_test.c"],
-    deps = [":native_api"],
+    # Exercise the exact production bridge without unrelated vault/SQL DSOs.
+    # Copied primary-image fixtures retain the toolchain's dynamic libc loader.
+    srcs = [
+        "src/platform/native_peer_test.c",
+        "src/platform/native_peer.c",
+        "src/platform/native_peer.h",
+    ],
+)
+
+# Direct-main image attribution is independent of native resume authority.
+cc_binary(
+    name = "native_peer_runtime_bridge.so",
+    srcs = ["src/platform/native_peer_runtime_bridge.c", "src/platform/native_peer.c", "src/platform/native_peer.h"],
+    linkshared = True,
+    linkstatic = False,
 )
 
 zig_test(
@@ -444,7 +544,7 @@ zig_test(
 zig_test(
     name = "transport_test",
     main = "src/transport.zig",
-    srcs = ["src/browser_grant.zig"],
+    srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
@@ -500,14 +600,11 @@ zig_binary(
     data = ZIG_RUNTIME_DATA,
 )
 
-zig_binary(
+runtime_image_copy(
     name = "omuxd",
-    main = "src/main.zig",
-    srcs = ZIG_SOURCES,
-    zigopts = ["-O", "ReleaseSafe"],
-    deps = [":native_api"],
-    linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    # The same root selects daemon behavior through its invocation basename.
+    # Keep a distinct regular executable File rather than an alias or symlink.
+    binary = ":omux",
 )
 
 zig_test(
@@ -541,7 +638,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -559,10 +656,20 @@ zig_test(
     main = "src/integrations/claude.zig",
 )
 
-stdout_capture(
+# The action renderer imports the same maintained catalog as `omux reference`.
+# Keep its exec transition, without recompiling the complete daemon as a tool.
+zig_binary(
+    name = "reference_renderer",
+    main = "src/reference_main.zig",
+    srcs = ["src/reference.zig", "src/product.zig", "src/catalog.zig", "src/control.zig"],
+    zigopts = ["-O", "ReleaseSafe"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+reference_bundle(
     name = "reference_bundle",
-    executable = ":omux",
-    args = ["reference"],
+    executable = ":reference_renderer",
     out = "reference-bundle.json",
 )
 
@@ -578,7 +685,36 @@ zig_format(
 
 zig_format_test(
     name = "format_test",
-    srcs = ZIG_SOURCES + ["//tools:toolchain_test.zig"],
+    srcs = ZIG_SOURCES + ["//tools:toolchain_test.zig", "//tools:engine_test_runner.zig", "//tools:engine_shard_support.zig", "//tools:engine_shard_support_models.zig"],
+)
+
+zig_test(
+    name = "control_test",
+    main = "src/control.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+# Source-only proposal declarations; finite guard admission is separate.
+zig_test(
+    name = "native_source_acquisition_test",
+    main = "src/native_source_acquisition_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+zig_test(
+    name = "qualified_runtime_delivery_test",
+    main = "src/qualified_runtime_delivery_tests.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 
 zig_test(
@@ -587,7 +723,59 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+)
+
+# The existing unsharded engine_test remains the unchanged reference. This
+# new target does not close that gate or select a compiler --test-filter.
+zig_test(
+    name = "engine_sharded_test",
+    main = "src/engine.zig",
+    srcs = ZIG_SOURCES + ["//tools:engine_shard_support.zig"],
+    test_runner = "//tools:engine_test_runner.zig",
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"],
+    env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+    shard_count = 3,
+    timeout = "moderate",
+    tags = ["manual", "no-remote"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+zig_test(
+    name = "engine_shard_support_test",
+    main = "//tools:engine_shard_support_models.zig",
+    srcs = ["//tools:engine_shard_support_models.zig", "//tools:engine_shard_support.zig"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# Focus the existing rotation/restart cases during renewal diagnosis.
+zig_test(
+    name = "paired_renewal_test",
+    main = "src/engine.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"],
+    env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+    zigopts = ["--test-filter", "paired renewal"],
+)
+
+# Diagnose the actual queued actor fixture before the full regression gates.
+zig_test(
+    name = "queued_ingress_test",
+    main = "src/engine.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+    zigopts = [
+        "--test-filter",
+        "queued malformed control ingress preserves committed actor custody and completes allocator failures",
+    ],
 )
 
 zig_test(
@@ -596,16 +784,18 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
     name = "unit_tests",
+    # The complete 460-case executable exceeded the default 300 s test budget.
+    timeout = "long",
     main = "src/tests.zig",
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -632,7 +822,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -643,7 +833,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -652,7 +842,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -661,10 +851,13 @@ zig_test(
     # permit concurrent sandbox contention without changing runtime deadlines.
     timeout = "long",
     main = "src/snapshot_import_tests.zig",
+    # All root cases remain here; engine_test and enrollment_wait_test own
+    # the imported suites, including the real saturated actor restart case.
+    zigopts = ["--test-filter", "snapshot_import_tests.test."],
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -673,7 +866,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -682,7 +875,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -691,7 +884,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -700,7 +893,7 @@ zig_test(
     srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
-    data = ZIG_RUNTIME_DATA,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"], env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
 )
 
 zig_test(
@@ -738,17 +931,7 @@ zig_test(
 zig_test(
     name = "observer_test",
     main = "src/observer.zig",
-    srcs = [
-        "src/domain.zig",
-        "src/snapshot_admission.zig",
-        "src/transport.zig",
-        "src/browser_grant.zig",
-        "src/native_owner.zig",
-        "src/platform/peer.zig",
-        "src/paths.zig",
-        "src/instance.zig",
-        "src/platform/file_metadata.zig",
-    ],
+    srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
@@ -757,11 +940,38 @@ zig_test(
 zig_binary(
     name = "tls_probe",
     main = "src/tls_probe.zig",
-    srcs = [
-        "src/transport.zig",
-        "src/browser_grant.zig",
-    ],
+    srcs = ZIG_SOURCES,
     deps = [":native_api"],
     linkopts = ZIG_NATIVE_LINKOPTS,
     data = ZIG_RUNTIME_DATA,
+)
+
+# Owned OAuth verifier tests use the separately declared ephemeral signer.
+oauth_oidc_targets(
+    zig_sources = ZIG_SOURCES,
+    native_linkopts = ZIG_NATIVE_LINKOPTS,
+    runtime_data = ZIG_RUNTIME_DATA,
+    native_deps = [":native_api"],
+)
+
+# Actual catalog syntax models; actor/current-pair/curl models remain in engine_test.
+zig_test(
+    name = "siwc_catalog_test",
+    main = "src/siwc_catalog.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA,
+)
+
+# Focus the real account catalog actor cases before the full runtime regression.
+zig_test(
+    name = "catalog_actor_test",
+    main = "src/engine.zig",
+    srcs = ZIG_SOURCES,
+    deps = [":native_api"],
+    linkopts = ZIG_NATIVE_LINKOPTS,
+    data = ZIG_RUNTIME_DATA + ["@omux_nix//:openssl_tool", "@omux_nix//:openssl_tool_tools"],
+    env = {"OMUX_OIDC_OPENSSL": "$(rootpath @omux_nix//:openssl_tool)"},
+    zigopts = ["--test-filter", "catalog"],
 )

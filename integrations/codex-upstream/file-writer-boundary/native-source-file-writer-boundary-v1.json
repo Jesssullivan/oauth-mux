@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "kind": "omux-native-source-file-writer-boundary-v1",
+  "parent": {
+    "kind": "omux-native-source-acquisition-source-v1",
+    "receipt_sha256": "9e18ed5731a4474d0e9981cfb08da6e3f3e130014615a2dd9a8e26f06246e344",
+    "inventory_sha256": "8542cbe124d74046f20c92df2e304661cd2a9bd9bc5b2df1bc700ce7bf867762",
+    "patch_sha256": [
+      "5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6",
+      "3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53",
+      "84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5",
+      "b4dd868ac11d863f65e9fe3031d83b8fb7164a5551abca20dc46424c0465c48c",
+      "d6fa05a49dea0560a8204da1897329d2613530c76287440d7ab1d8b409fc64d2",
+      "2fde65504b83e1fd72684618a631409418a6b9841db33243ed60733f9f031d26",
+      "ff7e7971019bd4e7bbf80a6aa5b86c787fc6971f2df0cd60399471ef3783e4a2",
+      "f33299b3b9f82f01f2f9377e9e646381626eee5afd7c5776ab7ae6c532d1f7d8",
+      "2cadbd4c7a5a29653c835d7ff85ddb536e9950d9490186453a466af6fa1f5f90"
+    ]
+  },
+  "storage": {
+    "patch_sha256": "2d66433c887a40bb9a76b854e5c6b3f148dd96f9831231025cf60baa591d4706",
+    "patch_bytes": 76428,
+    "native_manifest_sha256": "90f2c3a533281b2ab600f2d54934da8825ed2f752943f444310061e98d5b29a0",
+    "paths": {
+      "codex-rs/Cargo.lock": {
+        "before": {
+          "sha256": "546f8829d56d2a7d412ecdb1327d6baea90b78825011e6b9bd6ad07f42a396d0",
+          "bytes": 404798
+        },
+        "after": {
+          "sha256": "fe2cc6139542e372704ad4e1d768494c8ffa47124296adb18e390678eced3e54",
+          "bytes": 404835
+        }
+      },
+      "codex-rs/login/Cargo.toml": {
+        "before": {
+          "sha256": "0c762d109c77508556e0d61badaba96a9e9a43ddd5dc1273113d2a8684e76593",
+          "bytes": 1640
+        },
+        "after": {
+          "sha256": "eac796ff363ed2173f1fe8d0280a5d001182d57f10cfce4d6bebe8f92639568f",
+          "bytes": 1727
+        }
+      },
+      "codex-rs/login/src/auth/managed_file_writer.rs": {
+        "before": null,
+        "after": {
+          "sha256": "4cce7348b604cd29a776667a4300e73c03f33085d06f528e1dc38d90dda86d79",
+          "bytes": 45896
+        }
+      },
+      "codex-rs/login/src/auth/mod.rs": {
+        "before": {
+          "sha256": "5d72ae39f74e2ed944b13bab4dbaab03d5e0ae1a5ec908d14cf4513606fe7b83",
+          "bytes": 723
+        },
+        "after": {
+          "sha256": "84af619e1d4c7b7f0e6afc6b428f8646dd0c1b10645b2ce8e69200a69bea08a6",
+          "bytes": 748
+        }
+      },
+      "codex-rs/login/src/auth/storage.rs": {
+        "before": {
+          "sha256": "2e95a8998687e926675d41b5d941c3c3546a652c03d9680e6c7385e59bf459af",
+          "bytes": 18076
+        },
+        "after": {
+          "sha256": "fea383ce6060cd223738c7c53d3675eb3a55d4a6499ab42acfd497f1a9af2f70",
+          "bytes": 20198
+        }
+      },
+      "codex-rs/login/src/auth/storage_tests.rs": {
+        "before": {
+          "sha256": "7d7eb901f15bbcd53e2c94c6b81059308625028e5aa473da614f6dfc6eec9911",
+          "bytes": 27172
+        },
+        "after": {
+          "sha256": "2fbe27567c917d4753fa3c83d9451f8a61bc44d0665036247f3a9088423f3555",
+          "bytes": 49334
+        }
+      }
+    }
+  },
+  "capabilities": {
+    "native_source_finalized": false,
+    "schema_producer_qualified": false,
+    "sdk_metadata_qualified": false,
+    "context_rotation_runtime_qualified": false,
+    "finite_kernel_shutdown_proven": false,
+    "credential_acquisition_qualified": false,
+    "native_image_qualified": false,
+    "source_consent_qualified": false,
+    "original_file_writer_qualified": false,
+    "original_writer_exclusion_qualified": false,
+    "native_file_commit_cas_qualified": false,
+    "native_refresh_progress_qualified": false,
+    "native_scheduler_enabled": false,
+    "issuer_qualified": false,
+    "installed_qualified": false,
+    "live_handoff_proven": false,
+    "native_compile_passed": false,
+    "native_support": false,
+    "provider_evaluation": false,
+    "daemon_context_acquisition_implemented": false
+  }
+}

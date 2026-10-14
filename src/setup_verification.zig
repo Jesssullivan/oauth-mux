@@ -30,7 +30,7 @@ pub fn classify(reason: onboarding.Reason) PhaseOutcome {
     return switch (reason) {
         .ready => .verified_ready,
         .observation_unknown, .observation_stale, .evidence_unobserved, .synthetic_only, .native_evidence_missing, .channel_unknown => .unknown,
-        .channel_mismatch, .missing, .pending, .incompatible, .vault_locked, .vault_key_lost, .authority_expired, .browser_required, .native_unsupported => .action_required,
+        .channel_mismatch, .missing, .pending, .incompatible, .vault_locked, .vault_key_lost, .vault_key_unavailable, .vault_access_denied, .vault_unavailable, .authority_expired, .browser_required, .native_unsupported => .action_required,
     };
 }
 pub fn makeCompleted(id: []const u8, generation: u64, observed_at: i64, readiness: onboarding.Readiness, elapsed_ns: ?u64) !Result {
@@ -47,15 +47,23 @@ pub fn makeRefusal(id: []const u8, generation: u64, observed_at: i64, refusal: R
     try validate(result);
     return result;
 }
+/// A real daemon admission-to-terminal observation, never a user/browser start.
+pub fn makeTimedRefusal(id: []const u8, generation: u64, observed_at: i64, refusal: Refusal, elapsed_ns: ?u64) !Result {
+    var result = try makeRefusal(id, generation, observed_at, refusal);
+    result.schema_version = 2;
+    result.elapsed_ns = elapsed_ns;
+    try validate(result);
+    return result;
+}
 pub fn validate(result: Result) !void {
-    if (result.schema_version != 1 or !validId(result.operation_id) or result.observed_at < 0) return error.InvalidSetupVerificationResult;
+    if ((result.schema_version != 1 and result.schema_version != 2) or !validId(result.operation_id) or result.observed_at < 0) return error.InvalidSetupVerificationResult;
     switch (result.outcome) {
         .verification_completed => {
             if (result.refusal != null or result.generation == 0) return error.InvalidSetupVerificationResult;
             for (result.phases) |phase| if (phase.outcome != classify(phase.reason)) return error.InvalidSetupVerificationResult;
         },
         .safe_refusal => {
-            if (result.refusal == null or result.elapsed_ns != null) return error.InvalidSetupVerificationResult;
+            if (result.refusal == null or (result.schema_version == 1 and result.elapsed_ns != null)) return error.InvalidSetupVerificationResult;
             for (result.phases) |phase| if (phase.outcome != .unknown or phase.reason != .observation_unknown) return error.InvalidSetupVerificationResult;
         },
     }
@@ -119,6 +127,12 @@ pub const Summary = struct {
     schema_version: u8 = 1,
     scope: enum { explicit_setup_verification_not_installation_success } = .explicit_setup_verification_not_installation_success,
     window_start_utc_s: i64,
+    /// All retained identified setup.refresh rows, including unresolved and
+    /// terminal rows outside the window. Not all user installation demands.
+    retained_identified_attempts: u64 = 0,
+    /// In-window terminal verification/refusal cohort only. Unresolved rows
+    /// have no terminal timestamp and are not assigned to this window.
+    in_window_terminal_attempts: u64 = 0,
     phase_names: @TypeOf(phase_order) = phase_order,
     phases: [7]PhaseSummary = @splat(.{}),
     joint_readiness: JointReadiness = .{},
@@ -152,6 +166,7 @@ pub fn summarize(allocator: std.mem.Allocator, saved: mutation.Snapshot, now_s: 
         for (saved.records[0..index]) |previous| if (std.mem.eql(u8, previous.id[0..previous.id_len], record.id[0..record.id_len])) return error.InvalidSetupVerificationSnapshot;
         if (!std.mem.eql(u8, record.method[0..record.method_len], method)) continue;
         try validateRecordIdentity(record);
+        result.retained_identified_attempts += 1;
         switch (record.state) {
             .started => {
                 result.unresolved_started += 1;
@@ -174,6 +189,7 @@ pub fn summarize(allocator: std.mem.Allocator, saved: mutation.Snapshot, now_s: 
             result.old_window_records += 1;
             continue;
         }
+        result.in_window_terminal_attempts += 1;
         switch (fact.outcome) {
             .verification_completed => {
                 result.verification_completed += 1;
@@ -201,7 +217,7 @@ pub fn summarize(allocator: std.mem.Allocator, saved: mutation.Snapshot, now_s: 
                     .installation_selection_required => result.installation_selection_required_refusals += 1,
                     .collection_timed_out => result.collection_timed_out_refusals += 1,
                 }
-                result.refusal_timing.missing_latency += 1;
+                if (fact.elapsed_ns) |elapsed| result.refusal_timing.latency[reliability.latencyBin(elapsed)] += 1 else result.refusal_timing.missing_latency += 1;
             },
         }
     }
@@ -292,13 +308,19 @@ test "summary distinguishes immutable terminal results uncertainty clock windows
     _ = try ledger.begin("pending", method, @splat(1), 0, 0, .external);
     const unresolved = (try ledger.begin("uncertain", method, @splat(1), 0, 0, .external)).execute;
     try ledger.markIndeterminate(unresolved);
+    // Another mutation belongs to the same authority snapshot, not this cohort.
+    _ = try ledger.begin("unrelated", "policy.set", @splat(1), 0, 0, .local_atomic);
     const summary = try summarize(std.testing.allocator, ledger.snapshot(), now);
+    try std.testing.expectEqual(@as(u64, 6), summary.retained_identified_attempts);
+    try std.testing.expectEqual(@as(u64, 2), summary.in_window_terminal_attempts);
     try std.testing.expectEqual(@as(u64, 1), summary.verification_completed);
     try std.testing.expectEqual(@as(u64, 1), summary.safe_refusals);
     try std.testing.expectEqual(@as(u64, 1), summary.unresolved_started);
     try std.testing.expectEqual(@as(u64, 1), summary.unresolved_indeterminate);
     try std.testing.expectEqual(@as(u64, 1), summary.old_window_records);
     try std.testing.expectEqual(@as(u64, 1), summary.future_clock_records);
+    try std.testing.expectEqual(summary.in_window_terminal_attempts, summary.verification_completed + summary.safe_refusals);
+    try std.testing.expectEqual(summary.retained_identified_attempts, summary.in_window_terminal_attempts + summary.unresolved_started + summary.unresolved_indeterminate + summary.old_window_records + summary.future_clock_records);
     try std.testing.expectEqual(@as(u64, 1), summary.completed_timing.missing_latency);
     try std.testing.expect(!summary.achieved_slo);
     try std.testing.expect(!summary.end_to_end_latency_measured);
@@ -318,6 +340,15 @@ test "collector timeout is immutable safe refusal without phase or completion la
     try ledger.complete(slot, bytes);
     try std.testing.expectEqualStrings(bytes, (try ledger.begin(refusal.operation_id, method, @splat(1), 0, 1, .external)).replay);
     const summary = try summarize(allocator, ledger.snapshot(), refusal.observed_at);
+    try std.testing.expectEqual(@as(u64, 1), summary.retained_identified_attempts);
+    try std.testing.expectEqual(@as(u64, 1), summary.in_window_terminal_attempts);
+    const checkpoint = try std.json.Stringify.valueAlloc(allocator, ledger.snapshot(), .{});
+    defer allocator.free(checkpoint);
+    const parsed_checkpoint = try std.json.parseFromSlice(mutation.Snapshot, allocator, checkpoint, .{});
+    defer parsed_checkpoint.deinit();
+    var restored = try mutation.Ledger.fromSnapshot(allocator, parsed_checkpoint.value);
+    defer restored.deinit();
+    try std.testing.expectEqualDeep(summary, try summarize(allocator, restored.snapshot(), refusal.observed_at));
     try std.testing.expectEqual(@as(u64, 0), summary.verification_completed);
     try std.testing.expectEqual(@as(u64, 1), summary.safe_refusals);
     try std.testing.expectEqual(@as(u64, 1), summary.collection_timed_out_refusals);
@@ -332,4 +363,21 @@ test "collector timeout is immutable safe refusal without phase or completion la
     forged = refusal;
     forged.phases[0] = .{ .outcome = .verified_ready, .reason = .ready };
     try std.testing.expectError(error.InvalidSetupVerificationResult, validate(forged));
+}
+
+test "daemon timed refusal retains its distinct population and original result bound" {
+    var ledger = try mutation.Ledger.init(std.testing.allocator, 2);
+    defer ledger.deinit();
+    const slot = (try ledger.begin("owned-refusal", method, @splat(8), 0, 0, .external)).execute;
+    const fact = try makeTimedRefusal("owned-refusal", 0, 0, .installation_selection_required, std.math.maxInt(u64));
+    const bytes = try serialize(std.testing.allocator, fact);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expect(bytes.len <= maximum_result_bytes);
+    try ledger.complete(slot, bytes);
+    const summary = try summarize(std.testing.allocator, ledger.snapshot(), 0);
+    try std.testing.expectEqual(@as(u64, 1), summary.safe_refusals);
+    try std.testing.expectEqual(@as(u64, 0), summary.verification_completed);
+    try std.testing.expectEqual(@as(u64, 1), summary.refusal_timing.latency[reliability.latencyBin(std.math.maxInt(u64))]);
+    try std.testing.expectEqual(@as(u64, 0), summary.refusal_timing.missing_latency);
+    try std.testing.expect(!summary.end_to_end_latency_measured and !summary.achieved_slo);
 }

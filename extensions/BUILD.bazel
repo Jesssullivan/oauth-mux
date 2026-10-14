@@ -28,8 +28,8 @@ node_test(
     name = "tests",
     main = "shared/bridge.test.mjs",
     srcs = glob(["shared/*.mjs"], exclude = ["shared/bridge.test.mjs"]),
-    data = ["chromium/manifest.json", "firefox/manifest.json", ":chromium_package", ":firefox_package"],
-    args = ["--chromiumArchive=$(location :chromium_package)", "--firefoxArchive=$(location :firefox_package)"],
+    data = ["chromium/manifest.json", "firefox/manifest.json", ":chromium_package", ":firefox_package", ":firefox_dev_package"],
+    args = ["--chromiumArchive=$(location :chromium_package)", "--firefoxArchive=$(location :firefox_package)", "--firefoxDevArchive=$(location :firefox_dev_package)"],
 )
 
 extension_archive(
@@ -64,13 +64,23 @@ channel_archive(
     srcs = glob(["shared/*"], exclude = ["shared/*.test.mjs"]),
 )
 
+# Existing exact development Gecko identity; unsigned local evaluation only.
+channel_archive(
+    name = "firefox_dev_package",
+    browser_manifest = "firefox/manifest.json",
+    browser = "firefox",
+    channel = "development",
+    output_suffix = ".xpi",
+    srcs = glob(["shared/*"], exclude = ["shared/*.test.mjs"]),
+)
+
 python_binary(
     name = "host_setup",
     main = "native_host_setup.py",
 )
 
 python_binary(name = "channel_archive_cli", main = "channel.py")
-python_test(name = "channel_test", main = "channel_test.py", srcs = ["channel.py"])
+python_test(name = "channel_test", main = "channel_test.py", srcs = ["channel.py", "native_host_setup.py"])
 
 python_test(
     name = "host_setup_test",

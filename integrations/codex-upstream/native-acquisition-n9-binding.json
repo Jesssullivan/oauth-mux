@@ -1,0 +1,58 @@
+{
+  "epoch": "7cf215c2-a7eb-4983-bc7b-3f29cd20b5ba",
+  "root": "/home/jess/.local/state/omux-execution-20261005/7cf215c2-a7eb-4983-bc7b-3f29cd20b5ba/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_source_acquisition_source_producer/test.outputs/native-source-acquisition-source",
+  "source_root": "/home/jess/.local/state/omux-execution-20261005/7cf215c2-a7eb-4983-bc7b-3f29cd20b5ba/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_source_acquisition_source_producer/test.outputs/native-source-acquisition-source/source",
+  "receipt_path": "/home/jess/.local/state/omux-execution-20261005/7cf215c2-a7eb-4983-bc7b-3f29cd20b5ba/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_source_acquisition_source_producer/test.outputs/native-source-acquisition-source/source-receipt.json",
+  "receipt_sha256": "9e18ed5731a4474d0e9981cfb08da6e3f3e130014615a2dd9a8e26f06246e344",
+  "receipt_bytes": 1594175,
+  "inventory_sha256": "8542cbe124d74046f20c92df2e304661cd2a9bd9bc5b2df1bc700ce7bf867762",
+  "tracked_files": 8552,
+  "source_bytes": 84737127,
+  "actual_seventh_receipt_sha256": "fbe2e3d1cdb7c4d601b45144182fdb1cdb6858d8565032ba4f060dcf253bf4ed",
+  "patch_sha256": [
+    "5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6",
+    "3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53",
+    "84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5",
+    "b4dd868ac11d863f65e9fe3031d83b8fb7164a5551abca20dc46424c0465c48c",
+    "d6fa05a49dea0560a8204da1897329d2613530c76287440d7ab1d8b409fc64d2",
+    "2fde65504b83e1fd72684618a631409418a6b9841db33243ed60733f9f031d26",
+    "ff7e7971019bd4e7bbf80a6aa5b86c787fc6971f2df0cd60399471ef3783e4a2",
+    "f33299b3b9f82f01f2f9377e9e646381626eee5afd7c5776ab7ae6c532d1f7d8",
+    "2cadbd4c7a5a29653c835d7ff85ddb536e9950d9490186453a466af6fa1f5f90"
+  ],
+  "kind": "omux-native-source-acquisition-source-v1",
+  "status": "verified-ninth-acquisition-source-uncompiled",
+  "root_identity": {
+    "device": 64773,
+    "inode": 289036470,
+    "uid": 1000,
+    "mode": 365,
+    "nlink": 3
+  },
+  "source_root_identity": {
+    "device": 64773,
+    "inode": 306619518,
+    "uid": 1000,
+    "mode": 365,
+    "nlink": 14
+  },
+  "receipt_identity": {
+    "device": 64773,
+    "inode": 289049092,
+    "uid": 1000,
+    "mode": 365,
+    "nlink": 1
+  },
+  "all_future_qualification_false": true,
+  "flags": {
+    "context_rotation_runtime_qualified": false,
+    "credential_acquisition_qualified": false,
+    "finite_kernel_shutdown_proven": false,
+    "native_image_qualified": false,
+    "native_source_finalized": false,
+    "schema_producer_qualified": false,
+    "sdk_metadata_qualified": false,
+    "source_consent_qualified": false
+  },
+  "scope": "Root reads/hashes actual metadata and canonical inventory; genuine Bazel producer independently verified whole source bytes; no standalone source verifier."
+}

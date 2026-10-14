@@ -1,0 +1,3199 @@
+"""Real small SDK/registry/JDK bytes and carrier/NAR/custody adversarial models.
+
+The only SDK seam is the synthetic selected JDK root. Existing SDK validators,
+registry/module/link-absence logic, byte readers and canonical NAR run unchanged.
+No model claims a genuine carrier producer, metadata or application qualification.
+"""
+from contextlib import closing, contextmanager, ExitStack, redirect_stderr
+import copy
+import io
+import json
+import os
+import pickle
+from pathlib import Path
+import re
+import shutil
+import stat
+import tempfile
+import threading
+import time
+import unittest
+from unittest.mock import patch
+
+import codex_native_sdk_carrier as carrier
+import codex_retained_sdk_export as sdk
+
+
+class CarrierModels(unittest.TestCase):
+    def test_root_close_detaches_attempts_every_owned_fd_and_never_retries_reused_numbers(self):
+        for index in (0, 2):
+            with self.subTest(index=index):
+                owner = carrier.Root(self.origin, carrier.Clock(self.deadline))
+                selected = [fd for _, fd, _ in reversed(owner.chain)]
+                self.assertGreater(len(selected), index)
+                real_close, attempts = os.close, []
+                def refuse(fd):
+                    self.assertEqual(owner.chain, [])
+                    attempts.append(fd)
+                    real_close(fd)
+                    if fd == selected[index]:
+                        raise OSError('synthetic successful-close error')
+                with patch.object(os, 'close', side_effect=refuse), self.assertRaises(OSError):
+                    owner.close()
+                self.assertEqual(attempts, selected)
+                for fd in selected:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
+                fresh = os.open(self.origin / 'receipt.json', os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    owner.close()
+                    self.assertTrue(stat.S_ISREG(os.fstat(fresh).st_mode))
+                finally:
+                    real_close(fresh)
+
+    def test_failed_root_constructor_still_attempts_every_registered_ancestor_close(self):
+        unsafe = self.root / 'unsealed-root'
+        unsafe.mkdir(mode=0o700)
+        real_open, real_close, opened, attempts = os.open, os.close, [], []
+        def tracked(*args, **kwargs):
+            fd = real_open(*args, **kwargs)
+            opened.append(fd)
+            return fd
+        def refuse(fd):
+            attempts.append(fd)
+            real_close(fd)
+            if len(attempts) == 1:
+                raise OSError('synthetic constructor-cleanup close error')
+        with patch.object(os, 'open', side_effect=tracked), patch.object(os, 'close', side_effect=refuse), \
+                self.assertRaises(OSError):
+            carrier.Root(unsafe, carrier.Clock(self.deadline))
+        self.assertEqual(attempts, list(reversed(opened)))
+        for fd in opened:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+    def test_held_transport_closes_all_four_leaves_and_root_chain_after_root_close_error(self):
+        root, _, pin = self.seal('transport-close-error')
+        owner = carrier.HeldCarrier(root, pin, self.deadline)
+        root_fds, leaf_fds = [], []
+        real_close, attempts = os.close, []
+        def refuse(fd):
+            attempts.append(fd)
+            if fd in root_fds:
+                self.assertEqual(owner._root.chain, [])
+            real_close(fd)
+            if root_fds and fd == root_fds[0]:
+                raise OSError('synthetic transport root close error')
+        # Register the actual ExitStack callbacks while the close seam is live;
+        # a later monkeypatch would not observe already captured callbacks.
+        with patch.object(os, 'close', side_effect=refuse):
+            owner.__enter__()
+            owner.report()
+            owner.full_final()
+            root_fds[:] = [fd for _, fd, _ in reversed(owner._root.chain)]
+            leaf_fds[:] = [fd for _, fd, _ in reversed(owner._held)]
+            attempts.clear()
+            with self.assertRaises(OSError):
+                owner.close()
+        self.assertEqual(attempts, leaf_fds + root_fds)
+        self.assertFalse(owner._active)
+        self.assertEqual(owner._held, ())
+        self.assertEqual(owner._root.chain, [])
+        for fd in attempts:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+    @contextmanager
+    def copy_fixture(self, name, count=6):
+        clock = carrier.Clock(self.deadline)
+        output = carrier.Output(self.root / name, clock)
+        output.mkdir("sdk")
+        output.mkdir("sdk/batch")
+        values = [b"", b"1", b"seven77", b"eight888", b"c" * 65536, b"l" * 65537]
+        values = [values[index % len(values)] for index in range(count)]
+        path = self.root / (name + "-payload")
+        self.write(path, b"".join(values))
+        payload = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        witness, files, offset = carrier.identity(os.fstat(payload)), {}, 0
+        for index, raw in enumerate(values):
+            files[("sdk", "batch/f" + str(index))] = {"offset": offset, "size": len(raw),
+                "sha256": carrier.sha(raw), "mode": 0o555 if index % 2 else 0o444}
+            offset += len(raw)
+        accepted = []
+        def accept(name, selected, size):
+            output.materialized[name] = selected
+            accepted.append((name, selected, size, threading.get_ident()))
+        try:
+            yield output, payload, witness, files, clock, accept, accepted, values
+        finally:
+            os.close(payload)
+            output.close()
+
+    def test_two_copy_workers_overlap_with_two_jobs_owner_authority_and_complete_fsync(self):
+        with self.copy_fixture("workers-overlap", 8) as case:
+            output, payload, witness, files, clock, accept, accepted, values = case
+            owner = threading.get_ident()
+            lock, barrier = threading.Lock(), threading.Barrier(2)
+            worker_ids, worker_threads, active, peaks, parents, captured, fsynced = set(), set(), [0], [0, 0, 0], set(), [], set()
+            real_job, real_queue = carrier._copy_regular_job, carrier.Queue
+            real_open, real_dup, real_fsync, real_chmod = os.open, os.dup, os.fsync, os.fchmod
+            real_check, real_parent, real_keep = carrier.Root.check, carrier.Root._parent, carrier._ParentHandles.keep
+            outstanding = [0]
+            queues = []
+            class BoundedQueue(real_queue):
+                def __init__(queue, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    queues.append(queue)
+                    self.assertEqual(queue.maxsize, 2)
+                def put_nowait(queue, item):
+                    if queue is queues[0]:
+                        self.assertEqual(threading.get_ident(), owner)
+                        with lock:
+                            outstanding[0] += 1
+                            peaks[1] = max(peaks[1], outstanding[0])
+                    return super().put_nowait(item)
+            def accepted_copy(*args):
+                accept(*args)
+                with lock: outstanding[0] -= 1
+            def job(state, parent, *args):
+                with lock:
+                    active[0] += 1
+                    peaks[0] = max(peaks[0], active[0])
+                    worker_ids.add(threading.get_ident())
+                    worker_threads.add(threading.current_thread())
+                    parents.add(parent)
+                try:
+                    barrier.wait(5)
+                    return real_job(state, parent, *args)
+                finally:
+                    with lock:
+                        active[0] -= 1
+                        parents.remove(parent)
+            def checked(root):
+                self.assertEqual(threading.get_ident(), owner)
+                return real_check(root)
+            def parent(root, *args):
+                self.assertEqual(threading.get_ident(), owner)
+                return real_parent(root, *args)
+            def keep(handles, *args):
+                self.assertEqual(threading.get_ident(), owner)
+                result = real_keep(handles, *args)
+                peaks[2] = max(peaks[2], len(handles.entries))
+                return result
+            def opened(*args, **kwargs):
+                fd = real_open(*args, **kwargs)
+                with lock: captured.append(fd)
+                return fd
+            def duplicated(fd):
+                copy = real_dup(fd)
+                with lock: captured.append(copy)
+                return copy
+            def fsync(fd):
+                with lock: fsynced.add(tuple(carrier.identity(os.fstat(fd), True)[:2]))
+                return real_fsync(fd)
+            def chmod(fd, mode):
+                self.assertIn(tuple(carrier.identity(os.fstat(fd), True)[:2]), fsynced)
+                return real_chmod(fd, mode)
+            with patch.object(carrier, "Queue", BoundedQueue), patch.object(carrier, "_copy_regular_job", job), \
+                    patch.object(carrier.Root, "check", checked), patch.object(carrier.Root, "_parent", parent), \
+                    patch.object(carrier._ParentHandles, "keep", keep), patch.object(carrier.os, "open", opened), \
+                    patch.object(carrier.os, "dup", duplicated), patch.object(carrier.os, "fsync", fsync), \
+                    patch.object(carrier.os, "fchmod", chmod):
+                carrier._copy_regulars(output, payload, witness, files, clock, accepted_copy)
+            self.assertEqual(peaks[:2], [2, 2])
+            self.assertLessEqual(peaks[2], 32)
+            self.assertEqual(len(worker_ids), 2)
+            self.assertNotIn(owner, worker_ids)
+            self.assertTrue(all(not thread.is_alive() for thread in worker_threads))
+            self.assertEqual((active[0], outstanding[0], parents), (0, 0, set()))
+            self.assertEqual(len(accepted), len(values))
+            self.assertEqual(len(fsynced), len(values))
+            for index, (name, selected, size, thread) in enumerate(accepted):
+                leaf = output.path / name
+                self.assertEqual((leaf.read_bytes(), size, thread), (values[index], len(values[index]), owner))
+                self.assertEqual(carrier.identity(leaf.stat()), selected)
+                self.assertEqual(stat.S_IMODE(leaf.stat().st_mode), files[("sdk", "batch/f" + str(index))]["mode"])
+            self.assert_descriptors_closed(set(captured))
+            os.fstat(payload)
+            output.root.check()
+
+    def test_two_copy_workers_first_io_failure_cancels_joins_before_parent_close(self):
+        with self.copy_fixture("workers-first-error", 6) as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            blocked, release, failed = threading.Event(), threading.Event(), threading.Event()
+            lock, live, parents, states, targets, submitted = threading.Lock(), [0], set(), [], [], [0]
+            real_job, real_queue, real_read, real_fsync, real_close = carrier._copy_regular_job, carrier.Queue, os.pread, os.fsync, os.close
+            queues = []
+            class BoundedQueue(real_queue):
+                def __init__(queue, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    queues.append(queue)
+                def put_nowait(queue, item):
+                    if queue is queues[0]: submitted[0] += 1
+                    return super().put_nowait(item)
+            def job(state, parent, *args):
+                with lock:
+                    live[0] += 1
+                    parents.add(parent)
+                    states.append(state)
+                try: return real_job(state, parent, *args)
+                finally:
+                    with lock:
+                        live[0] -= 1
+                        parents.remove(parent)
+            def read(fd, size, offset):
+                self.assertTrue(blocked.wait(5))
+                failed.set()
+                raise OSError("first actual copy read refusal")
+            def fsync(fd):
+                targets.append(fd)
+                blocked.set()
+                self.assertTrue(release.wait(5))
+                return real_fsync(fd)
+            def close(fd):
+                with lock: self.assertNotIn(fd, parents, "owner closed a running worker parent")
+                return real_close(fd)
+            controller_errors = []
+            def unblock():
+                try:
+                    self.assertTrue(failed.wait(5))
+                    self.assertTrue(states[0].cancel.wait(5))
+                except BaseException as error:
+                    controller_errors.append(error)
+                finally:
+                    release.set()
+            controller = threading.Thread(target=unblock)
+            controller.start()
+            try:
+                with patch.object(carrier, "Queue", BoundedQueue), patch.object(carrier, "_copy_regular_job", job), \
+                        patch.object(carrier.os, "pread", read), patch.object(carrier.os, "fsync", fsync), \
+                        patch.object(carrier.os, "close", close):
+                    with self.assertRaisesRegex(OSError, "first actual copy read refusal"):
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            finally:
+                release.set()
+                controller.join()
+            self.assertEqual(controller_errors, [])
+            self.assertTrue(failed.is_set())
+            self.assertEqual((live[0], parents, accepted), (0, set(), []))
+            self.assertEqual(submitted[0], 2)
+            self.assert_descriptors_closed(targets)
+            output.root.check()
+            os.fstat(payload)
+
+    def test_two_copy_workers_enqueue_interruption_preserves_parent_leases_until_join(self):
+        with self.copy_fixture("workers-submit") as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            real_queue, real_job = carrier.Queue, carrier._copy_regular_job
+            submitted, parents, queues, workers = [0], [], [], set()
+            class BoundedQueue(real_queue):
+                def __init__(queue, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    queues.append(queue)
+                def put_nowait(queue, item):
+                    if queue is queues[0]:
+                        submitted[0] += 1
+                        parents.append(item[1][0])
+                        result = super().put_nowait(item)
+                        if submitted[0] == 2: raise RuntimeError("model post-enqueue refusal")
+                        return result
+                    return super().put_nowait(item)
+            def job(*args):
+                workers.add(threading.current_thread())
+                return real_job(*args)
+            with patch.object(carrier, "Queue", BoundedQueue), patch.object(carrier, "_copy_regular_job", job):
+                with self.assertRaisesRegex(RuntimeError, "model post-enqueue refusal"):
+                    carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            self.assertEqual(accepted, [])
+            self.assertEqual(submitted[0], 2)
+            self.assertTrue(all(not worker.is_alive() for worker in workers))
+            self.assert_descriptors_closed(parents)
+            os.fstat(payload)
+            output.root.check()
+
+    def test_two_copy_workers_retry_interrupted_join_then_refuse_without_late_success(self):
+        with self.copy_fixture("workers-join", 2) as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            real_join, joins = threading.Thread.join, [0]
+            def join(worker, *args, **kwargs):
+                joins[0] += 1
+                if joins[0] == 1: raise KeyboardInterrupt("model join interruption")
+                return real_join(worker, *args, **kwargs)
+            with patch.object(carrier.threading.Thread, "join", join):
+                with self.assertRaisesRegex(KeyboardInterrupt, "model join interruption"):
+                    carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            self.assertEqual(joins[0], 3)
+            self.assertEqual(len(accepted), 2)
+            os.fstat(payload)
+            output.root.check()
+
+    def test_two_copy_workers_failed_start_admits_no_descriptors_and_preserves_unknown_outcome(self):
+        real_start = threading.Thread.start
+        for launched in (False, True):
+            with self.subTest(launched=launched), self.copy_fixture("workers-start-" + str(launched), 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                attempts, threads, jobs, ready = [0], [], [], []
+                real_worker = carrier._copy_worker
+                def worker(*args):
+                    ready.append(threading.current_thread())
+                    return real_worker(*args)
+                def start(thread):
+                    threads.append(thread)
+                    attempts[0] += 1
+                    if attempts[0] == 2:
+                        if launched: real_start(thread)
+                        raise KeyboardInterrupt("model interrupted bootstrap")
+                    return real_start(thread)
+                def job(*args):
+                    jobs.append(args)
+                    self.fail("copy capability admitted after failed start")
+                with patch.object(carrier.threading.Thread, "start", start), \
+                        patch.object(carrier, "_copy_worker", worker), patch.object(carrier, "_copy_regular_job", job):
+                    with self.assertRaisesRegex(KeyboardInterrupt, "model interrupted bootstrap") as caught:
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                self.assertEqual((attempts[0], jobs, accepted), (2, [], []))
+                self.assertFalse(threads[0].is_alive())
+                if launched:
+                    self.assertFalse(threads[1].is_alive())
+                else:
+                    self.assertIn("copy-worker-start-outcome-unknown", caught.exception.__notes__)
+                self.assertEqual(list((output.path / "sdk/batch").iterdir()), [])
+                output.root.check()
+                os.fstat(payload)
+
+    def test_two_copy_workers_actual_late_bootstrap_has_no_copy_capability_after_unknown_start(self):
+        with self.copy_fixture("workers-late-bootstrap", 2) as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            launched, release = threading.Event(), threading.Event()
+            real_start, real_inner = threading.Thread.start, threading.Thread._bootstrap_inner
+            callers, late_workers, controller_errors, copied = [], [], [], []
+            def inner(worker):
+                if worker.name == "sdk-copy-1":
+                    launched.set()
+                    if not release.wait(5): controller_errors.append("late bootstrap release missing")
+                return real_inner(worker)
+            def start(worker):
+                if worker.name != "sdk-copy-1": return real_start(worker)
+                late_workers.append(worker)
+                # The real start waits for _started while its actual OS thread
+                # is alive but deliberately delayed before that event is set.
+                caller = threading.Thread(target=lambda: real_start(worker), name="model-bootstrap-caller")
+                callers.append(caller)
+                real_start(caller)
+                self.assertTrue(launched.wait(5))
+                raise KeyboardInterrupt("model unknown OS-start outcome")
+            try:
+                with patch.object(carrier.threading.Thread, "start", start), \
+                        patch.object(carrier.threading.Thread, "_bootstrap_inner", inner), \
+                        patch.object(carrier, "_copy_regular_job", side_effect=lambda *args: copied.append(args)):
+                    with self.assertRaisesRegex(KeyboardInterrupt, "unknown OS-start outcome") as caught:
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                    self.assertIn("copy-worker-start-outcome-unknown", caught.exception.__notes__)
+                    self.assertEqual((copied, accepted), ([], []))
+                    self.assertEqual(list((output.path / "sdk/batch").iterdir()), [])
+                    release.set()
+                    for caller in callers: caller.join()
+                    for worker in late_workers: worker.join()
+                    self.assertTrue(all(not worker.is_alive() for worker in late_workers))
+                    self.assertEqual(copied, [])
+            finally:
+                release.set()
+                for caller in callers: caller.join()
+                for worker in late_workers: worker.join()
+            self.assertEqual(controller_errors, [])
+            output.root.check()
+            os.fstat(payload)
+
+    def test_two_copy_workers_delayed_ready_expires_before_any_copy_capability(self):
+        with self.copy_fixture("workers-ready", 2) as case:
+            output, payload, witness, files, clock, accept, accepted, _ = case
+            real_worker, entered = carrier._copy_worker, []
+            def worker(state, jobs, results, gate, ready, stop):
+                entered.append(threading.current_thread())
+                # A real started worker delays its own ready signal, without
+                # borrowing physical capabilities; expiry wakes it only to exit.
+                if threading.current_thread().name.endswith("1"):
+                    clock.deadline = time.monotonic() - 1
+                    self.assertTrue(stop.wait(5))
+                return real_worker(state, jobs, results, gate, ready, stop)
+            with patch.object(carrier, "_copy_worker", worker), \
+                    patch.object(carrier, "_copy_regular_job", side_effect=AssertionError("unexpected physical dispatch")):
+                with self.assertRaisesRegex(ValueError, "deadline"):
+                    carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            self.assertEqual(accepted, [])
+            self.assertEqual(list((output.path / "sdk/batch").iterdir()), [])
+            self.assertTrue(all(not thread.is_alive() for thread in entered))
+            os.fstat(payload)
+
+    def test_two_copy_workers_late_leaf_parent_root_and_alias_mutations_refuse_owner_acceptance(self):
+        real = carrier._copy_regular_job
+        for change in ("inode", "mode", "chmod-restored", "mtime-restored", "bytes", "symlink", "hardlink", "parent", "root", "alias"):
+            with self.subTest(change=change), self.copy_fixture("workers-mutation-" + change, 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                lock, changed = threading.Lock(), [False]
+                def mutate(state, parent, leaf, *args):
+                    result = real(state, parent, leaf, *args)
+                    if leaf == "f0":
+                        with lock:
+                            changed[0] = True
+                            selected = output.path / "sdk/batch/f0"
+                            info = selected.stat()
+                            if change in ("parent", "alias"):
+                                batch = output.path / "sdk/batch"
+                                batch.rename(output.path / "sdk/old-batch")
+                                if change == "parent": batch.mkdir(mode=0o700)
+                                else: batch.symlink_to(output.path / "sdk/old-batch", target_is_directory=True)
+                            elif change == "root":
+                                output.path.rename(output.path.with_name(output.path.name + "-aside"))
+                                output.path.mkdir(mode=0o700)
+                            elif change in ("inode", "symlink"):
+                                selected.unlink()
+                                if change == "inode": self.write(selected, b"")
+                                else: selected.symlink_to(self.root / "unselected-target")
+                            elif change == "hardlink": os.link(selected, self.root / "workers-foreign-hardlink")
+                            elif change == "mode": selected.chmod(0o555)
+                            elif change == "bytes":
+                                selected.chmod(0o600); selected.write_bytes(b"unexpected"); selected.chmod(0o444)
+                            elif change == "mtime-restored":
+                                selected.chmod(0o600); selected.write_bytes(b"")
+                                os.utime(selected, ns=(info.st_atime_ns, info.st_mtime_ns)); selected.chmod(0o444)
+                            else: selected.chmod(0o600); selected.chmod(0o444)
+                    return result
+                with patch.object(carrier, "_copy_regular_job", mutate):
+                    with self.assertRaises(ValueError):
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                self.assertTrue(changed[0])
+                self.assertEqual(accepted, [])
+
+    def test_two_copy_workers_foreign_parent_and_exclusive_name_refuse(self):
+        for change in ("foreign", "existing", "symlink", "duplicate"):
+            with self.subTest(change=change), self.copy_fixture("workers-foreign-" + change, 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                real = carrier._copy_regular_job
+                foreign = self.root / ("foreign-parent-" + change)
+                foreign.mkdir(mode=0o700)
+                fd = os.open(foreign, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                def substituted(state, parent, leaf, selected, *args):
+                    return real(state, fd, leaf, selected, *args)
+                if change == "existing": self.write(output.path / "sdk/batch/f0", b"already here")
+                elif change == "symlink": (output.path / "sdk/batch/f0").symlink_to(foreign / "never-follow")
+                elif change == "duplicate":
+                    class Entries(dict):
+                        def items(unused): return [(('sdk', 'batch/f0'), files[('sdk', 'batch/f0')])] * 2
+                    files = Entries(files)
+                try:
+                    with ExitStack() as stack:
+                        if change == "foreign": stack.enter_context(patch.object(carrier, "_copy_regular_job", substituted))
+                        with self.assertRaises((ValueError, OSError)):
+                            carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                    self.assertFalse(list(foreign.iterdir()))
+                finally: os.close(fd)
+
+    def test_two_copy_workers_actual_byte_digest_extent_mode_and_fsync_failures_refuse(self):
+        for boundary in ("digest", "truncated", "write", "fsync", "chmod"):
+            with self.subTest(boundary=boundary), self.copy_fixture("workers-io-" + boundary, 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                if boundary == "digest": files[("sdk", "batch/f0")]["sha256"] = "f" * 64
+                elif boundary == "truncated": files[("sdk", "batch/f1")]["size"] += 1
+                with ExitStack() as stack:
+                    if boundary == "write": stack.enter_context(patch.object(carrier.os, "write", side_effect=OSError("write refused")))
+                    elif boundary == "fsync": stack.enter_context(patch.object(carrier.os, "fsync", side_effect=OSError("fsync refused")))
+                    elif boundary == "chmod": stack.enter_context(patch.object(carrier.os, "fchmod", side_effect=OSError("chmod refused")))
+                    with self.assertRaises((ValueError, OSError)):
+                        carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                self.assertLess(len(accepted), 2)
+
+    def test_two_copy_workers_partial_writes_preserve_each_actual_digest_and_fsync(self):
+        with self.copy_fixture("workers-partial-write", 6) as case:
+            output, payload, witness, files, clock, accept, accepted, values = case
+            real_write, real_fsync, counts = os.write, os.fsync, []
+            def short(fd, raw): return real_write(fd, raw[:17])
+            def fsync(fd): counts.append(tuple(carrier.identity(os.fstat(fd), True)[:2])); return real_fsync(fd)
+            with patch.object(carrier.os, "write", short), patch.object(carrier.os, "fsync", fsync):
+                carrier._copy_regulars(output, payload, witness, files, clock, accept)
+            self.assertEqual(len(set(counts)), 6)
+            self.assertEqual([row[2] for row in accepted], [len(raw) for raw in values])
+            for index, raw in enumerate(values): self.assertEqual((output.path / ("sdk/batch/f" + str(index))).read_bytes(), raw)
+
+    def test_two_copy_workers_original_float_integer_and_blocked_fsync_expiry_join(self):
+        for boundary in ("pre", "read", "fsync"):
+            with self.subTest(boundary=boundary), self.copy_fixture("workers-clock-" + boundary, 2) as case:
+                output, payload, witness, files, clock, accept, accepted, _ = case
+                original_until = time.monotonic_ns() + 10**9
+                clock.until_ns = original_until
+                real_read, real_fsync, calls = os.pread, os.fsync, []
+                def read(*args):
+                    result = real_read(*args)
+                    clock.until_ns = time.monotonic_ns() - 1
+                    return result
+                blocked, release = threading.Event(), threading.Event()
+                def fsync(fd):
+                    calls.append(fd); blocked.set()
+                    self.assertTrue(release.wait(5))
+                    return real_fsync(fd)
+                controller_errors = []
+                def expire():
+                    try:
+                        self.assertTrue(blocked.wait(5))
+                        clock.until_ns = time.monotonic_ns() - 1
+                    except BaseException as error:
+                        controller_errors.append(error)
+                    finally:
+                        release.set()
+                if boundary == "pre": clock.deadline = time.monotonic() - 1
+                controller = threading.Thread(target=expire) if boundary == "fsync" else None
+                if controller: controller.start()
+                try:
+                    with ExitStack() as stack:
+                        if boundary == "read": stack.enter_context(patch.object(carrier.os, "pread", read))
+                        elif boundary == "fsync": stack.enter_context(patch.object(carrier.os, "fsync", fsync))
+                        with self.assertRaisesRegex(ValueError, "deadline"):
+                            carrier._copy_regulars(output, payload, witness, files, clock, accept)
+                finally:
+                    release.set()
+                    if controller: controller.join()
+                self.assertEqual(controller_errors, [])
+                if boundary == "read":
+                    self.assertLessEqual(len(accepted), 1)
+                    if accepted: self.assertEqual((accepted[0][0], accepted[0][2]), ("sdk/batch/f0", 0))
+                else:
+                    self.assertEqual(accepted, [])
+                if boundary == "fsync":
+                    self.assertTrue(calls)
+                    self.assert_descriptors_closed(calls)
+                os.fstat(payload)
+
+    def test_two_copy_workers_owned_payload_mutation_refuses_with_no_completed_marker(self):
+        root, _, pin = self.seal("workers-held-payload")
+        real, changed = carrier._copy_regular_job, [False]
+        lock = threading.Lock()
+        def mutate(*args):
+            result = real(*args)
+            with lock:
+                if not changed[0]:
+                    changed[0] = True
+                    payload = root / "payload.bin"
+                    payload.chmod(0o600)
+                    raw = payload.read_bytes(); payload.write_bytes(raw); payload.chmod(0o444)
+            return result
+        output, emitted = self.root / "workers-held-output", io.StringIO()
+        with redirect_stderr(emitted), patch.object(carrier, "_copy_regular_job", mutate):
+            with self.assertRaises(ValueError): carrier.extract(root, pin, output, self.deadline)
+        self.assertTrue(changed[0])
+        self.assertFalse((output / "extraction-receipt.json").exists())
+        self.assertIn("copy-refused", emitted.getvalue())
+        self.assertNotIn("copy-complete", emitted.getvalue())
+        self.assertNotIn("final-proof-complete", emitted.getvalue())
+
+    def fresh_fixture(self, name):
+        parent = self.root / name
+        parent.mkdir(mode=0o700)
+        values = {("sdk", "empty"): b"", ("sdk", "one"): b"1", ("sdk", "seven"): b"7" * 7,
+            ("sdk", "eight"): b"8" * 8, ("sdk", "nine"): b"9" * 9,
+            ("sdk", "chunk"): b"c" * 65536, ("sdk", "long"): b"l" * 65537,
+            ("sdk", "a/child"): b"directory child", ("sdk", "a-"): b"flat sibling",
+            ("sdk", "z"): b"z", ("sdk", "é"): b"utf8", ("jdk", "first"): b"first role"}
+        expected = {}
+        for role in ("sdk", "jdk"):
+            (parent / role).mkdir(mode=0o700)
+            expected[(role, "")] = {"kind": "directory", "mode": 0o555}
+        (parent / "sdk/a").mkdir(mode=0o700)
+        expected[("sdk", "a")] = {"kind": "directory", "mode": 0o555}
+        for (role, path), raw in values.items():
+            mode = 0o555 if path == "nine" else 0o444
+            self.write(parent / role / path, raw, mode)
+            expected[(role, path)] = {"kind": "file", "mode": mode, "size": len(raw), "sha256": carrier.sha(raw)}
+        (parent / "sdk/inert").symlink_to("/unselected-external-target/must-not-be-opened")
+        expected[("sdk", "inert")] = {"kind": "symlink", "target": "/unselected-external-target/must-not-be-opened"}
+        self.seal_dirs(parent / "sdk")
+        self.seal_dirs(parent / "jdk")
+        return parent, expected, values
+
+    def fresh_roots(self, parent, clock, stack):
+        return {role: stack.enter_context(carrier.Root(parent / role, clock)) for role in ("sdk", "jdk")}
+
+    def test_fresh_nar_parent_cache_reduces_real_opens_with_identical_named_checks_and_proof(self):
+        parent, expected, unused = self.fresh_fixture("fresh-parent-golden")
+        (parent / "sdk/a").chmod(0o700)
+        for index in range(8):
+            raw = ("cached nested file " + str(index)).encode()
+            name = "a/cache" + str(index)
+            self.write(parent / "sdk" / name, raw)
+            expected[("sdk", name)] = {"kind":"file", "mode":0o444,
+                                      "size":len(raw), "sha256":carrier.sha(raw)}
+        (parent / "sdk/a").chmod(0o555)
+        clock = carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            real_open, real_stat = os.open, os.stat
+            # Same complete _scan_nar, disabling only the local open-to-dup
+            # optimization establishes the actual syscall/proof comparison.
+            def uncached(owner, name): return owner.root.parent(name)
+            with patch.object(carrier._FreshNarParents, "parent", uncached), \
+                    patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                    patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                before = carrier._scan_nar(roots, expected, clock)
+                before_opens, before_stats = opened.call_count, named.call_count
+            with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                    patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                after = carrier._scan_nar(roots, expected, clock)
+                self.assertLess(opened.call_count, before_opens)
+                self.assertEqual(named.call_count, before_stats)
+            self.assertEqual(after, before)
+            self.assertEqual(after[0], expected)
+            self.assertEqual(after[2], carrier.nar_origins(roots, expected, clock))
+
+    def retained_prefix_fixture(self, name, depth=1):
+        parent, expected, values = self.fresh_fixture(name)
+        (parent / "sdk").chmod(0o700)
+        directory = parent / "sdk"
+        components = ["p"+str(index).zfill(2) for index in range(depth)]
+        for component in components:
+            directory /= component; directory.mkdir(mode=0o700)
+            relative = str(directory.relative_to(parent / "sdk"))
+            expected[("sdk", relative)] = {"kind":"directory", "mode":0o555}
+        leaf = "/".join(components+["leaf"])
+        raw = b"retained current prefix bytes"; self.write(directory / "leaf", raw)
+        expected[("sdk", leaf)] = {"kind":"file", "mode":0o444, "size":len(raw), "sha256":carrier.sha(raw)}
+        self.seal_dirs(parent / "sdk")
+        return parent, expected, leaf
+
+    def retained_stream(self, roots, expected, clock, cache, name):
+        snapshots = carrier._fresh_namespace(roots, expected, clock)
+        stream = carrier._FreshNarFile(roots["sdk"], name, expected[("sdk", name)], snapshots,
+            "sdk", {}, set(), [0], clock, cache)
+        return stream, snapshots
+
+    def drain_stream(self, stream):
+        while stream.read(65536):pass
+
+    def test_fresh_prefix_identity_matches_actual_full_nine_and_live_first_five(self):
+        parent, expected, name = self.retained_prefix_fixture("fresh-prefix-identity", 2)
+        fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
+                  "st_size", "st_mtime_ns", "st_ctime_ns")
+        for relative in ("sdk", "sdk/p00", "sdk/" + name, "sdk/inert"):
+            info = os.stat(parent / relative, follow_symlinks=False)
+            reads = {}
+            class ObservedStat:
+                def __getattr__(self, field):
+                    reads[field] = reads.get(field, 0) + 1
+                    return getattr(info, field)
+            observed = carrier._fresh_prefix_identity(ObservedStat())
+            self.assertEqual(observed, tuple(carrier.identity(info)))
+            self.assertEqual(reads, {field: 1 for field in fields})
+            selected = carrier.identity(info, True)
+            self.assertTrue(carrier._fresh_prefix_matches(observed, selected))
+            for index in range(5):
+                changed = list(selected); changed[index] += 1
+                self.assertFalse(carrier._fresh_prefix_matches(observed, changed))
+            self.assertFalse(carrier._fresh_prefix_matches(observed, tuple(selected)))
+            self.assertFalse(carrier._fresh_prefix_matches(observed, selected[:-1]))
+            self.assertFalse(carrier._fresh_prefix_matches(observed, selected + [0]))
+            # First-five remains distinct from the mandatory full-nine join.
+            for index in range(5, 9):
+                changed = list(observed); changed[index] += 1
+                self.assertTrue(carrier._fresh_prefix_matches(tuple(changed), selected))
+                self.assertNotEqual(tuple(changed), observed)
+
+    def test_fresh_prefix_conversion_keeps_complete_nar_and_all_current_observations(self):
+        parent, expected, unused = self.retained_prefix_fixture("fresh-prefix-nar", 6)
+        clock = carrier.Clock(self.deadline)
+        actual_identity = carrier._fresh_prefix_identity
+        actual_matches = carrier._fresh_prefix_matches
+        actual_check = carrier.Root.check
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            results, counts, conversions = [], [], []
+            # Independent existing identity() supplies the equivalent reference
+            # representation. It never supplies cached bytes or stat results.
+            for optimized in (False, True):
+                seen, converted = [0], [0]
+                def checked(root): seen[0] += 1; return actual_check(root)
+                def identity(info):
+                    converted[0] += 1
+                    return actual_identity(info) if optimized else tuple(carrier.identity(info))
+                def matches(observed, selected):
+                    return actual_matches(observed, selected) if optimized else list(observed[:5]) == selected
+                with patch.object(carrier, "_fresh_prefix_identity", identity), \
+                        patch.object(carrier, "_fresh_prefix_matches", matches), \
+                        patch.object(carrier.os, "stat", wraps=os.stat) as named, \
+                        patch.object(carrier.os, "fstat", wraps=os.fstat) as held, \
+                        patch.object(carrier.Root, "check", checked):
+                    results.append(carrier._scan_nar(roots, expected, clock))
+                    counts.append((named.call_count, held.call_count, seen[0]))
+                    conversions.append(converted[0])
+            self.assertEqual(results[0], results[1]); self.assertEqual(results[1][0], expected)
+            self.assertEqual(results[1][2], carrier.nar_origins(roots, expected, clock))
+            self.assertEqual(counts[0], counts[1]); self.assertEqual(conversions[0], conversions[1])
+            self.assertGreater(conversions[1], 0); self.assertEqual(conversions[1] % 3, 0)
+
+    def test_fresh_prefix_real_full_nine_mutation_in_each_observation_region_refuses(self):
+        for region in ("before", "held", "after"):
+            with self.subTest(region=region):
+                parent, expected, name = self.retained_prefix_fixture("fresh-prefix-race-" + region, 3)
+                clock = carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with carrier._FreshNarParents(roots["sdk"], clock) as cache:
+                        stream, witnesses = self.retained_stream(roots, expected, clock, cache, name)
+                        target_fd = stream.path.records[0][2][0]
+                        target = parent / "sdk/p00"
+                        prior = os.fstat(target_fd); named_calls, armed = [0], [True]
+                        real_stat, real_fstat = os.stat, os.fstat
+                        owned = [stream.fd, stream.parent] + [fd for fd, unused in cache.entries.values()]
+                        def mutate():
+                            armed[0] = False
+                            # Owner may set times on its sealed directory. The
+                            # stable five stay equal; full-nine must refuse.
+                            os.utime(target, ns=(prior.st_atime_ns, prior.st_mtime_ns + 1), follow_symlinks=False)
+                        def named(component, *args, **kwargs):
+                            if component == "p00" and kwargs.get("dir_fd") == roots["sdk"].fd:
+                                named_calls[0] += 1
+                                if armed[0] and ((region == "before" and named_calls[0] == 1)
+                                        or (region == "after" and named_calls[0] == 2)): mutate()
+                            return real_stat(component, *args, **kwargs)
+                        def held(fd):
+                            if armed[0] and region == "held" and fd == target_fd: mutate()
+                            return real_fstat(fd)
+                        with patch.object(carrier.os, "stat", named), patch.object(carrier.os, "fstat", held):
+                            with self.assertRaises(ValueError):
+                                with stream: self.drain_stream(stream)
+                        self.assertFalse(armed[0]); self.assertTrue(stream.closed)
+                        self.assertEqual(stream.completed, set()); self.assertEqual(stream.observed, {})
+                        self.assertIsNone(cache.active_path); self.assertIsNone(stream.fd); self.assertIsNone(stream.parent)
+                        after = real_fstat(target_fd)
+                        self.assertEqual(carrier.identity(after, True), carrier.identity(prior, True))
+                        self.assertNotEqual(carrier.identity(after), carrier.identity(prior))
+                    self.assert_descriptors_closed(owned)
+
+    def test_fresh_prefix_identity_allocation_failure_keeps_first_cause_and_drains_actual_fds(self):
+        for conversion in (1, 2, 3):
+            with self.subTest(conversion=conversion):
+                parent, expected, name = self.retained_prefix_fixture("fresh-prefix-allocation-" + str(conversion), 2)
+                clock = carrier.Clock(self.deadline)
+                first = MemoryError("synthetic immutable identity allocation")
+                cleanup = OSError("synthetic first successful-close refusal")
+                actual_identity, close = carrier._fresh_prefix_identity, os.close
+                observed, owned, attempts = [0], [], []
+                def identity(info):
+                    observed[0] += 1
+                    actual = actual_identity(info)
+                    if observed[0] == conversion: raise first
+                    return actual
+                def drain(fd):
+                    if fd in owned: attempts.append(fd)
+                    close(fd)
+                    if owned and fd == owned[0]: raise cleanup
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with self.assertRaises(MemoryError) as caught:
+                        with patch.object(carrier.os, "close", drain):
+                            with carrier._FreshNarParents(roots["sdk"], clock) as cache:
+                                stream, unused = self.retained_stream(roots, expected, clock, cache, name)
+                                owned[:] = [stream.fd, stream.parent] + [fd for fd, unused in cache.entries.values()]
+                                with patch.object(carrier, "_fresh_prefix_identity", identity):
+                                    with stream: self.drain_stream(stream)
+                    self.assertIs(caught.exception, first); self.assertIs(caught.exception.__cause__, cleanup)
+                    self.assertEqual(observed[0], conversion); self.assertEqual(attempts, owned)
+                    self.assertEqual(cache.entries, {}); self.assertIsNone(cache.pending); self.assertIsNone(cache.active_path)
+                    self.assertTrue(stream.closed); self.assertIsNone(stream.fd); self.assertIsNone(stream.parent)
+                    self.assert_descriptors_closed(owned)
+
+    def test_retained_prefix_complete_nar_preserves_checks_and_reduces_real_dup_close(self):
+        parent, expected, unused = self.retained_prefix_fixture("retained-comparison", 6)
+        clock = carrier.Clock(self.deadline)
+        actual_check = carrier.Root.check
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            results = []; counts = []
+            for optimized in (False, True):
+                seen = [0]
+                def checked(root):seen[0]+=1;return actual_check(root)
+                with ExitStack() as instruments:
+                    if not optimized:instruments.enter_context(patch.object(carrier._FreshNarParents, "borrow_path", return_value=None))
+                    dup = instruments.enter_context(patch.object(carrier.os, "dup", wraps=os.dup))
+                    closed = instruments.enter_context(patch.object(carrier.os, "close", wraps=os.close))
+                    named = instruments.enter_context(patch.object(carrier.os, "stat", wraps=os.stat))
+                    held = instruments.enter_context(patch.object(carrier.os, "fstat", wraps=os.fstat))
+                    instruments.enter_context(patch.object(carrier.Root, "check", checked))
+                    results.append(carrier._scan_nar(roots, expected, clock))
+                    counts.append((dup.call_count,closed.call_count,named.call_count,held.call_count,seen[0]))
+            self.assertEqual(results[0],results[1]);self.assertEqual(results[1][0],expected)
+            self.assertEqual(results[1][2],carrier.nar_origins(roots,expected,clock))
+            self.assertLess(counts[1][0],counts[0][0]);self.assertLess(counts[1][1],counts[0][1])
+            self.assertEqual(counts[1][2:],counts[0][2:])
+
+    def test_retained_prefix_late_real_ancestor_replacement_link_and_mode_refuse(self):
+        for fault in ("higher", "immediate", "root", "symbolic", "mode", "uid"):
+            with self.subTest(fault=fault):
+                parent,expected,name=self.retained_prefix_fixture("retained-race-"+fault,3)
+                clock=carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack)
+                    cache=stack.enter_context(carrier._FreshNarParents(roots["sdk"],clock))
+                    stream,unused=self.retained_stream(roots,expected,clock,cache,name)
+                    self.assertIsNotNone(stream.path)
+                    actual=carrier._FreshNarPath.current;armed=[True]
+                    def mutate(path,root,selected,selected_clock):
+                        if armed[0]:
+                            armed[0]=False
+                            if fault=="uid":
+                                named=os.stat
+                                class ForeignUID:
+                                    def __init__(view,info):view.info=info
+                                    def __getattr__(view,field):return view.info.st_uid+1 if field=="st_uid" else getattr(view.info,field)
+                                def foreign(component,*args,**kwargs):
+                                    info=named(component,*args,**kwargs)
+                                    return ForeignUID(info) if component=="p00" and kwargs.get("dir_fd")==path.root_fd else info
+                                with patch.object(carrier.os,"stat",foreign):return actual(path,root,selected,selected_clock)
+                            target=(parent/"sdk") if fault=="root" else (parent/"sdk/p00/p01/p02" if fault=="immediate" else parent/"sdk/p00")
+                            if fault=="mode":target.chmod(0o500)
+                            else:
+                                target.parent.chmod(0o700);aside=target.with_name(target.name+"-aside");target.rename(aside)
+                                if fault=="symbolic":target.symlink_to(aside,target_is_directory=True)
+                                else:shutil.copytree(aside,target,symlinks=True)
+                                target.parent.chmod(0o555 if target.parent!=parent else 0o700)
+                        return actual(path,root,selected,selected_clock)
+                    with patch.object(carrier._FreshNarPath,"current",mutate):
+                        with self.assertRaises(ValueError):
+                            with stream:self.drain_stream(stream)
+                    self.assertFalse(armed[0]);self.assertIsNone(cache.active_path)
+                    self.assertIsNone(stream.fd);self.assertIsNone(stream.parent);self.assertTrue(stream.closed)
+
+    def test_retained_prefix_pins_existing_32_entries_and_rejects_eviction_reentry_and_dup_exhaustion(self):
+        parent,expected,name=self.retained_prefix_fixture("retained-pin-bound",32)
+        clock=carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                stream,unused=self.retained_stream(roots,expected,clock,cache,name)
+                self.assertIsNotNone(stream.path);self.assertEqual(len(cache.entries),32)
+                pinned=tuple(cache.entries.items());actual_dup=os.dup
+                with patch.object(carrier.os,"dup",wraps=actual_dup) as duplicated:
+                    with self.assertRaises(ValueError):cache.keep("unselected",roots["sdk"].fd,carrier.identity(os.fstat(roots["sdk"].fd),True))
+                    with self.assertRaises(ValueError):cache.parent("a/child")
+                    self.assertEqual(duplicated.call_count,0)
+                self.assertEqual(tuple(cache.entries.items()),pinned)
+                with stream:self.drain_stream(stream)
+                self.assertIsNone(cache.active_path)
+                with patch.object(carrier.os,"dup",side_effect=OSError("synthetic duplicate refusal")):
+                    with self.assertRaises(OSError):cache.parent(name)
+                self.assertLessEqual(len(cache.entries),32)
+                retained=[fd for fd,unused in cache.entries.values()]
+            self.assert_descriptors_closed(retained)
+
+    def test_retained_prefix_depth_and_actual_evicted_chain_use_exact_old_fallback(self):
+        for depth in (1,33,63):
+            with self.subTest(depth=depth):
+                parent,expected,name=self.retained_prefix_fixture("retained-fallback-"+str(depth),depth)
+                clock=carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack)
+                    with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                        actual_parent=cache.parent;actual_borrow=cache.borrow_path;calls=[]
+                        def parent_lookup(selected):calls.append(selected);return actual_parent(selected)
+                        def evict(selected,snapshots,role):
+                            if depth==1:
+                                fd,unused=cache.entries.pop("p00");os.close(fd)
+                            return actual_borrow(selected,snapshots,role)
+                        with patch.object(cache,"parent",parent_lookup),patch.object(cache,"borrow_path",evict):
+                            stream,snapshots=self.retained_stream(roots,expected,clock,cache,name)
+                            self.assertIsNone(stream.path)
+                            with stream:self.drain_stream(stream)
+                        self.assertEqual(calls,[name]*3);self.assertIsNone(cache.active_path)
+                        self.assertLessEqual(len(cache.entries),32)
+                    self.assertEqual(carrier._fresh_namespace(roots,expected,clock),snapshots)
+
+    def test_retained_prefix_allocation_before_and_after_pin_drain_actual_owner_fds(self):
+        for stage in ("construct","after-pin"):
+            with self.subTest(stage=stage):
+                parent,expected,name=self.retained_prefix_fixture("retained-allocation-"+stage,2)
+                clock=carrier.Clock(self.deadline);original_set=carrier._FreshNarParents.__setattr__;armed=[True]
+                def refuse_pin(owner,key,value):
+                    original_set(owner,key,value)
+                    if armed[0] and key=="active_path" and isinstance(value,carrier._FreshNarPath):
+                        armed[0]=False;raise MemoryError("synthetic post-pin refusal")
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack);owned=[];returned=[]
+                    with self.assertRaises(MemoryError):
+                        with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                            actual_parent=cache.parent
+                            def enrolled(selected):
+                                fd,leaf=actual_parent(selected);returned.append(fd);owned.extend(fd for fd,unused in cache.entries.values());return fd,leaf
+                            with patch.object(cache,"parent",enrolled):
+                                if stage=="construct":
+                                    with patch.object(carrier._FreshNarPath,"__init__",side_effect=MemoryError("synthetic path allocation")):
+                                        self.retained_stream(roots,expected,clock,cache,name)
+                                else:
+                                    with patch.object(carrier._FreshNarParents,"__setattr__",refuse_pin):
+                                        self.retained_stream(roots,expected,clock,cache,name)
+                    self.assertIsNone(cache.active_path);self.assertIsNone(cache.pending);self.assertEqual(cache.entries,{})
+                    self.assert_descriptors_closed(set(owned+returned))
+                    if stage=="after-pin":self.assertFalse(armed[0])
+
+    def test_retained_prefix_active_cache_failed_close_drains_once_before_fd_reuse(self):
+        parent,expected,name=self.retained_prefix_fixture("retained-active-close",2)
+        clock=carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            cache=carrier._FreshNarParents(roots["sdk"],clock)
+            stream,unused=self.retained_stream(roots,expected,clock,cache,name);path=stream.path
+            self.assertIsNotNone(path)
+            descriptors=[fd for fd,unused in cache.entries.values()];close=os.close;attempts=[]
+            def refuse(fd):
+                self.assertEqual(cache.entries,{});self.assertIsNone(cache.active_path)
+                attempts.append(fd);close(fd)
+                if fd==descriptors[0]:raise OSError("synthetic active cache successful-close refusal")
+            with patch.object(carrier.os,"close",refuse):
+                with self.assertRaises(OSError):cache.close()
+            self.assertEqual(attempts,descriptors);self.assertTrue(path.closed);self.assertEqual(path.records,())
+            self.assert_descriptors_closed(descriptors)
+            with self.assertRaises(ValueError):stream.check()
+            stream.close();self.assertIsNone(stream.fd);self.assertIsNone(stream.parent)
+            probe=os.open(parent/"sdk/one",os.O_RDONLY|os.O_NOFOLLOW)
+            try:cache.close();self.assertTrue(stat.S_ISREG(os.fstat(probe).st_mode))
+            finally:close(probe)
+
+    def test_retained_prefix_foreign_deadline_thread_and_first_cleanup_cause_are_closed(self):
+        parent,expected,name=self.retained_prefix_fixture("retained-owner-close",2)
+        clock=carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                stream,unused=self.retained_stream(roots,expected,clock,cache,name);path=stream.path
+                self.assertIsNotNone(path)
+                for args in ((roots["jdk"],name,clock),(roots["sdk"],name,carrier.Clock(self.deadline)),(roots["sdk"],"a/child",clock)):
+                    with self.assertRaises(ValueError):path.current(*args)
+                with patch.object(carrier.threading,"get_ident",return_value=cache.owner+1):
+                    with self.assertRaises(ValueError):path.current(roots["sdk"],name,clock)
+                with patch.object(carrier.time,"monotonic",return_value=clock.deadline):
+                    with self.assertRaises(ValueError):path.current(roots["sdk"],name,clock)
+                self.assertEqual(clock.deadline,self.deadline)
+                stream.close();self.assertIsNone(cache.active_path)
+            first=MemoryError("synthetic original body");cleanup=OSError("synthetic first successful-close refusal")
+            close=os.close;attempts=[];owned=[]
+            def refuse(fd):
+                if fd in owned:attempts.append(fd)
+                close(fd)
+                if owned and fd in owned:raise cleanup if fd==owned[0] else OSError("synthetic later close refusal")
+            with self.assertRaises(MemoryError) as caught:
+                with patch.object(carrier.os,"close",refuse):
+                    with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                        stream,unused=self.retained_stream(roots,expected,clock,cache,name)
+                        owned[:]=[stream.fd,stream.parent]+[fd for fd,unused in cache.entries.values()]
+                        with stream:raise first
+            self.assertIs(caught.exception,first);self.assertIs(caught.exception.__cause__,cleanup)
+            self.assertEqual(attempts,owned);self.assertIsNone(cache.active_path);self.assertEqual(cache.entries,{})
+            self.assert_descriptors_closed(owned)
+
+    def test_fresh_nar_parent_cache_bound_exhaustion_and_failed_close_retire_all_fds(self):
+        parent, unused, unused_values = self.fresh_fixture("fresh-parent-bound")
+        (parent / "sdk").chmod(0o700)
+        for index in range(34):
+            directory = parent / "sdk" / ("d" + str(index)); directory.mkdir(mode=0o700)
+            self.write(directory / "leaf", b"bounded cache")
+            directory.chmod(0o555)
+        (parent / "sdk").chmod(0o555)
+        clock = carrier.Clock(self.deadline)
+        with carrier.Root(parent / "sdk", clock) as root:
+            # The existing creation/write owner still refuses sealed roots.
+            with self.assertRaises(ValueError): carrier._ParentHandles(root)
+            cache = carrier._FreshNarParents(root, clock)
+            for index in range(34):
+                fd, leaf = cache.parent("d" + str(index) + "/leaf")
+                self.assertEqual(leaf, "leaf"); os.close(fd)
+                self.assertLessEqual(len(cache.entries), 32)
+            self.assertEqual(len(cache.entries), 32)
+            selected = [fd for fd, unused in cache.entries.values()]
+            real_close, attempts = os.close, []
+            def refused_close(fd):
+                self.assertEqual(cache.entries, {})
+                attempts.append(fd); real_close(fd)
+                if fd == selected[0]: raise OSError("synthetic successful-close error")
+            with patch.object(carrier.os, "close", side_effect=refused_close):
+                with self.assertRaises(OSError): cache.close()
+            self.assertEqual(attempts, selected)
+            self.assertTrue(cache.closed); self.assert_descriptors_closed(selected)
+            with self.assertRaises(ValueError): cache.parent("d0/leaf")
+            # Actual dup refusal leaves the previously enrolled owner closed;
+            # no RLIMIT change or retry grants another descriptor budget.
+            retained = []
+            with self.assertRaises(OSError):
+                with carrier._FreshNarParents(root, clock) as exhausted:
+                    fd, unused = exhausted.parent("d0/leaf"); os.close(fd)
+                    retained = [fd for fd, unused in exhausted.entries.values()]
+                    with patch.object(carrier.os, "dup", side_effect=OSError("synthetic descriptor exhaustion")):
+                        exhausted.parent("d0/leaf")
+            self.assertTrue(exhausted.closed);self.assertEqual(exhausted.entries,{})
+            self.assert_descriptors_closed(retained)
+
+    def test_fresh_nar_cache_hit_and_before_after_enrollment_failure_own_every_fd(self):
+        parent, unused, unused_values = self.fresh_fixture("fresh-parent-enrollment")
+        (parent / "sdk").chmod(0o700)
+        (parent / "sdk/b").mkdir(mode=0o700)
+        self.write(parent / "sdk/b/child", b"enrollment bytes")
+        (parent / "sdk/b").chmod(0o555); (parent / "sdk").chmod(0o555)
+        clock = carrier.Clock(self.deadline)
+        class RefuseInsertion(dict):
+            phase = None
+            attempts = 0
+            def __setitem__(mapping, key, value):
+                if mapping.phase is not None:
+                    mapping.attempts += 1
+                    if mapping.phase == "after": super().__setitem__(key, value)
+                    raise MemoryError("synthetic cache insertion refusal")
+                return super().__setitem__(key, value)
+        with carrier.Root(parent / "sdk", clock) as root:
+            with carrier._FreshNarParents(root, clock) as cache:
+                fd, unused = cache.parent("a/child"); os.close(fd)
+                mapping = RefuseInsertion(cache.entries); cache.entries = mapping
+                mapping.phase = "before"
+                original_fd = cache.entries["a"][0]
+                fd, unused = cache.parent("a/child"); os.close(fd)
+                self.assertEqual(mapping.attempts, 0)
+                self.assertEqual(cache.entries["a"][0], original_fd)
+            for phase in ("before", "after"):
+                with self.subTest(phase=phase):
+                    owned, attempts, original_error = [], [], []
+                    real_close = os.close
+                    def refused_close(fd):
+                        if fd in owned:
+                            self.assertEqual(cache.entries, {})
+                            self.assertIsNone(cache.pending)
+                            attempts.append(fd)
+                        real_close(fd)
+                        if owned and fd == owned[0]:
+                            raise OSError("synthetic successful enrollment-close error")
+                    with patch.object(carrier.os, "close", side_effect=refused_close):
+                        with self.assertRaises(MemoryError) as caught:
+                            with carrier._FreshNarParents(root, clock) as cache:
+                                fd, unused = cache.parent("a/child"); os.close(fd)
+                                mapping = RefuseInsertion(cache.entries); cache.entries = mapping
+                                mapping.phase = phase
+                                try:
+                                    cache.parent("b/child")
+                                except MemoryError as error:
+                                    original_error.append(error)
+                                    self.assertIsNotNone(cache.pending)
+                                    owned[:] = list(dict.fromkeys(
+                                        [fd for fd, unused in cache.entries.values()] + [cache.pending]))
+                                    self.assertEqual(len(owned), 2)
+                                    self.assertLessEqual(len(owned), 32)
+                                    raise
+                    self.assertIs(caught.exception, original_error[0])
+                    self.assertIsInstance(caught.exception.__cause__, OSError)
+                    self.assertEqual(attempts, owned)
+                    self.assertEqual(cache.entries, {}); self.assertIsNone(cache.pending)
+                    self.assertTrue(cache.closed); self.assert_descriptors_closed(owned)
+
+    def test_fresh_nar_cached_parent_race_and_last_cache_close_mutation_refuse(self):
+        for fault in ("cached-parent", "last-close"):
+            with self.subTest(fault=fault):
+                parent, expected, unused = self.fresh_fixture("fresh-parent-race-" + fault)
+                clock = carrier.Clock(self.deadline)
+                fired, retained = [False], []
+                actual_take, actual_close = carrier._FreshNarParents.take, carrier._FreshNarParents.close
+                actual_current = carrier._FreshNarPath.current
+                def current(path, root, name, selected_clock):
+                    if fault == "cached-parent" and path.records and not fired[0]:
+                        fired[0] = True
+                        (parent / "sdk").chmod(0o700)
+                        (parent / "sdk/a").rename(parent / "sdk/a-aside")
+                        shutil.copytree(parent / "sdk/a-aside", parent / "sdk/a")
+                        (parent / "sdk").chmod(0o555)
+                    return actual_current(path, root, name, selected_clock)
+                def take(owner, key, directory, name, selected):
+                    cached = key in owner.entries
+                    fd = actual_take(owner, key, directory, name, selected)
+                    if fault == "cached-parent" and cached and not fired[0]:
+                        fired[0] = True
+                        (parent / "sdk").chmod(0o700)
+                        (parent / "sdk/a").rename(parent / "sdk/a-aside")
+                        shutil.copytree(parent / "sdk/a-aside", parent / "sdk/a")
+                        (parent / "sdk").chmod(0o555)
+                    return fd
+                def close(owner):
+                    retained.extend(fd for fd, unused in owner.entries.values())
+                    if fault == "last-close" and owner.root.path.name == "sdk" and not fired[0]:
+                        fired[0] = True
+                        leaf = parent / "sdk/a/child"; info = leaf.stat()
+                        leaf.chmod(0o600); leaf.write_bytes(leaf.read_bytes())
+                        os.utime(leaf, ns=(info.st_atime_ns,info.st_mtime_ns)); leaf.chmod(0o444)
+                    return actual_close(owner)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with patch.object(carrier._FreshNarParents, "take", take), \
+                            patch.object(carrier._FreshNarParents, "close", close), \
+                            patch.object(carrier._FreshNarPath, "current", current):
+                        with self.assertRaises(ValueError): carrier._scan_nar(roots, expected, clock)
+                self.assertTrue(fired[0])
+                self.assert_descriptors_closed(set(retained))
+
+    def test_initial_cached_prefix_keeps_all_observations_and_complete_nar_with_fewer_real_dups(self):
+        parent, expected, name = self.retained_prefix_fixture("initial-parent-ops", 4)
+        directory = (parent / "sdk" / name).parent; directory.chmod(0o700)
+        for index in range(8):
+            raw = ("actual sibling " + str(index)).encode(); leaf = directory / ("sibling" + str(index))
+            self.write(leaf, raw)
+            expected[("sdk", str(leaf.relative_to(parent / "sdk")))] = {
+                "kind":"file", "mode":0o444, "size":len(raw), "sha256":carrier.sha(raw)}
+        directory.chmod(0o555)
+        clock = carrier.Clock(self.deadline)
+        def old_initial(owner, selected, stream):stream.parent, stream.leaf = owner.parent(selected)
+        real_dup, real_close, real_stat, real_fstat = os.dup, os.close, os.stat, os.fstat
+        real_check = carrier.Root.check; results=[]; counts=[]
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            for optimized in (False,True):
+                seen=[0]
+                def checked(root):seen[0]+=1;return real_check(root)
+                with ExitStack() as observations:
+                    if not optimized:observations.enter_context(patch.object(carrier._FreshNarParents,"initial_parent",old_initial))
+                    dup=observations.enter_context(patch.object(carrier.os,"dup",wraps=real_dup))
+                    close=observations.enter_context(patch.object(carrier.os,"close",wraps=real_close))
+                    named=observations.enter_context(patch.object(carrier.os,"stat",wraps=real_stat))
+                    held=observations.enter_context(patch.object(carrier.os,"fstat",wraps=real_fstat))
+                    observations.enter_context(patch.object(carrier.Root,"check",checked))
+                    results.append(carrier._scan_nar(roots,expected,clock))
+                    counts.append((dup.call_count,close.call_count,named.call_count,held.call_count,seen[0]))
+            self.assertEqual(results[0],results[1]);self.assertEqual(results[1][0],expected)
+            self.assertEqual(results[1][2],carrier.nar_origins(roots,expected,clock))
+            self.assertLess(counts[1][0],counts[0][0]);self.assertLess(counts[1][1],counts[0][1])
+            self.assertEqual(counts[1][2:],counts[0][2:])
+
+    def test_initial_cached_walk_refuses_real_prefix_replacement_link_mode_and_closed_cached_fd(self):
+        for fault in ("replacement","link","mode","closed"):
+            with self.subTest(fault=fault):
+                parent,expected,name=self.retained_prefix_fixture("initial-parent-race-"+fault,2)
+                clock=carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack)
+                    with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                        fd,unused=cache.parent(name);os.close(fd)
+                        retained=[fd for fd,unused in cache.entries.values()];fired=[False]
+                        actual=cache.initial_parent
+                        def mutate(selected,stream):
+                            self.assertFalse(fired[0]);fired[0]=True
+                            if fault=="closed":
+                                fd,unused=cache.entries["p00"];os.close(fd)
+                            else:
+                                target=parent/"sdk/p00"
+                                if fault=="mode":target.chmod(0o500)
+                                else:
+                                    (parent/"sdk").chmod(0o700);aside=target.with_name("p00-aside");target.rename(aside)
+                                    if fault=="link":target.symlink_to(aside,target_is_directory=True)
+                                    else:shutil.copytree(aside,target,symlinks=True)
+                                    (parent/"sdk").chmod(0o555)
+                            return actual(selected,stream)
+                        try:
+                            with patch.object(cache,"initial_parent",side_effect=mutate):
+                                with self.assertRaises((ValueError,OSError)):
+                                    self.retained_stream(roots,expected,clock,cache,name)
+                        finally:
+                            if fault=="closed":
+                                # Detach only the known deliberately closed fixture
+                                # descriptor; never have cleanup retry its number.
+                                cache.entries.pop("p00")
+                        self.assertTrue(fired[0]);self.assertIsNone(cache.active_path)
+                    self.assert_descriptors_closed(retained)
+
+    def test_initial_cached_receiver_owns_duplicate_before_late_refusal_and_original_expiry(self):
+        for fault in ("body","body-close","expiry"):
+            with self.subTest(fault=fault):
+                parent,expected,name=self.retained_prefix_fixture("initial-parent-owned-"+fault,2)
+                clock=carrier.Clock(self.deadline);original_deadline=clock.deadline
+                body=MemoryError("synthetic after receiver acquisition");cleanup=OSError("synthetic receiver close")
+                real_initial=carrier._FreshNarParents.initial_parent;real_close=os.close
+                real_monotonic=time.monotonic;owned=[];closed=[];late_clock=[False]
+                def now():return original_deadline+1 if late_clock[0] else real_monotonic()
+                with ExitStack() as stack:
+                    roots=self.fresh_roots(parent,clock,stack)
+                    with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                        fd,unused=cache.parent(name);os.close(fd)
+                        def late(owner,selected,stream):
+                            real_initial(owner,selected,stream);self.assertIsNotNone(stream.parent);owned.append(stream.parent)
+                            if fault in ("body","body-close"):raise body
+                            late_clock[0]=True
+                        def close(fd):
+                            if fd in owned:closed.append(fd)
+                            real_close(fd)
+                            if fault=="body-close" and fd in owned:raise cleanup
+                        with patch.object(carrier._FreshNarParents,"initial_parent",late),                                patch.object(carrier.os,"close",close),patch.object(carrier.time,"monotonic",side_effect=now):
+                            with self.assertRaises(MemoryError if fault!="expiry" else ValueError) as failure:
+                                self.retained_stream(roots,expected,clock,cache,name)
+                        if fault!="expiry":self.assertIs(failure.exception,body)
+                        if fault=="body-close":self.assertIs(failure.exception.__cause__,cleanup)
+                        self.assertEqual(clock.deadline,original_deadline)
+                        self.assertEqual(closed,owned);self.assertEqual(len(owned),1)
+                        self.assert_descriptors_closed(owned);self.assertIsNone(cache.active_path)
+
+    def test_initial_cached_receiver_and_owner_refusals_acquire_no_duplicate(self):
+        parent,expected,name=self.retained_prefix_fixture("initial-parent-foreign",2)
+        clock=carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots=self.fresh_roots(parent,clock,stack)
+            with carrier._FreshNarParents(roots["sdk"],clock) as cache:
+                fd,unused=cache.parent(name);os.close(fd)
+                with patch.object(carrier.os,"dup",wraps=os.dup) as duplicate:
+                    with self.assertRaises(ValueError):cache.initial_parent(name,object())
+                    self.assertEqual(duplicate.call_count,0)
+                stream,unused=self.retained_stream(roots,expected,clock,cache,name)
+                with patch.object(carrier.os,"dup",wraps=os.dup) as duplicate:
+                    with self.assertRaises(ValueError):cache.initial_parent(name,stream)
+                    self.assertEqual(duplicate.call_count,0)
+                with stream:self.drain_stream(stream)
+
+    def test_fused_real_stream_matches_full_scan_nar_with_one_read_and_eof_per_file(self):
+        parent, expected, values = self.fresh_fixture("fusion-golden")
+        clock = carrier.Clock(self.deadline)
+        real = carrier._FreshNarFile.read
+        reads = []
+        def record(stream, size=-1):
+            block = real(stream, size)
+            reads.append((stream.key, size, len(block)))
+            return block
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            observed, witnesses = carrier.scan(roots, expected, clock)
+            nars = carrier.nar_origins(roots, expected, clock)
+            with patch.object(carrier._FreshNarFile, "read", record):
+                fused, held, actual = carrier._scan_nar(roots, expected, clock)
+            self.assertEqual((fused, held, actual), (observed, witnesses, nars))
+        for key, raw in values.items():
+            selected = [(size, count) for which, size, count in reads if which == key]
+            self.assertEqual(sum(count for _, count in selected), len(raw))
+            self.assertEqual(sum(count == 0 for _, count in selected), 1)
+            self.assertEqual(selected[-1], (1, 0))
+            self.assertTrue(all(0 < size <= 65536 for size, _ in selected))
+        order = [key for key, _, count in reads if count and key[0] == "sdk"]
+        self.assertLess(order.index(("sdk", "a/child")), order.index(("sdk", "a-")))
+        self.assertLess(order.index(("sdk", "z")), order.index(("sdk", "é")))
+        self.assertEqual(values[("sdk", "empty")], b"")
+
+    def test_fused_wrong_selected_digest_refuses_actual_bytes(self):
+        parent, expected, _ = self.fresh_fixture("fusion-hash")
+        expected[("sdk", "seven")]["sha256"] = "f" * 64
+        clock = carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            with self.assertRaisesRegex(ValueError, "fresh-stream-content"):
+                carrier._scan_nar(roots, expected, clock)
+
+    def test_fused_size_mode_hardlink_symlink_and_special_file_refuse_before_read(self):
+        for change in ("size", "mode", "hardlink", "symlink", "fifo"):
+            with self.subTest(change=change):
+                parent, expected, _ = self.fresh_fixture("fusion-type-" + change)
+                leaf = parent / "sdk/seven"
+                leaf.parent.chmod(0o700)
+                if change == "size":
+                    leaf.chmod(0o600); leaf.write_bytes(b"short"); leaf.chmod(0o444)
+                elif change == "mode":
+                    leaf.chmod(0o555)
+                elif change == "hardlink":
+                    os.link(leaf, self.root / ("external-hardlink-" + change))
+                else:
+                    leaf.unlink()
+                    if change == "symlink": leaf.symlink_to(self.root / "never-follow")
+                    else: os.mkfifo(leaf, 0o444)
+                leaf.parent.chmod(0o555)
+                clock = carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with patch.object(carrier._FreshNarFile, "read", side_effect=AssertionError("invalid namespace read")):
+                        with self.assertRaises(ValueError):
+                            carrier._scan_nar(roots, expected, clock)
+
+    def test_fused_custom_opener_restores_owner_executable_check(self):
+        parent, expected, _ = self.fresh_fixture("fusion-executable")
+        leaf = parent / "sdk/seven"
+        leaf.chmod(0o454)
+        expected[("sdk", "seven")]["mode"] = 0o454
+        clock = carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            with self.assertRaisesRegex(ValueError, "fresh-stream-executable"):
+                carrier._scan_nar(roots, expected, clock)
+
+    def test_fused_read_mutation_truncation_growth_and_fd_cleanup_refuse(self):
+        real = carrier._FreshNarFile.read
+        for change in ("bytes", "truncate", "grow"):
+            with self.subTest(change=change):
+                parent, expected, _ = self.fresh_fixture("fusion-read-" + change)
+                clock = carrier.Clock(self.deadline)
+                descriptors, changed = [], [False]
+                def mutate(stream, size=-1):
+                    if stream.key == ("sdk", "long"):
+                        descriptors.extend((stream.fd, stream.parent))
+                    block = real(stream, size)
+                    if stream.key == ("sdk", "long") and block and not changed[0]:
+                        changed[0] = True
+                        leaf = parent / "sdk/long"
+                        leaf.chmod(0o600)
+                        with leaf.open("r+b") as out:
+                            if change == "truncate": out.truncate(1)
+                            elif change == "grow": out.seek(0, 2); out.write(b"extra")
+                            else: out.seek(0); out.write(b"changed")
+                        leaf.chmod(0o444)
+                    return block
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with patch.object(carrier._FreshNarFile, "read", mutate):
+                        with self.assertRaises(ValueError):
+                            carrier._scan_nar(roots, expected, clock)
+                self.assertTrue(changed[0])
+                self.assert_descriptors_closed(set(descriptors))
+
+    def test_fused_final_namespace_revisits_earlier_role_after_all_reads(self):
+        original = carrier._FreshNarFile.__init__
+        for change in ("inode", "chmod-restored", "mtime-restored", "link", "extra", "missing", "directory", "root", "alias"):
+            with self.subTest(change=change):
+                parent, expected, _ = self.fresh_fixture("fusion-late-" + change)
+                clock = carrier.Clock(self.deadline)
+                changed = [False]
+                def mutate(stream, root, name, *args):
+                    original(stream, root, name, *args)
+                    if root.path.name == "sdk" and not changed[0]:
+                        changed[0] = True
+                        early = parent / "jdk/first"
+                        if change in ("root", "alias"):
+                            moved = parent / "old-jdk"
+                            (parent / "jdk").rename(moved)
+                            if change == "root": shutil.copytree(moved, parent / "jdk", symlinks=True)
+                            else: (parent / "jdk").symlink_to(moved, target_is_directory=True)
+                        elif change == "directory":
+                            (parent / "sdk").chmod(0o700)
+                            (parent / "sdk/a").rename(parent / "sdk/a-aside")
+                            shutil.copytree(parent / "sdk/a-aside", parent / "sdk/a")
+                            (parent / "sdk/a-aside").chmod(0o700)
+                            (parent / "sdk/a-aside/child").unlink()
+                            (parent / "sdk/a-aside").rmdir()
+                            (parent / "sdk").chmod(0o555)
+                        elif change == "link":
+                            (parent / "sdk").chmod(0o700)
+                            (parent / "sdk/inert").unlink()
+                            (parent / "sdk/inert").symlink_to("/other-inert-target")
+                            (parent / "sdk").chmod(0o555)
+                        elif change in ("inode", "extra", "missing"):
+                            (parent / "jdk").chmod(0o700)
+                            if change == "inode":
+                                raw = early.read_bytes(); early.unlink(); self.write(early, raw)
+                            elif change == "extra": self.write(parent / "jdk/extra", b"extra")
+                            else: early.unlink()
+                            (parent / "jdk").chmod(0o555)
+                        else:
+                            info = early.stat()
+                            early.chmod(0o600)
+                            if change == "mtime-restored":
+                                early.write_bytes(early.read_bytes())
+                                os.utime(early, ns=(info.st_atime_ns, info.st_mtime_ns))
+                            early.chmod(0o444)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with patch.object(carrier._FreshNarFile, "__init__", mutate):
+                        with self.assertRaises(ValueError):
+                            carrier._scan_nar(roots, expected, clock)
+                self.assertTrue(changed[0])
+
+    def test_fused_entry_byte_depth_bounds_and_missing_protected_namespace_refuse(self):
+        for change in ("entries", "bytes", "depth", "missing"):
+            with self.subTest(change=change):
+                parent, expected, _ = self.fresh_fixture("fusion-bound-" + change)
+                clock = carrier.Clock(self.deadline)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    if change == "entries": stack.enter_context(patch.object(carrier, "MAX_ENTRIES", 1))
+                    elif change == "bytes": stack.enter_context(patch.object(carrier, "MAX_BYTES", 1))
+                    elif change == "depth": expected[("sdk", "../escape")] = expected[("sdk", "seven")]
+                    else: del expected[("sdk", "seven")]
+                    with self.assertRaises(ValueError):
+                        carrier._scan_nar(roots, expected, clock)
+
+    def test_fused_expiry_at_stream_eof_and_final_namespace_closes_all_resources(self):
+        for boundary in ("pre", "read", "eof", "final", "integer"):
+            with self.subTest(boundary=boundary):
+                parent, expected, _ = self.fresh_fixture("fusion-clock-" + boundary)
+                clock = carrier.Clock(self.deadline)
+                clock.until_ns = self.context["work_cutoff_monotonic_ns"]
+                now, nanos, descriptors = [self.deadline - 1], [clock.until_ns - 1], []
+                real_read, real_close, real_namespace = carrier._FreshNarFile.read, carrier._FreshNarFile.close, carrier._fresh_namespace
+                passes = [0]
+                def read(stream, size=-1):
+                    block = real_read(stream, size)
+                    if boundary in ("read", "integer") or (boundary == "eof" and not block):
+                        if boundary == "integer": nanos[0] = clock.until_ns
+                        else: now[0] = self.deadline
+                    return block
+                def close(stream):
+                    descriptors.extend(fd for fd in (stream.fd, stream.parent) if fd is not None)
+                    return real_close(stream)
+                def namespace(*args):
+                    result = real_namespace(*args); passes[0] += 1
+                    if boundary == "final" and passes[0] == 2: now[0] = self.deadline
+                    return result
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    root_descriptors = [fd for root in roots.values() for _, fd, _ in root.chain]
+                    if boundary == "pre": now[0] = self.deadline
+                    with patch.object(carrier.time, "monotonic", side_effect=lambda: now[0]), \
+                            patch.object(carrier.time, "monotonic_ns", side_effect=lambda: nanos[0]), \
+                            patch.object(carrier._FreshNarFile, "read", read), \
+                            patch.object(carrier._FreshNarFile, "close", close), \
+                            patch.object(carrier, "_fresh_namespace", namespace):
+                        with self.assertRaises(ValueError): carrier._scan_nar(roots, expected, clock)
+                if boundary != "pre": self.assertTrue(descriptors)
+                self.assert_descriptors_closed(set(descriptors) | set(root_descriptors))
+
+    def test_scoped_fusion_keeps_every_later_full_scan_and_standalone_path(self):
+        root, _, pin = self.seal("fusion-carrier")
+        output = self.root / "fusion-scoped"
+        with patch.object(carrier, "scan", wraps=carrier.scan) as scans, \
+                patch.object(carrier, "nar_origins", wraps=carrier.nar_origins) as nars, \
+                patch.object(carrier, "_scan_nar", wraps=carrier._scan_nar) as fused:
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                result = carrier.extract(root, pin, output, self.deadline, _held_carrier=scope)
+                receipt_pin = carrier.sha(carrier.encoded(result))
+                carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=receipt_pin, _held_carrier=scope)
+                scope.full_final()
+                carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=receipt_pin, _held_carrier=scope)
+            self.assertEqual((fused.call_count, scans.call_count, nars.call_count), (3, 4, 0))
+            carrier.extract(root, pin, self.root / "fusion-standalone", self.deadline)
+            self.assertEqual((fused.call_count, scans.call_count, nars.call_count), (3, 7, 1))
+
+    def test_fused_stream_eof_probe_is_required_for_a_normal_exit(self):
+        parent, expected, _ = self.fresh_fixture("fusion-required-eof")
+        clock = carrier.Clock(self.deadline)
+        with ExitStack() as stack:
+            roots = self.fresh_roots(parent, clock, stack)
+            witnesses = carrier._fresh_namespace(roots, expected, clock)
+            observed, completed, aggregate = {}, set(), [0]
+            stream = carrier._FreshNarFile(roots["sdk"], "seven", expected[("sdk", "seven")],
+                witnesses, "sdk", observed, completed, aggregate, clock)
+            descriptors = (stream.fd, stream.parent)
+            with self.assertRaisesRegex(ValueError, "fresh-stream-content"):
+                with stream: self.assertEqual(stream.read(7), b"7" * 7)
+            self.assertEqual(completed, set())
+            self.assert_descriptors_closed(descriptors)
+
+    def test_fused_open_read_and_serializer_refusal_close_actual_descriptors(self):
+        for boundary in ("open", "read", "serializer"):
+            with self.subTest(boundary=boundary):
+                parent, expected, _ = self.fresh_fixture("fusion-error-" + boundary)
+                clock = carrier.Clock(self.deadline)
+                captured = []
+                real_open, real_read, real_nar = carrier.os.open, carrier.os.read, carrier.nar.hash_descriptor
+                def opened(*args, **kwargs):
+                    fd = real_open(*args, **kwargs); captured.append(fd); return fd
+                def refused_read(fd, size):
+                    raise OSError("model stream IO refusal")
+                def refused_nar(*args, **kwargs):
+                    real_nar(*args, **kwargs)
+                    raise ValueError("model serializer refusal")
+                def refused_open(name, flags, *args, **kwargs):
+                    if name == "first" and flags & os.O_NONBLOCK:
+                        raise OSError("model regular open refusal")
+                    return opened(name, flags, *args, **kwargs)
+                with ExitStack() as stack:
+                    roots = self.fresh_roots(parent, clock, stack)
+                    with ExitStack() as errors:
+                        errors.enter_context(patch.object(carrier.os, "open", refused_open if boundary == "open" else opened))
+                        if boundary == "read": errors.enter_context(patch.object(carrier.os, "read", refused_read))
+                        if boundary == "serializer": errors.enter_context(patch.object(carrier.nar, "hash_descriptor", refused_nar))
+                        with self.assertRaises((ValueError, OSError)):
+                            carrier._scan_nar(roots, expected, clock)
+                self.assertTrue(captured)
+                self.assert_descriptors_closed(set(captured))
+
+    def test_scoped_fused_writer_identity_substitution_refuses_before_publication(self):
+        root, _, pin = self.seal("fusion-writer-carrier")
+        output = self.root / "fusion-writer-output"
+        real = carrier._scan_nar
+        def replaced(roots, expected, clock):
+            leaf = roots["sdk"].path / "repositories/public+/tool"
+            leaf.parent.chmod(0o700)
+            raw = leaf.read_bytes(); leaf.unlink(); self.write(leaf, raw, 0o555)
+            leaf.parent.chmod(0o555)
+            return real(roots, expected, clock)
+        with self.assertRaisesRegex(ValueError, "created-member-identity"):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                descriptors = self.held_fds(scope)
+                with patch.object(carrier, "_scan_nar", side_effect=replaced):
+                    carrier.extract(root, pin, output, self.deadline, _held_carrier=scope)
+        self.assert_descriptors_closed(descriptors)
+        self.assertFalse((output / "extraction-receipt.json").exists())
+
+    def held_fds(self, scope):
+        return [fd for _, fd, _ in scope._held] + [fd for _, fd, _ in scope._chain]
+
+    def assert_descriptors_closed(self, descriptors):
+        for fd in descriptors:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+    def test_scoped_real_full_proof_reuses_one_owner_then_requires_fresh_final(self):
+        root, original, pin = self.seal()
+        public = carrier.publication_report(root, pin, self.deadline)
+        output = self.root / "scoped-extracted"
+        owners = []
+        real = carrier.binding
+        def full(owner, selected, clock):
+            owners.append(owner)
+            return real(owner, selected, clock)
+        with patch.object(carrier, "binding", side_effect=full) as calls:
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                descriptors = self.held_fds(scope)
+                self.assertEqual(len(scope._held), 4)
+                result = carrier.extract(root, pin, output, self.deadline, _held_carrier=scope)
+                receipt_pin = carrier.sha(carrier.encoded(result))
+                self.assertEqual(calls.call_count, 1)
+                self.assertEqual(scope.report(), original)
+                self.assertEqual(carrier.publication_report(root, pin, self.deadline, _held_carrier=scope), public)
+                self.assertEqual(carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=receipt_pin, _held_carrier=scope), result)
+                self.assertEqual(calls.call_count, 1)
+                # Public standalone validation stays a separate complete read.
+                self.assertEqual(carrier.validate_binding(root, pin, self.deadline), original)
+                self.assertEqual(calls.call_count, 2)
+                scope.full_final()
+                self.assertEqual(carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=receipt_pin, _held_carrier=scope), result)
+                self.assertEqual(calls.call_count, 3)
+                self.assertIs(owners[0], owners[2])
+                self.assertIsNot(owners[0], owners[1])
+                self.assertEqual(scope.report(), original)
+                self.assertEqual((output / "sdk/receipt.json").read_bytes(), self.original)
+                self.assertFalse(result["metadata_qualified"])
+                with self.assertRaises(TypeError):
+                    scope._binding()[2][("sdk", "")]["mode"] = 0o700
+                copied = scope.report()
+                copied["origin"]["root"] = "/foreign"
+                self.assertEqual(scope.report(), original)
+            self.assert_descriptors_closed(descriptors)
+            with self.assertRaises(ValueError):
+                scope.report()
+            with self.assertRaises(ValueError):
+                scope.__enter__()
+
+    def test_scoped_all_four_leaf_mutations_refuse_current_held_proof(self):
+        for index, name in enumerate(carrier.FILES):
+            for change in ("inode", "mode", "chmod-restored", "mtime-restored", "bytes", "hardlink", "symlink"):
+                with self.subTest(name=name, change=change):
+                    root, _, pin = self.seal("leaf-" + str(index) + "-" + change)
+                    path = root / name
+                    with self.assertRaises(ValueError):
+                        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                            scope.report()
+                            descriptors = self.held_fds(scope)
+                            original = path.stat()
+                            root.chmod(0o700)
+                            if change in ("inode", "symlink"):
+                                aside = self.root / ("old-" + str(index) + "-" + change)
+                                path.rename(aside)
+                                if change == "inode":
+                                    self.write(path, aside.read_bytes(), 0o444)
+                                else:
+                                    path.symlink_to(aside)
+                            elif change == "mode":
+                                path.chmod(0o555)
+                            elif change == "chmod-restored":
+                                path.chmod(0o600)
+                                path.chmod(0o444)
+                            elif change == "mtime-restored":
+                                os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns + 10**9))
+                                os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+                            elif change == "bytes":
+                                path.chmod(0o600)
+                                with path.open("r+b") as stream:
+                                    first = stream.read(1)
+                                    stream.seek(0)
+                                    stream.write(bytes([first[0] ^ 1]))
+                                path.chmod(0o444)
+                            else:
+                                os.link(path, self.root / ("extra-hardlink-" + str(index)))
+                            root.chmod(0o555)
+                            scope.report()
+                    self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_same_byte_named_ancestor_root_and_alias_changes_refuse(self):
+        for change in ("root", "ancestor", "alias"):
+            with self.subTest(change=change):
+                parent = self.root / ("parent-" + change)
+                parent.mkdir(mode=0o700)
+                root, _, pin = self.seal("source-" + change)
+                root.chmod(0o700)
+                root.rename(parent / "carrier")
+                root = parent / "carrier"
+                root.chmod(0o555)
+                parent.chmod(0o555)
+                alias = self.root / ("alias-" + change)
+                alias.symlink_to(root)
+                with self.assertRaises(ValueError):
+                    with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                        scope.report()
+                        descriptors = self.held_fds(scope)
+                        if change == "root":
+                            parent.chmod(0o700)
+                            root.rename(parent / "old-carrier")
+                            shutil.copytree(parent / "old-carrier", root, symlinks=True)
+                            parent.chmod(0o555)
+                            scope.report()
+                        elif change == "ancestor":
+                            parent.rename(self.root / "old-parent")
+                            shutil.copytree(self.root / "old-parent", parent, symlinks=True)
+                            scope.report()
+                        else:
+                            foreign = self.root / "foreign-alias-root"
+                            shutil.copytree(root, foreign, symlinks=True)
+                            alias.unlink()
+                            alias.symlink_to(foreign)
+                            carrier.publication_report(alias.resolve(strict=True), pin, self.deadline,
+                                _held_carrier=scope)
+                self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_foreign_owner_pin_clock_type_and_closed_scope_refuse(self):
+        root, _, pin = self.seal()
+        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+            scope.report()
+            for candidate, selected, deadline in ((self.root / "foreign", pin, self.deadline),
+                    (root, "f" * 64, self.deadline), (root, pin, self.deadline + 1)):
+                with self.assertRaises(ValueError):
+                    carrier.publication_report(candidate, selected, deadline, _held_carrier=scope)
+            with self.assertRaises(ValueError):
+                carrier.publication_report(root, pin, self.deadline, _held_carrier={})
+            owner, clock = scope._root, scope._clock
+            with carrier.Root(root, clock) as foreign:
+                scope._root = foreign
+                with self.assertRaises(ValueError):
+                    scope.check()
+                scope._root = owner
+            scope._clock = carrier.Clock(self.deadline)
+            with self.assertRaises(ValueError):
+                scope.check()
+            scope._clock = clock
+            scope.full_final()
+            descriptors = self.held_fds(scope)
+        self.assert_descriptors_closed(descriptors)
+        with self.assertRaises(ValueError):
+            carrier.publication_report(root, pin, self.deadline, _held_carrier=scope)
+
+    def test_scoped_before_use_after_use_race_refuses_and_closes_owner(self):
+        root, _, pin = self.seal()
+        real = carrier.decode
+        mutate = False
+        def change(raw):
+            nonlocal mutate
+            result = real(raw)
+            if mutate:
+                mutate = False
+                path = root / "payload.bin"
+                path.chmod(0o600)
+                path.chmod(0o444)
+            return result
+        with self.assertRaises(ValueError):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                scope.report()
+                descriptors = self.held_fds(scope)
+                mutate = True
+                with patch.object(carrier, "decode", side_effect=change):
+                    carrier.publication_report(root, pin, self.deadline, _held_carrier=scope)
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_original_float_integer_expiry_and_partial_entry_cleanup(self):
+        for kind in ("float", "integer", "partial"):
+            with self.subTest(kind=kind):
+                root, _, pin = self.seal("deadline-" + kind)
+                captured = []
+                real_clock, real_open = carrier.Clock, carrier.Root.open
+                def clock(deadline):
+                    selected = real_clock(deadline)
+                    if kind == "integer":
+                        selected.until_ns = time.monotonic_ns() + 60 * 10**9
+                    return selected
+                def open_leaf(owner, name):
+                    if kind == "partial" and name == "payload.bin":
+                        captured.extend(fd for _, fd, _ in owner.chain)
+                        raise ValueError("partial entry")
+                    fd, witness = real_open(owner, name)
+                    captured.append(fd)
+                    return fd, witness
+                with patch.object(carrier, "Clock", side_effect=clock), patch.object(carrier.Root, "open", open_leaf):
+                    with self.assertRaises(ValueError):
+                        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                            scope.report()
+                            captured = self.held_fds(scope)
+                            if kind == "float":
+                                with patch.object(carrier.time, "monotonic", return_value=self.deadline):
+                                    scope.report()
+                            else:
+                                with patch.object(carrier.time, "monotonic_ns", return_value=scope._until_ns):
+                                    scope.report()
+                self.assert_descriptors_closed(captured)
+
+    def test_scoped_missing_or_failed_final_full_proof_never_accepts_exit(self):
+        for kind in ("missing", "failed"):
+            with self.subTest(kind=kind):
+                root, _, pin = self.seal("final-" + kind)
+                with self.assertRaises(ValueError):
+                    with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                        scope.report()
+                        descriptors = self.held_fds(scope)
+                        if kind == "failed":
+                            with patch.object(carrier, "binding", side_effect=ValueError("final full refused")):
+                                scope.full_final()
+                self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_final_full_read_precedes_last_fresh_output_mutation_refusal(self):
+        root, _, pin = self.seal()
+        output = self.root / "final-raced-output"
+        real = carrier.binding
+        def final(owner, selected, clock):
+            result = real(owner, selected, clock)
+            path = output / "jdk/ordinary"
+            path.chmod(0o600)
+            path.write_bytes(b"changed during long final carrier read")
+            path.chmod(0o444)
+            return result
+        with self.assertRaises(ValueError):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                result = carrier.extract(root, pin, output, self.deadline, _held_carrier=scope)
+                descriptors = self.held_fds(scope)
+                with patch.object(carrier, "binding", side_effect=final):
+                    scope.full_final()
+                carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(result)), _held_carrier=scope)
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_real_named_leaf_mutation_during_full_final_refuses(self):
+        root, _, pin = self.seal()
+        real = carrier.binding
+        def final(owner, selected, clock):
+            result = real(owner, selected, clock)
+            path = root / "manifest.json"
+            root.chmod(0o700)
+            path.rename(self.root / "held-manifest.json")
+            self.write(path, (self.root / "held-manifest.json").read_bytes())
+            root.chmod(0o555)
+            return result
+        with self.assertRaises(ValueError):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                scope.report()
+                descriptors = self.held_fds(scope)
+                with patch.object(carrier, "binding", side_effect=final):
+                    scope.full_final()
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_extraction_requires_last_fresh_proof_after_full_final(self):
+        root, _, pin = self.seal()
+        with self.assertRaises(ValueError):
+            with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+                result = carrier.extract(root, pin, self.root / "unfinished-last-proof", self.deadline,
+                    _held_carrier=scope)
+                descriptors = self.held_fds(scope)
+                # A fresh proof performed before full_final cannot satisfy exit.
+                carrier.revalidate_extraction(root, pin, self.root / "unfinished-last-proof", self.deadline,
+                    pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(result)), _held_carrier=scope)
+                scope.full_final()
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_copies_serialization_and_foreign_thread_never_transfer_authority(self):
+        root, _, pin = self.seal()
+        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+            scope.report()
+            for transfer in (copy.copy, copy.deepcopy, pickle.dumps):
+                with self.subTest(transfer=transfer), self.assertRaises(ValueError):
+                    transfer(scope)
+            with patch.object(carrier.threading, "get_ident", return_value=scope._thread + 1):
+                with self.assertRaises(ValueError):
+                    scope.report()
+            with patch.object(carrier.os, "getpid", return_value=scope._pid + 1):
+                with self.assertRaises(ValueError):
+                    scope.report()
+            scope.check()
+            scope.full_final()
+            descriptors = self.held_fds(scope)
+        self.assert_descriptors_closed(descriptors)
+
+    def test_scoped_existing_unregistered_extraction_refuses_before_fresh_reads(self):
+        root, _, pin = self.seal()
+        output = self.root / "standalone-existing-output"
+        receipt = carrier.extract(root, pin, output, self.deadline)
+        with carrier.HeldCarrier(root, pin, self.deadline) as scope:
+            scope.report()
+            descriptors = self.held_fds(scope)
+            with patch.object(carrier, "scan", side_effect=AssertionError("unregistered output read")), \
+                    patch.object(carrier, "_scan_nar", side_effect=AssertionError("unregistered output read")):
+                with self.assertRaisesRegex(ValueError, "registered-extraction"):
+                    carrier.revalidate_extraction(root, pin, output, self.deadline,
+                        pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(receipt)), _held_carrier=scope)
+            with self.assertRaisesRegex(ValueError, "fresh-output-join"):
+                scope._complete_fresh(output, receipt)
+            scope.full_final()
+        self.assert_descriptors_closed(descriptors)
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.origin, self.jdk = self.root / "origin", self.root / "jdk-origin"
+        self.origin.mkdir(mode=0o700)
+        self.jdk.mkdir(mode=0o700)
+        self.jdk_patch = patch.object(sdk, "JDK", str(self.jdk))
+        self.jdk_patch.start()
+        self.write(self.jdk / "ordinary", b"synthetic immutable JDK bytes")
+        (self.jdk / "inert").symlink_to("/not-authorized/sdk-carrier-model")
+        repositories = self.origin / "repositories"
+        repositories.mkdir(mode=0o700)
+        public, other = repositories / "public+", repositories / "other"
+        public.mkdir(mode=0o700)
+        other.mkdir(mode=0o700)
+        self.write(public / "MODULE.bazel", b'module(name="public")\n')
+        self.write(public / "tool", b"tool model\x00bytes", 0o555)
+        (public / "missing").symlink_to("../other/absent")
+        graph = self.origin / "graph"
+        graph.mkdir(mode=0o700)
+        registry_bytes = b'{"public":"registry"}\n'
+        registry_pin = carrier.sha(registry_bytes)
+        url = "https://bcr.bazel.build/bazel_registry.json"
+        lock = sdk.canonical({"registryFileHashes": {url: registry_pin}})
+        for name in sdk.GRAPH:
+            self.write(graph / name, lock if name == "MODULE.bazel.lock" else b"graph model " + name.encode(), 0o400)
+        cache = self.origin / "registry-cache"
+        self.write(cache / "content_addressable/sha256" / registry_pin / "file", registry_bytes)
+        self.seal_dirs(self.origin)
+        self.seal_dirs(self.jdk)
+        budget = lambda: sdk.Budget(time.time() + 120)
+        rows = []
+        for root in (other, public):
+            files = sdk.inventory(root, budget(), sealed=True)
+            rows.append({"canonical_name": root.name, "root_kind": "generated", "source_root": str(root),
+                         "files": files, "inventory_sha256": carrier.sha(sdk.canonical(files)),
+                         "absent_links": [] if root == other else [{"origin": "public+/missing", "target": "other/absent"}]})
+        graph_pins = {name: {"sha256": carrier.sha((graph / name).read_bytes())} for name in sdk.GRAPH}
+        registry = sdk.registry_metadata(graph / "MODULE.bazel.lock", graph_pins["MODULE.bazel.lock"]["sha256"],
+                                         cache, budget(), sealed=True)
+        receipt = {"schema": sdk.SCHEMA, "baseline_receipt_sha256": sdk.BASELINE_SHA,
+                   "baseline_inventory_sha256": sdk.BASELINE_INVENTORY, "graph_files": graph_pins,
+                   "repositories": rows, "inventory_sha256": carrier.sha(sdk.canonical(rows)),
+                   "mapping_sha256": graph_pins["MODULE.bazel.lock"]["sha256"],
+                   "excluded": ["_main", "bazel_tools", "*.marker"], "qualification_only": False,
+                   "nix_store_roots": [sdk.JDK], "modules": {"public": {"canonical_name": "public+",
+                       "module_file_sha256": graph_pins.get("MODULE.bazel", {}).get("sha256")}},
+                   "nix_inventory": sdk.inventory(self.jdk, budget(), sealed=True), "registry_metadata": registry,
+                   "selection_sha256": "3" * 64, "producer": "//tools:codex_retained_sdk_export_run",
+                   "counts": {"entries_read": 3, "bytes_read": 1,
+                              "inventory_passes": {"qualification": 1, "copy": 1, "sealed_readback": 1},
+                              "max_entries_per_pass": sdk.MAX_FILES, "max_inventory_passes": 3}}
+        receipt["modules"]["public"]["module_file_sha256"] = carrier.sha((public / "MODULE.bazel").read_bytes())
+        self.origin.chmod(0o700)
+        self.original = sdk.canonical(receipt)
+        self.write(self.origin / "receipt.json", self.original, 0o400)
+        self.origin.chmod(0o555)
+        self.pin = carrier.sha(self.original)
+        entry = time.monotonic_ns()
+        self.context = {"mode": "native-sdk-carrier-seal-reserved",
+                        "epoch": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/12345678-1234-1234-1234-123456789abc",
+                        "source_commit": "1" * 40, "graph_sha256": "2" * 64,
+                        "entry_monotonic_ns": entry, "deadline_monotonic_ns": entry + 1200 * 10**9,
+                        "work_cutoff_monotonic_ns": entry + 1170 * 10**9}
+        self.deadline = self.context["work_cutoff_monotonic_ns"] / 10**9
+
+    @staticmethod
+    def write(path, raw, mode=0o444):
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_bytes(raw)
+        path.chmod(mode)
+
+    @staticmethod
+    def seal_dirs(root):
+        for path, _, _ in os.walk(root, topdown=False, followlinks=False):
+            Path(path).chmod(0o555)
+
+    def tearDown(self):
+        self.jdk_patch.stop()
+        for path, _, _ in os.walk(self.root, followlinks=False):
+            Path(path).chmod(0o700)
+        self.temporary.cleanup()
+
+    def seal(self, name="carrier"):
+        report = carrier.seal(self.origin, self.pin, self.root / name, self.deadline, producer_context=self.context)
+        return self.root / name, report, carrier.sha(carrier.encoded(report))
+
+    def rewrite(self, root, manifest=None, payload=None):
+        root.chmod(0o700)
+        receipt = json.loads((root / "receipt.json").read_bytes())
+        if payload is not None:
+            (root / "payload.bin").chmod(0o600)
+            (root / "payload.bin").write_bytes(payload)
+            (root / "payload.bin").chmod(0o444)
+            receipt["payload_sha256"] = carrier.sha(payload)
+            receipt["payload_bytes"] = len(payload)
+        if manifest is not None:
+            raw = carrier.encoded(manifest)
+            (root / "manifest.json").chmod(0o600)
+            self.write(root / "manifest.json", raw)
+            receipt["manifest_sha256"], receipt["manifest_bytes"] = carrier.sha(raw), len(raw)
+            receipt["entry_count"] = len(manifest["entries"])
+        (root / "receipt.json").chmod(0o600)
+        self.write(root / "receipt.json", carrier.encoded(receipt))
+        root.chmod(0o555)
+        return carrier.sha(carrier.encoded(receipt))
+
+    def test_real_roundtrip_full_registry_graph_jdk_nar_and_distinct_custody(self):
+        root, report, pin = self.seal()
+        self.assertEqual(carrier.validate_binding(root, pin, self.deadline), report)
+        publication = carrier.publication_report(root, pin, self.deadline)
+        self.assertEqual({row["name"] for row in publication["files"]}, set(carrier.FILES))
+        output = self.root / "extracted"
+        fresh = carrier.extract(root, pin, output, self.deadline)
+        self.assertEqual((output / "sdk/receipt.json").read_bytes(), self.original)
+        self.assertEqual(stat.S_IMODE((output / "sdk/receipt.json").stat().st_mode), 0o400)
+        self.assertEqual(stat.S_IMODE((output / "sdk/graph/MODULE.bazel.lock").stat().st_mode), 0o400)
+        self.assertEqual((output / "jdk/ordinary").read_bytes(), (self.jdk / "ordinary").read_bytes())
+        self.assertEqual(os.readlink(output / "jdk/inert"), "/not-authorized/sdk-carrier-model")
+        self.assertFalse((output / "sdk/repositories/other/absent").exists())
+        self.assertNotEqual(fresh["fresh_custody"]["sdk"]["root_identity"], report["origin_custody"]["sdk"]["root_identity"])
+        self.assertFalse(fresh["original_inodes_reused"])
+        self.assertFalse(fresh["metadata_qualified"])
+        self.assertEqual(carrier.revalidate_extraction(root, pin, output, self.deadline,
+                         pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(fresh))), fresh)
+
+    def retained_transport(self, source, name="bazel-retained"):
+        # Model Bazel9 READONLY tree-artifact retention on fresh fixture copies,
+        # never chmod the original producer or any genuine retained selection.
+        retained = self.root / name
+        shutil.copytree(source, retained)
+        for leaf in carrier.FILES:
+            (retained / leaf).chmod(0o555)
+        self.seal_dirs(retained)
+        return retained
+
+    def test_real_core_bazel_retained_transport_roundtrip_preserves_logical_modes_and_clock(self):
+        source, report, pin = self.seal()
+        original = {name: (source / name).read_bytes() for name in carrier.FILES}
+        self.assertTrue(all(stat.S_IMODE((source / name).stat().st_mode) == 0o444 for name in carrier.FILES))
+        retained = self.retained_transport(source)
+        self.assertEqual(carrier.validate_binding(retained, pin, self.deadline), report)
+        publication = carrier.publication_report(retained, pin, self.deadline)
+        self.assertEqual(publication["files"], [{"name": name, "sha256": carrier.sha(original[name]),
+                                               "size": len(original[name])} for name in carrier.FILES])
+        output = self.root / "retained-extracted"
+        fresh = carrier.extract(retained, pin, output, self.deadline)
+        manifest = json.loads(original["manifest.json"])
+        self.assertEqual(fresh["nars"], manifest["nars"])
+        self.assertEqual(fresh["producer_context"], self.context)
+        self.assertEqual(report["producer_context"]["work_cutoff_monotonic_ns"] / 10**9, self.deadline)
+        self.assertEqual(stat.S_IMODE((output / "sdk/receipt.json").stat().st_mode), 0o400)
+        self.assertEqual(stat.S_IMODE((output / "sdk/graph/MODULE.bazel.lock").stat().st_mode), 0o400)
+        self.assertEqual(stat.S_IMODE((output / "sdk/repositories/public+/MODULE.bazel").stat().st_mode), 0o444)
+        self.assertEqual(stat.S_IMODE((output / "sdk/repositories/public+/tool").stat().st_mode), 0o555)
+        self.assertEqual(stat.S_IMODE((output / "jdk/ordinary").stat().st_mode), 0o444)
+        self.assertFalse(fresh["original_inodes_reused"])
+        self.assertFalse(fresh["sdk_execution_qualified"])
+        self.assertFalse(fresh["metadata_qualified"])
+        self.assertFalse(fresh["source_witnesses_replaced"])
+        self.assertEqual(carrier.revalidate_extraction(retained, pin, output, self.deadline,
+            pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(fresh))), fresh)
+        self.assertEqual(carrier.publication_report(retained, pin, self.deadline), publication)
+        for name in carrier.FILES:
+            self.assertEqual((retained / name).read_bytes(), original[name])
+            self.assertEqual(stat.S_IMODE((retained / name).stat().st_mode), 0o555)
+            self.assertEqual(stat.S_IMODE((source / name).stat().st_mode), 0o444)
+
+    def test_every_retained_transport_leaf_refuses_writable_or_special_modes_at_public_apis(self):
+        source, _, pin = self.seal()
+        retained = self.retained_transport(source)
+        output = self.root / "good-extracted"
+        fresh = carrier.extract(retained, pin, output, self.deadline)
+        fresh_pin = carrier.sha(carrier.encoded(fresh))
+        for name in carrier.FILES:
+            for mode in (0o600, 0o644, 0o666, 0o755):
+                with self.subTest(leaf=name, mode=oct(mode)):
+                    (retained / name).chmod(mode)
+                    with self.assertRaises(ValueError):
+                        carrier.validate_binding(retained, pin, self.deadline)
+                    with self.assertRaises(ValueError):
+                        carrier.publication_report(retained, pin, self.deadline)
+                    with self.assertRaises(ValueError):
+                        carrier.extract(retained, pin, self.root / "refused-extraction", self.deadline)
+                    with self.assertRaises(ValueError):
+                        carrier.revalidate_extraction(retained, pin, output, self.deadline,
+                                                     pinned_extraction_receipt_sha256=fresh_pin)
+                    self.assertFalse((self.root / "refused-extraction").exists())
+                    (retained / name).chmod(0o555)
+
+        # The guarded workload forbids creating SUID/SGID files. Model only
+        # the returned mode witness after a real nofollow/custody-checked open;
+        # each public route must reject it at the transport mode predicate.
+        real_open = carrier.Root.open
+        for name in carrier.FILES:
+            for mode in (0o4555, 0o2555):
+                with self.subTest(leaf=name, special_mode=oct(mode)):
+                    opened = []
+                    def special_mode_witness(root, leaf):
+                        fd, witness = real_open(root, leaf)
+                        if root.path == retained and leaf == name:
+                            opened.append(stat.S_IMODE(witness[4]))
+                            witness = list(witness)
+                            witness[4] |= mode & 0o7000
+                        return fd, witness
+                    with patch.object(carrier.Root, "open", special_mode_witness):
+                        with self.assertRaisesRegex(ValueError, "^SDK carrier refused: transport-leaf-mode$"):
+                            carrier.validate_binding(retained, pin, self.deadline)
+                        with self.assertRaisesRegex(ValueError, "^SDK carrier refused: transport-leaf-mode$"):
+                            carrier.publication_report(retained, pin, self.deadline)
+                        with self.assertRaisesRegex(ValueError, "^SDK carrier refused: transport-leaf-mode$"):
+                            carrier.extract(retained, pin, self.root / "refused-extraction", self.deadline)
+                        with self.assertRaisesRegex(ValueError, "^SDK carrier refused: transport-leaf-mode$"):
+                            carrier.revalidate_extraction(retained, pin, output, self.deadline,
+                                                         pinned_extraction_receipt_sha256=fresh_pin)
+                    self.assertEqual(opened, [0o555] * 4)
+                    self.assertFalse((self.root / "refused-extraction").exists())
+                    self.assertEqual(stat.S_IMODE((retained / name).stat().st_mode), 0o555)
+
+    def test_retained_transport_symlink_and_same_bytes_mode_or_inode_race_refuse(self):
+        for name in carrier.FILES:
+            with self.subTest(symlink=name):
+                source, _, pin = self.seal("symlink-source-" + name)
+                retained = self.retained_transport(source, "symlink-retained-" + name)
+                retained.chmod(0o700)
+                leaf = retained / name
+                foreign = self.root / ("foreign-" + name)
+                self.write(foreign, leaf.read_bytes(), 0o555)
+                leaf.unlink()
+                leaf.symlink_to(foreign)
+                retained.chmod(0o555)
+                with self.assertRaises(ValueError):
+                    carrier.validate_binding(retained, pin, self.deadline)
+                with self.assertRaises(ValueError):
+                    carrier.publication_report(retained, pin, self.deadline)
+                with self.assertRaises(ValueError):
+                    carrier.extract(retained, pin, self.root / ("symlink-out-" + name), self.deadline)
+                self.assertFalse((self.root / ("symlink-out-" + name)).exists())
+        for change in ("allowed-mode", "same-byte-inode"):
+            with self.subTest(race=change):
+                source, _, pin = self.seal("race-source-" + change)
+                retained = self.retained_transport(source, "race-retained-" + change)
+                original = carrier.Range.read
+                changed = False
+                def race(part, size=-1):
+                    nonlocal changed
+                    block = original(part, size)
+                    if block and not changed:
+                        changed = True
+                        leaf = retained / "payload.bin"
+                        if change == "allowed-mode":
+                            leaf.chmod(0o444)
+                        else:
+                            retained.chmod(0o700)
+                            raw = leaf.read_bytes()
+                            leaf.unlink()
+                            self.write(leaf, raw, 0o555)
+                            retained.chmod(0o555)
+                    return block
+                with patch.object(carrier.Range, "read", race), self.assertRaises(ValueError):
+                    carrier.extract(retained, pin, self.root / ("race-out-" + change), self.deadline)
+                self.assertTrue(changed)
+                self.assertFalse((self.root / ("race-out-" + change)).exists())
+
+    def test_current_owned_seal_does_not_admit_retained_transport_mode(self):
+        original = carrier.Output.file
+        def retained_mode_too_early(output, name, raw):
+            original(output, name, raw)
+            if name == "manifest.json":
+                (output.path / name).chmod(0o555)
+        with patch.object(carrier.Output, "file", retained_mode_too_early), self.assertRaises(ValueError):
+            self.seal("refused-current-owned")
+
+    def test_deterministic_content_with_original_clock_context(self):
+        first, _, _ = self.seal("first")
+        second, _, _ = self.seal("second")
+        for name in carrier.FILES:
+            self.assertEqual((first / name).read_bytes(), (second / name).read_bytes())
+        wrong = {**self.context, "work_cutoff_monotonic_ns": self.context["work_cutoff_monotonic_ns"] + 1}
+        with self.assertRaises(ValueError):
+            carrier.seal(self.origin, self.pin, self.root / "renewed", self.deadline, producer_context=wrong)
+        self.assertFalse((self.root / "renewed").exists())
+
+    def test_extra_origin_member_and_hardlink_refuse_before_publication(self):
+        public = self.origin / "repositories/public+"
+        public.chmod(0o700)
+        self.write(public / "extra", b"unselected")
+        public.chmod(0o555)
+        with self.assertRaises(ValueError):
+            self.seal()
+        self.assertFalse((self.root / "carrier").exists())
+        public.chmod(0o700)
+        (public / "extra").unlink()
+        os.link(public / "tool", self.root / "foreign-hardlink")
+        public.chmod(0o555)
+        with self.assertRaises(ValueError):
+            self.seal()
+
+    def batch_payload(self, name, parts):
+        path = self.root / name
+        data = b"".join(parts)
+        self.write(path, data, 0o444)
+        files = {}; offset = 0
+        for index, raw in enumerate(parts):
+            files[("sdk", str(index).zfill(8))] = {"offset": offset, "size": len(raw), "sha256": carrier.sha(raw)}
+            offset += len(raw)
+        return path, data, files
+
+    def test_batched_payload_full_sha_crosses_chunk_file_and_empty_extent_boundaries(self):
+        parts = [b"", b"a"*32767, b"bc", b"d"*65535, b"", b"e"*65537, b"f", b""] + [b"x"]*2048
+        for short, items in ((False, parts), (True, parts), (False, [b"", b""])):
+            with self.subTest(short=short, extents=len(items)):
+                path, data, files = self.batch_payload("batched-complete-"+str(short)+"-"+str(len(items)), items)
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW); self.addCleanup(os.close, fd)
+                original = os.pread; reads = []
+                def observed(number, size, offset):
+                    self.assertEqual(number, fd); self.assertLessEqual(size, 65536)
+                    result = original(number, min(size, 113) if short else size, offset)
+                    reads.append((size, offset, len(result)))
+                    return result
+                clock = carrier.Clock(self.deadline)
+                with patch.object(carrier.os, "pread", observed):
+                    carrier._payload_sha_pass(fd, files, len(data), carrier.sha(data), clock)
+                nonempty = [row for row in reads if row[2]]
+                self.assertEqual(sum(row[2] for row in nonempty), len(data))
+                self.assertEqual(reads[-1], (1, len(data), 0))
+                offset = 0
+                for row in nonempty:
+                    self.assertEqual(row[1], offset); offset += row[2]
+                self.assertEqual(offset, len(data))
+                if not short:self.assertEqual(len(reads), (len(data)+65535)//65536+1)
+                self.assertEqual(clock.deadline, self.deadline)
+                self.assertEqual(os.fstat(fd).st_size, len(data))
+
+    def test_batched_payload_real_corruption_truncation_and_trailing_bytes_refuse(self):
+        parts = [b"a"*32767, b"bc", b"", b"d"*65537]
+        for fault in ("file-edge", "chunk-edge", "next-chunk", "truncate", "append", "file-pin", "payload-pin"):
+            with self.subTest(fault=fault):
+                path, data, files = self.batch_payload("batched-fault-"+fault, parts)
+                changed = bytearray(data)
+                if fault in ("file-edge", "chunk-edge", "next-chunk"):
+                    index = {"file-edge":32767, "chunk-edge":65535, "next-chunk":65536}[fault]
+                    changed[index] ^= 1
+                elif fault == "truncate":changed = changed[:-1]
+                elif fault == "append":changed += b"unselected"
+                elif fault == "file-pin":files[("sdk", "00000002")]["sha256"] = "0"*64
+                pin = "0"*64 if fault == "payload-pin" else carrier.sha(data)
+                path.chmod(0o600);path.write_bytes(changed);path.chmod(0o444)
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    with self.assertRaises(ValueError):
+                        carrier._payload_sha_pass(fd, files, len(data), pin, carrier.Clock(self.deadline))
+                finally:os.close(fd)
+
+    def test_batched_payload_same_byte_named_replacement_refuses_after_independent_full_nars(self):
+        root, unused, pin = self.seal("batch-replaced")
+        leaf = root / "payload.bin"; raw = leaf.read_bytes()
+        pread, nar_hash = os.pread, carrier.nar.hash_descriptor
+        armed = [True]; held = []; nars = []
+        def replace(fd, size, offset):
+            block = pread(fd, size, offset)
+            if armed[0] and block:
+                armed[0] = False; held.append(fd); old = os.fstat(fd)
+                root.chmod(0o700)
+                replacement = root / "replacement-payload"; self.write(replacement, raw, 0o444)
+                replacement.replace(leaf); root.chmod(0o555)
+                self.assertNotEqual(old.st_ino, leaf.stat().st_ino)
+            return block
+        def complete_nar(*args, **kwargs):
+            result = nar_hash(*args, **kwargs); nars.append(args[0]["root"]); return result
+        with patch.object(carrier.os, "pread", replace), patch.object(carrier.nar, "hash_descriptor", complete_nar):
+            with self.assertRaises(ValueError):carrier.validate_binding(root, pin, self.deadline)
+        self.assertFalse(armed[0]);self.assertEqual(len(nars), 2)
+        self.assertEqual(leaf.read_bytes(), raw)
+        for fd in held:
+            with self.assertRaises(OSError):os.fstat(fd)
+
+    def test_batched_payload_original_deadline_and_read_error_close_actual_owner_fd(self):
+        for fault in ("deadline", "read-error"):
+            with self.subTest(fault=fault):
+                root, unused, pin = self.seal("batch-close-"+fault)
+                pread, monotonic = os.pread, time.monotonic
+                armed = [False]; held = []
+                def now():return self.deadline if armed[0] and fault == "deadline" else monotonic()
+                def refuse(fd, size, offset):
+                    if not armed[0]:
+                        armed[0] = True; held.append(fd)
+                        if fault == "read-error":raise OSError("synthetic payload read refusal")
+                    return pread(fd, size, offset)
+                expected = ValueError if fault == "deadline" else OSError
+                with patch.object(carrier.os, "pread", refuse), patch.object(carrier.time, "monotonic", now):
+                    with self.assertRaises(expected):carrier.validate_binding(root, pin, self.deadline)
+                self.assertTrue(armed[0]);self.assertEqual(len(held), 1)
+                for fd in held:
+                    with self.assertRaises(OSError):os.fstat(fd)
+
+    def test_payload_corruption_truncation_and_unlisted_carrier_refuse(self):
+        for change in ("corrupt", "truncate", "extra"):
+            with self.subTest(change=change):
+                root, _, pin = self.seal(change)
+                if change == "extra":
+                    root.chmod(0o700)
+                    self.write(root / "undeclared", b"extra")
+                    root.chmod(0o555)
+                else:
+                    path = root / "payload.bin"
+                    data = path.read_bytes()
+                    path.chmod(0o600)
+                    path.write_bytes((bytes([data[0] ^ 1]) + data[1:]) if change == "corrupt" else data[:-1])
+                    path.chmod(0o444)
+                with self.assertRaises(ValueError):
+                    carrier.extract(root, pin, self.root / (change + "-out"), self.deadline)
+                self.assertFalse((self.root / (change + "-out")).exists())
+
+    def test_duplicate_traversal_special_parent_and_offset_manifests_refuse(self):
+        for change in ("duplicate", "traversal", "device", "parent", "offset", "nar"):
+            with self.subTest(change=change):
+                root, _, _ = self.seal(change)
+                value = json.loads((root / "manifest.json").read_bytes())
+                if change == "duplicate":
+                    value["entries"].append(dict(value["entries"][-1]))
+                elif change == "traversal":
+                    value["entries"][-1]["path"] = "../../foreign"
+                elif change == "device":
+                    value["entries"][-1]["kind"] = "device"
+                elif change == "parent":
+                    row = next(row for row in value["entries"] if row["kind"] == "directory" and row["path"] == "repositories")
+                    row.update(kind="symlink", target="/foreign")
+                    row.pop("mode")
+                elif change == "offset":
+                    next(row for row in value["entries"] if row["kind"] == "file")["offset"] += 1
+                else:
+                    value["nars"]["sdk"]["narHash"] = "sha256:" + "0" * 64
+                pin = self.rewrite(root, manifest=value)
+                with self.assertRaises(ValueError):
+                    carrier.extract(root, pin, self.root / (change + "-out"), self.deadline)
+
+    def test_origin_same_byte_root_replacement_is_refused(self):
+        original = carrier.nar_origins
+        def mutate(roots, rows, clock):
+            result = original(roots, rows, clock)
+            self.origin.rename(self.root / "detached-origin")
+            shutil.copytree(self.root / "detached-origin", self.origin, symlinks=True)
+            return result
+        with patch.object(carrier, "nar_origins", side_effect=mutate):
+            with self.assertRaises(ValueError):
+                self.seal()
+
+    def test_extracted_same_bytes_new_inode_and_created_absence_refuse_readback(self):
+        root, _, pin = self.seal()
+        output = self.root / "extracted"
+        fresh = carrier.extract(root, pin, output, self.deadline)
+        receipt_pin = carrier.sha(carrier.encoded(fresh))
+        leaf = output / "sdk/repositories/public+/tool"
+        leaf.parent.chmod(0o700)
+        raw = leaf.read_bytes()
+        leaf.unlink()
+        self.write(leaf, raw, 0o555)
+        leaf.parent.chmod(0o555)
+        with self.assertRaises(ValueError):
+            carrier.revalidate_extraction(root, pin, output, self.deadline, pinned_extraction_receipt_sha256=receipt_pin)
+        other = output / "sdk/repositories/other"
+        other.chmod(0o700)
+        self.write(other / "absent", b"formerly absent")
+        other.chmod(0o555)
+        with self.assertRaises(ValueError):
+            carrier.revalidate_extraction(root, pin, output, self.deadline, pinned_extraction_receipt_sha256=receipt_pin)
+
+    def test_chmod_intermediate_symlink_refuses_without_touching_foreign_mode(self):
+        root, _, pin = self.seal()
+        foreign = self.root / "foreign"
+        foreign.mkdir(mode=0o700)
+        original = carrier.Output.seal_directory
+        mutated = False
+        def replace(output, name):
+            nonlocal mutated
+            if name == "sdk/repositories/public+" and not mutated:
+                mutated = True
+                selected = output.path / "sdk/repositories"
+                selected.rename(output.path / "sdk/detached")
+                selected.symlink_to(foreign, target_is_directory=True)
+            return original(output, name)
+        with patch.object(carrier.Output, "seal_directory", new=replace):
+            with self.assertRaises((ValueError, OSError)):
+                carrier.extract(root, pin, self.root / "raced", self.deadline)
+        self.assertEqual(stat.S_IMODE(foreign.stat().st_mode), 0o700)
+        self.assertFalse((self.root / "raced/extraction-receipt.json").exists())
+
+    def test_output_existing_foreign_root_and_expired_cutoff_are_untouched(self):
+        root, _, pin = self.seal()
+        foreign = self.root / "foreign"
+        foreign.mkdir(mode=0o700)
+        self.write(foreign / "keep", b"foreign bytes")
+        with self.assertRaises(FileExistsError):
+            carrier.extract(root, pin, foreign, self.deadline)
+        self.assertEqual((foreign / "keep").read_bytes(), b"foreign bytes")
+        with self.assertRaises(ValueError):
+            carrier.extract(root, pin, self.root / "expired", time.monotonic()-1)
+        self.assertFalse((self.root / "expired").exists())
+
+    def test_oversized_origin_rows_refuse_before_hash_and_absence_allocations(self):
+        repository_rows = json.loads(self.original)
+        repository_rows["repositories"][0]["files"] = [
+            {"path": "unselected", "kind": "file", "mode": 0o444, "sha256": "4" * 64}
+        ] * 129
+        nix_rows = json.loads(self.original)
+        nix_rows["nix_inventory"] = [{"path": "unselected"}] * 129
+        invalid_list = json.loads(self.original)
+        invalid_list["repositories"][0]["files"] = {"unselected": True}
+        with patch.object(carrier, "MAX_ENTRIES", 128), \
+                patch.object(sdk, "canonical", side_effect=AssertionError("hashed before row bound")), \
+                patch.object(sdk, "public_link_absences", side_effect=AssertionError("allocated before row bound")):
+            for name, receipt in (("repositories", repository_rows), ("jdk", nix_rows), ("type", invalid_list)):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    carrier.receipt_shape(receipt, carrier.Clock(self.deadline))
+
+    def test_integer_original_cutoff_refuses_when_float_clock_still_before(self):
+        clock = carrier.Clock(self.deadline)
+        clock.until_ns = self.context["work_cutoff_monotonic_ns"]
+        with (patch.object(carrier.time, "monotonic", return_value=self.deadline-0.001),
+              patch.object(carrier.time, "monotonic_ns", return_value=clock.until_ns)):
+            with self.assertRaisesRegex(ValueError, "integer-deadline"):
+                clock.tick()
+
+    def test_created_regular_leaf_same_bytes_replacement_refuses_before_ready(self):
+        root, _, pin = self.seal()
+        original = carrier.scan
+        replaced = False
+        def replace(roots, expected, clock):
+            nonlocal replaced
+            if roots["sdk"].path.parent.name == "raced-leaf" and not replaced:
+                replaced = True
+                leaf = roots["sdk"].path / "repositories/public+/tool"
+                leaf.parent.chmod(0o700)
+                raw = leaf.read_bytes()
+                leaf.unlink()
+                self.write(leaf, raw, 0o555)
+                leaf.parent.chmod(0o555)
+            return original(roots, expected, clock)
+        with patch.object(carrier, "scan", side_effect=replace):
+            with self.assertRaisesRegex(ValueError, "created-member-identity"):
+                carrier.extract(root, pin, self.root / "raced-leaf", self.deadline)
+        self.assertFalse((self.root / "raced-leaf/extraction-receipt.json").exists())
+
+    def test_published_metadata_mutation_refuses_api_return(self):
+        write = carrier.Output.file
+        def swap_manifest(output, name, raw):
+            write(output, name, raw)
+            if name == "receipt.json":
+                target = output.path / "manifest.json"
+                target.chmod(0o600)
+                target.write_bytes(target.read_bytes() + b" ")
+                target.chmod(0o444)
+        with patch.object(carrier.Output, "file", swap_manifest), self.assertRaises(ValueError):
+            self.seal("unaccepted-carrier")
+        root, _, pin = self.seal()
+        finish = carrier.Output.finish
+        def swap_fresh_receipt(output):
+            finish(output)
+            target = output.path / "extraction-receipt.json"
+            if target.exists():
+                target.chmod(0o600)
+                target.write_bytes(target.read_bytes() + b" ")
+                target.chmod(0o444)
+        with patch.object(carrier.Output, "finish", swap_fresh_receipt), self.assertRaises(ValueError):
+            carrier.extract(root, pin, self.root / "unaccepted-extraction", self.deadline)
+
+    def test_fresh_mutation_during_final_carrier_validation_refuses(self):
+        root, _, pin = self.seal()
+        output = self.root / "extracted"
+        fresh = carrier.extract(root, pin, output, self.deadline)
+        original, calls = carrier.binding, 0
+        def mutate(*args, **kwargs):
+            nonlocal calls
+            result = original(*args, **kwargs)
+            calls += 1
+            if calls == 2:
+                leaf = output / "jdk/ordinary"
+                leaf.chmod(0o600)
+                leaf.write_bytes(b"mutated during long final carrier pass")
+                leaf.chmod(0o444)
+            return result
+        with patch.object(carrier, "binding", side_effect=mutate):
+            with self.assertRaises(ValueError):
+                carrier.revalidate_extraction(root, pin, output, self.deadline,
+                    pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(fresh)))
+
+    def parent_output(self, name="parents"):
+        output = carrier.Output(self.root / name, carrier.Clock(self.deadline))
+        for path in ("sdk", "sdk/one", "sdk/one/two"):
+            output.mkdir(path)
+        return output
+
+    def test_parent_handles_reduce_real_opens_preserving_stat_checks(self):
+        with closing(self.parent_output()) as output:
+            real_open, real_stat = os.open, os.stat
+            with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                    patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                for _ in range(2):
+                    fd, leaf = output.root.parent("sdk/one/two/leaf")
+                    self.assertEqual(leaf, "leaf")
+                    self.assertEqual(carrier.identity(os.fstat(fd), True),
+                                     carrier.identity((output.path / "sdk/one/two").stat(), True))
+                    os.close(fd)
+                baseline_opens, baseline_stats = opened.call_count, named.call_count
+            with carrier._ParentHandles(output.root) as parents:
+                with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                        patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                    for _ in range(2):
+                        fd, leaf = parents.parent("sdk/one/two/leaf")
+                        self.assertEqual(leaf, "leaf")
+                        self.assertEqual(carrier.identity(os.fstat(fd), True),
+                                         carrier.identity((output.path / "sdk/one/two").stat(), True))
+                        os.close(fd)
+                    self.assertEqual(baseline_opens, 6)
+                    self.assertEqual(opened.call_count, 3)
+                    self.assertEqual(named.call_count, baseline_stats)
+                retained = [fd for fd, _ in parents.entries.values()]
+            for fd in retained:
+                with self.assertRaises(OSError):
+                    os.fstat(fd)
+
+    def test_parent_handles_refuse_same_byte_parent_mode_and_symbolic_replacement(self):
+        for change in ("same-byte", "mode", "symbolic"):
+            with self.subTest(change=change), closing(self.parent_output(change)) as output:
+                parent = output.path / "sdk/one/two"
+                self.write(parent / "unchanged", b"same bytes")
+                with carrier._ParentHandles(output.root) as parents:
+                    fd, _ = parents.parent("sdk/one/two/leaf")
+                    os.close(fd)
+                    if change == "mode":
+                        parent.chmod(0o500)
+                    else:
+                        parent.rename(parent.with_name("detached"))
+                        if change == "same-byte":
+                            parent.mkdir(mode=0o700)
+                            self.write(parent / "unchanged", b"same bytes")
+                        else:
+                            foreign = self.root / "foreign-parent"
+                            foreign.mkdir(mode=0o700)
+                            parent.symlink_to(foreign, target_is_directory=True)
+                    with self.assertRaises(ValueError):
+                        parents.parent("sdk/one/two/leaf")
+
+    def test_parent_handles_refuse_named_root_replacement(self):
+        with closing(self.parent_output()) as output:
+            with carrier._ParentHandles(output.root) as parents:
+                fd, _ = parents.parent("sdk/one/two/leaf")
+                os.close(fd)
+                output.path.rename(self.root / "detached-root")
+                output.path.mkdir(mode=0o700)
+                with self.assertRaisesRegex(ValueError, "named-ancestor"):
+                    parents.parent("sdk/one/two/leaf")
+
+    def test_parent_handles_cached_dup_rechecks_after_named_race(self):
+        with closing(self.parent_output()) as output:
+            with carrier._ParentHandles(output.root) as parents:
+                fd, _ = parents.parent("sdk/one/two/leaf")
+                os.close(fd)
+                cached = parents.entries["sdk/one/two"][0]
+                real_dup, borrowed = os.dup, []
+                def replace_after_dup(fd):
+                    child = real_dup(fd)
+                    if fd == cached:
+                        borrowed.append(child)
+                        parent = output.path / "sdk/one/two"
+                        parent.rename(parent.with_name("detached"))
+                        parent.mkdir(mode=0o700)
+                    return child
+                with patch.object(carrier.os, "dup", side_effect=replace_after_dup):
+                    with self.assertRaisesRegex(ValueError, "internal-parent-race"):
+                        parents.parent("sdk/one/two/leaf")
+                self.assertEqual(len(borrowed), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(borrowed[0])
+
+    def test_parent_handles_bound_evict_and_close_exact_owned_descriptors(self):
+        with closing(self.parent_output()) as output:
+            for index in range(34):
+                output.mkdir("sdk/d" + str(index))
+            with carrier._ParentHandles(output.root) as parents:
+                fd, _ = parents.parent("sdk/d0/leaf")
+                os.close(fd)
+                evicted = parents.entries["sdk/d0"][0]
+                real_close, evicted_closed = os.close, []
+                def record_close(fd):
+                    if fd == evicted and carrier.identity(os.fstat(fd), True) == output.root.named["sdk/d0"]:
+                        evicted_closed.append(fd)
+                    real_close(fd)
+                with patch.object(carrier.os, "close", side_effect=record_close):
+                    for index in range(1, 34):
+                        fd, _ = parents.parent("sdk/d" + str(index) + "/leaf")
+                        os.close(fd)
+                        self.assertLessEqual(len(parents.entries), 32)
+                self.assertNotIn("sdk/d0", parents.entries)
+                self.assertEqual(evicted_closed, [evicted])
+                held = [fd for fd, _ in parents.entries.values()]
+            self.assertEqual(parents.entries, {})
+            for fd in held:
+                with self.assertRaises(OSError):
+                    os.fstat(fd)
+            output.root.check()
+            with self.assertRaisesRegex(ValueError, "parent-handles-closed"):
+                parents.parent("sdk/d1/leaf")
+
+    def test_parent_handles_original_expiry_and_exception_close_descriptors(self):
+        for reason in ("deadline", "integer-deadline", "exception"):
+            with self.subTest(reason=reason), closing(self.parent_output(reason)) as output:
+                parents = carrier._ParentHandles(output.root)
+                held = []
+                with self.assertRaisesRegex(ValueError, reason):
+                    with parents:
+                        fd, _ = parents.parent("sdk/one/two/leaf")
+                        os.close(fd)
+                        held = [fd for fd, _ in parents.entries.values()]
+                        if reason == "deadline":
+                            original = output.root.clock.deadline
+                            with patch.object(carrier.time, "monotonic", return_value=original):
+                                parents.parent("sdk/one/two/leaf")
+                        elif reason == "integer-deadline":
+                            output.root.clock.until_ns = time.monotonic_ns() + 10**9
+                            with patch.object(carrier.time, "monotonic_ns", return_value=output.root.clock.until_ns):
+                                parents.parent("sdk/one/two/leaf")
+                        else:
+                            raise ValueError("exception")
+                self.assertEqual(parents.entries, {})
+                output.root.clock.until_ns = None
+                for fd in held:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
+                output.root.check()
+
+
+    def extraction_phases(self, raw):
+        rows, budget_count, nar_count, nar_position, nar_passes, extract_position = [], 0, 0, 0, 0, -1
+        nar_elapsed = 0
+        extract_names = ("initial-start", "initial-bound", "directories-start", "directories-ready", "directories-refused",
+            "copy-complete", "copy-refused", "links-start", "links-complete", "seal-start", "seal-complete",
+            "final-proof-start", "inventory-check-start", "inventory-check-complete",
+            "carrier-readback-start", "carrier-readback-complete", "content-readback-start", "content-readback-complete",
+            "publication-start", "publication-complete", "published-content-start", "published-content-complete",
+            "final-proof-complete")
+        nar_names = ("namespace-start", "namespace-complete", "jdk-nar-start", "jdk-nar-complete",
+            "sdk-nar-start", "sdk-nar-complete", "final-namespace-start", "final-namespace-complete")
+        lines = raw.splitlines()
+        # This helper observes one extract plus at most one fresh revalidation.
+        # Every line is validated; selecting extraction rows is not a log filter.
+        self.assertLessEqual(len(lines),23+1+2*8)
+        for line in lines:
+            self.assertLessEqual(len(line),256)
+            match = re.fullmatch(r"sdk-carrier-extract: ([a-z-]+) elapsed_ns=([0-9]+) copied_files=([0-9]+) copied_bytes=([0-9]+) created_directories=([0-9]+)",line)
+            if match is not None:
+                self.assertTrue(match[1] in extract_names,"closed extraction phase")
+                position = extract_names.index(match[1]);self.assertGreater(position,extract_position)
+                extract_position = position
+                row = (match[1],*(int(value) for value in match.groups()[1:]))
+                self.assertLessEqual(row[1],1200*10**9)
+                self.assertLessEqual(row[2],carrier.MAX_ENTRIES)
+                self.assertLessEqual(row[3],carrier.MAX_BYTES)
+                self.assertLessEqual(row[4],carrier.MAX_ENTRIES)
+                rows.append(row)
+                continue
+            budget = re.fullmatch(r"sdk-carrier-budget: extraction-entry remaining_ns=([0-9]+)",line)
+            if budget is not None:
+                budget_count += 1;self.assertLessEqual(budget_count,1)
+                self.assertLessEqual(int(budget[1]),1200*10**9)
+                continue
+            nar = re.fullmatch(r"sdk-carrier-nar: ([a-z-]+) elapsed_ns=([0-9]+) remaining_ns=([0-9]+)",line)
+            self.assertIsNotNone(nar,"only closed redacted extraction/budget/NAR observations")
+            self.assertEqual(nar[1],nar_names[nar_position])
+            if nar_position == 0:
+                nar_passes += 1;self.assertLessEqual(nar_passes,2);nar_elapsed = 0
+            self.assertGreaterEqual(int(nar[2]),nar_elapsed);nar_elapsed = int(nar[2])
+            self.assertLessEqual(nar_elapsed,1200*10**9)
+            self.assertLessEqual(int(nar[3]),1200*10**9)
+            nar_position = (nar_position+1)%len(nar_names)
+            nar_count += 1;self.assertLessEqual(nar_count,16)
+        self.assertLessEqual(len(rows),23)
+        self.assertEqual([row[1] for row in rows],sorted(row[1] for row in rows))
+        return rows
+
+    def test_phase_observation_helper_refuses_unknown_family_phase_order_and_numeric_bounds(self):
+        extract = "sdk-carrier-extract: initial-start elapsed_ns=0 copied_files=0 copied_bytes=0 created_directories=0"
+        budget = "sdk-carrier-budget: extraction-entry remaining_ns=1"
+        for fault in ("unexpected raw diagnostic",extract.replace("initial-start","unknown-phase"),
+                budget.replace("remaining_ns=1","remaining_ns="+str(1200*10**9+1)),budget+"\n"+budget,
+                "sdk-carrier-nar: sdk-nar-start elapsed_ns=0 remaining_ns=1",
+                "sdk-carrier-nar: namespace-start elapsed_ns=0 remaining_ns=-1",
+                "\n".join([extract]*24)):
+            with self.subTest(fault=fault):
+                with self.assertRaises(AssertionError):self.extraction_phases(fault)
+        rows = self.extraction_phases(extract+"\n"+budget+"\n"+
+            "sdk-carrier-nar: namespace-start elapsed_ns=0 remaining_ns=1")
+        self.assertEqual(rows,[("initial-start",0,0,0,0)])
+
+    def test_extract_original_body_trace_survives_held_expiry_and_cleanup_failure(self):
+        root, unused, pin = self.seal("first-body-cause")
+        output = self.root / "first-body-output"
+        held = carrier.HeldCarrier(root,pin,self.deadline)
+        class Original(ValueError):
+            def with_traceback(self,unused): raise AssertionError("dynamic traceback method accessed")
+        original = Original("unlogged original operation fixture")
+        now, fired, rechecks, owners = [time.monotonic()], [False], [], []
+        actual_seal, actual_close, actual_check = carrier.Output.seal_directory, carrier.Output.close, held.check
+        def refuse(directory,name):
+            actual_seal(directory,name)
+            fired[0] = True; now[0] = self.deadline
+            raise original
+        def close(directory):
+            owners.extend(fd for unused,fd,unused_witness in directory.root.chain)
+            actual_close(directory)
+            raise OSError("unlogged cleanup fixture")
+        def check():
+            if fired[0]: rechecks.append(True)
+            return actual_check()
+        emitted, observed, trace_codes, held_fds = io.StringIO(), [], [], []
+        with redirect_stderr(emitted), patch.object(carrier.time,"monotonic",side_effect=lambda:now[0]), \
+                patch.object(carrier.Output,"seal_directory",refuse), patch.object(carrier.Output,"close",close), \
+                patch.object(held,"check",side_effect=check):
+            try:
+                with held:
+                    held_fds = [fd for unused,fd,unused_witness in held._root.chain]+[fd for unused,fd,unused_witness in held._held]
+                    carrier.extract(root,pin,output,self.deadline,_held_carrier=held)
+            except ValueError as error:
+                observed.append(error)
+                trace = BaseException.__traceback__.__get__(error)
+                while trace is not None:
+                    trace_codes.append(trace.tb_frame.f_code);trace = trace.tb_next
+                self.assertIsInstance(error.__cause__,ValueError)
+            else: self.fail("original extraction failure was suppressed")
+        self.assertEqual(observed,[original]);self.assertIn(refuse.__code__,trace_codes)
+        self.assertTrue(fired[0]);self.assertTrue(rechecks)
+        self.assertFalse(held._active);self.assertEqual(held._held,())
+        self.assert_descriptors_closed(set(owners+held_fds))
+        self.assertFalse((output/"extraction-receipt.json").exists())
+        phases = [row[0] for row in self.extraction_phases(emitted.getvalue())]
+        self.assertIn("seal-start",phases);self.assertNotIn("seal-complete",phases)
+        self.assertNotIn("final-proof-start",phases)
+        self.assertNotIn(str(original),emitted.getvalue());self.assertNotIn("unlogged cleanup",emitted.getvalue())
+
+    def test_proof_scope_normal_exit_check_is_mandatory_and_failure_cannot_be_suppressed(self):
+        root, unused, pin = self.seal("normal-proof-exit")
+        held = carrier.HeldCarrier(root,pin,self.deadline)
+        actual_check, checks, now = held.check, [], [time.monotonic()]
+        def check(): checks.append(True);return actual_check()
+        with patch.object(carrier.time,"monotonic",side_effect=lambda:now[0]):
+            held.__enter__()
+            try:
+                with self.assertRaises(ValueError):
+                    with carrier._ProofExitStack() as stack:
+                        stack.callback(check)
+                        now[0] = self.deadline
+                self.assertEqual(checks,[True])
+                self.assertEqual(held._clock.deadline,self.deadline)
+            finally: held.close()
+        self.assertFalse(held._active)
+        path = self.root/"scope-owned-fd";self.write(path,b"public owned FD")
+        fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        original, attempts = ValueError("unsuppressible body fixture"), []
+        def close(): attempts.append(fd);os.close(fd)
+        with self.assertRaises(ValueError) as caught:
+            with carrier._ProofExitStack() as stack:
+                stack.callback(close)
+                stack.push(lambda *unused: True)
+                raise original
+        self.assertIs(caught.exception,original);self.assertEqual(attempts,[fd])
+        self.assert_descriptors_closed((fd,))
+
+    def test_real_scoped_phase_observations_are_closed_numeric_and_keep_original_budget(self):
+        root, unused, pin = self.seal("phase-budget")
+        entry = time.monotonic_ns();until = entry+600*10**9;deadline = until/10**9
+        held = carrier.HeldCarrier(root,pin,deadline);held._clock.until_ns = held._until_ns = until
+        emitted = io.StringIO();before = until-time.monotonic_ns()
+        with redirect_stderr(emitted),held:
+            result = carrier.extract(root,pin,self.root/"phase-output",deadline,_held_carrier=held)
+            self.assertEqual(held._clock.until_ns,until);self.assertEqual(held._clock.deadline,deadline)
+            held.full_final()
+            carrier.revalidate_extraction(root,pin,self.root/"phase-output",deadline,
+                pinned_extraction_receipt_sha256=carrier.sha(carrier.encoded(result)),_held_carrier=held)
+        raw = emitted.getvalue()
+        budget = [re.fullmatch(r"sdk-carrier-budget: extraction-entry remaining_ns=([0-9]+)",line)
+                  for line in raw.splitlines() if line.startswith("sdk-carrier-budget:")]
+        self.assertEqual(len(budget),1);self.assertIsNotNone(budget[0])
+        self.assertGreaterEqual(int(budget[0][1]),0);self.assertLessEqual(int(budget[0][1]),before)
+        expected = ["namespace-start","namespace-complete","jdk-nar-start","jdk-nar-complete",
+                    "sdk-nar-start","sdk-nar-complete","final-namespace-start","final-namespace-complete"]
+        rows = [re.fullmatch(r"sdk-carrier-nar: ([a-z-]+) elapsed_ns=([0-9]+) remaining_ns=([0-9]+)",line)
+                for line in raw.splitlines() if line.startswith("sdk-carrier-nar:")]
+        self.assertEqual(len(rows),16);self.assertTrue(all(row is not None for row in rows))
+        self.assertEqual([row[1] for row in rows],expected*2)
+        for row in rows:
+            self.assertLessEqual(int(row[3]),before)
+            self.assertLessEqual(len(row[0]),256)
+        self.assertLessEqual(len(self.extraction_phases(raw)),23)
+        for forbidden in (str(root),str(self.root/"phase-output"),pin,self.context["epoch"],self.context["source_commit"]):
+            self.assertNotIn(forbidden,raw)
+
+    def test_extract_bound_report_same_owner_full_proofs_and_redacted_phase_order(self):
+        root, original, pin = self.seal()
+        output = self.root / "fused-output"
+        seen, owners = [], []
+        original_binding = carrier.binding
+        def binding(owner, selected_pin, clock):
+            result = original_binding(owner, selected_pin, clock)
+            owners.append(owner)
+            return result
+        def bound(report):
+            self.assertEqual(report, original)
+            self.assertFalse(output.exists())
+            self.assertEqual(len(owners), 1)
+            owners[0].check()
+            seen.append(report)
+        emitted = io.StringIO()
+        with redirect_stderr(emitted), patch.object(carrier, "binding", side_effect=binding) as proofs:
+            result = carrier.extract(root, pin, output, self.deadline, on_bound=bound)
+        self.assertEqual(seen, [original])
+        self.assertEqual(proofs.call_count, 2)
+        self.assertIs(owners[0], owners[1])
+        self.assertEqual(owners[0].chain, [])
+        self.assertEqual(result["carrier_receipt_sha256"], pin)
+        self.assertFalse(result["metadata_qualified"])
+        self.assertEqual((output / "sdk/receipt.json").read_bytes(), self.original)
+        phases = self.extraction_phases(emitted.getvalue())
+        self.assertEqual([row[0] for row in phases], ["initial-start", "initial-bound", "directories-start", "directories-ready",
+            "copy-complete", "links-start", "links-complete", "seal-start", "seal-complete", "final-proof-start",
+            "inventory-check-start", "inventory-check-complete", "carrier-readback-start", "carrier-readback-complete",
+            "content-readback-start", "content-readback-complete", "publication-start", "publication-complete",
+            "published-content-start", "published-content-complete", "final-proof-complete"])
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        count = sum(entry["kind"] == "file" for entry in manifest["entries"])
+        self.assertTrue(all(row[2:4] == (0, 0) for row in phases[:4]))
+        self.assertTrue(all(row[2:4] == (count, original["payload_bytes"]) for row in phases[4:]))
+        directory_count = sum(entry["kind"] == "directory" for entry in manifest["entries"])
+        self.assertTrue(all(row[4] == 0 for row in phases[:3]))
+        self.assertTrue(all(row[4] == directory_count for row in phases[3:]))
+        for sensitive in (str(root), str(output), pin, original["origin"]["root"], "synthetic"):
+            self.assertNotIn(sensitive, emitted.getvalue())
+
+    def test_extract_bound_refusal_and_same_byte_custody_or_expiry_close_owner(self):
+        for change in ("refusal", "same-byte-root", "same-byte-leaf", "leaf-mode", "deadline", "integer-deadline"):
+            with self.subTest(change=change):
+                root, _, pin = self.seal("bound-" + change)
+                output = self.root / ("out-" + change)
+                original_binding, held = carrier.binding, []
+                now, now_ns = [time.monotonic()], [time.monotonic_ns()]
+                integer_cutoff = now_ns[0] + 10**9
+                def binding(owner, selected_pin, clock):
+                    result = original_binding(owner, selected_pin, clock)
+                    held.extend(fd for _, fd, _ in owner.chain)
+                    if change == "integer-deadline":
+                        owner.clock.until_ns = integer_cutoff
+                    return result
+                def bound(unused):
+                    self.assertFalse(output.exists())
+                    if change == "refusal":
+                        raise ValueError("origin callback refused")
+                    if change == "same-byte-root":
+                        root.rename(root.with_name(root.name + "-detached"))
+                        root.mkdir(mode=0o555)
+                    elif change == "same-byte-leaf":
+                        leaf = root / "payload.bin"
+                        raw = leaf.read_bytes()
+                        leaf.chmod(0o600)
+                        leaf.write_bytes(raw)
+                        leaf.chmod(0o444)
+                    elif change == "leaf-mode":
+                        (root / "payload.bin").chmod(0o400)
+                    elif change == "deadline":
+                        now[0] = self.deadline
+                    else:
+                        now_ns[0] = integer_cutoff
+                emitted = io.StringIO()
+                with redirect_stderr(emitted), patch.object(carrier, "binding", side_effect=binding), \
+                        patch.object(carrier.time, "monotonic", side_effect=lambda: now[0]), \
+                        patch.object(carrier.time, "monotonic_ns", side_effect=lambda: now_ns[0]):
+                    with self.assertRaises(ValueError):
+                        carrier.extract(root, pin, output, self.deadline, on_bound=bound)
+                self.assertFalse(output.exists())
+                self.assertEqual([row[0] for row in self.extraction_phases(emitted.getvalue())],
+                                 ["initial-start", "initial-bound"])
+                for fd in held:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
+
+    def test_extract_corrupt_carrier_refuses_before_bound_callback(self):
+        root, _, pin = self.seal()
+        leaf = root / "payload.bin"
+        raw = leaf.read_bytes()
+        leaf.chmod(0o600)
+        leaf.write_bytes(b"!" + raw[1:])
+        leaf.chmod(0o444)
+        output = self.root / "unbound-output"
+        callback, emitted = unittest.mock.Mock(), io.StringIO()
+        with redirect_stderr(emitted), self.assertRaisesRegex(ValueError, "payload-file-digest"):
+            carrier.extract(root, pin, output, self.deadline, on_bound=callback)
+        callback.assert_not_called()
+        self.assertFalse(output.exists())
+        self.assertEqual([row[0] for row in self.extraction_phases(emitted.getvalue())], ["initial-start"])
+
+    def test_extract_failed_copy_reports_only_fully_checked_file_counters(self):
+        for reason in ("refusal", "deadline", "integer-deadline"):
+            with self.subTest(reason=reason):
+                root, _, pin = self.seal("partial-" + reason)
+                output = self.root / ("partial-copy-" + reason)
+                armed, first_accepted = [False], threading.Event()
+                entries = [row for row in json.loads((root / "manifest.json").read_bytes())["entries"]
+                           if row["kind"] == "file"]
+                second_offset, second_size = entries[1]["offset"], entries[1]["size"]
+                original_read, original_copy = carrier.Range.read, carrier._copy_regulars
+                def bound(unused):
+                    armed[0] = True
+                def copies(owner, payload, witness, files, clock, on_copied):
+                    def accepted(*args):
+                        on_copied(*args)
+                        first_accepted.set()
+                    return original_copy(owner, payload, witness, files, clock, accepted)
+                def fail_second_copy(part, count):
+                    if armed[0] and part.start == second_offset and part.size == second_size and not part.position:
+                        self.assertTrue(first_accepted.wait(5), "first copy was not owner-accepted")
+                        if reason == "refusal":
+                            raise ValueError("injected copy refusal")
+                        original_clock = part.clock.clock if isinstance(part.clock, carrier._CopyState) else part.clock
+                        if reason == "deadline":
+                            with patch.object(carrier.time, "monotonic", return_value=original_clock.deadline):
+                                return original_read(part, count)
+                        original_clock.until_ns = time.monotonic_ns() + 10**9
+                        with patch.object(carrier.time, "monotonic_ns", return_value=original_clock.until_ns):
+                            return original_read(part, count)
+                    return original_read(part, count)
+                emitted = io.StringIO()
+                with redirect_stderr(emitted), patch.object(carrier.Range, "read", new=fail_second_copy), \
+                        patch.object(carrier, "_copy_regulars", new=copies):
+                    with self.assertRaisesRegex(ValueError, "copy refusal" if reason == "refusal" else reason):
+                        carrier.extract(root, pin, output, self.deadline, on_bound=bound)
+                phases = self.extraction_phases(emitted.getvalue())
+                self.assertEqual([row[0] for row in phases],
+                    ["initial-start", "initial-bound", "directories-start", "directories-ready", "copy-refused"])
+                self.assertEqual(phases[-1][2:4], (1, len((self.jdk / "ordinary").read_bytes())))
+                self.assertFalse((output / "extraction-receipt.json").exists())
+                self.assertEqual((output / "jdk/ordinary").read_bytes(), (self.jdk / "ordinary").read_bytes())
+
+
+    def test_mkdir_parent_handles_reduce_real_opens_with_same_named_checks(self):
+        with closing(self.parent_output()) as output:
+            real_open, real_stat = os.open, os.stat
+            with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                    patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                for leaf in ("a", "b"):
+                    output.mkdir("sdk/one/two/" + leaf)
+                baseline_opens, baseline_stats = opened.call_count, named.call_count
+            with carrier._ParentHandles(output.root) as parents:
+                with patch.object(carrier.os, "open", wraps=real_open) as opened, \
+                        patch.object(carrier.os, "stat", wraps=real_stat) as named:
+                    for leaf in ("c", "d"):
+                        output.mkdir("sdk/one/two/" + leaf, parent_handles=parents)
+                    self.assertEqual(baseline_opens, 8)
+                    self.assertEqual(opened.call_count, 5)
+                    self.assertEqual(named.call_count, baseline_stats)
+                cached = [fd for fd, _ in parents.entries.values()]
+            for leaf in ("a", "b", "c", "d"):
+                name = "sdk/one/two/" + leaf
+                self.assertEqual(output.root.named[name],
+                                 carrier.identity((output.path / name).stat(), True))
+                self.assertEqual(stat.S_IMODE((output.path / name).stat().st_mode), 0o700)
+            for fd in cached:
+                with self.assertRaises(OSError):
+                    os.fstat(fd)
+            output.root.check()
+
+    def test_mkdir_parent_handles_require_same_owner_and_live_scope(self):
+        with closing(self.parent_output("left")) as left, closing(self.parent_output("right")) as right:
+            with carrier._ParentHandles(right.root) as foreign:
+                with self.assertRaisesRegex(ValueError, "mkdir-parent-owner"):
+                    left.mkdir("sdk/one/two/new", parent_handles=foreign)
+            self.assertFalse((left.path / "sdk/one/two/new").exists())
+            parents = carrier._ParentHandles(left.root)
+            parents.close()
+            with self.assertRaisesRegex(ValueError, "parent-handles-closed"):
+                left.mkdir("sdk/one/two/new", parent_handles=parents)
+            self.assertFalse((left.path / "sdk/one/two/new").exists())
+            left.root.check()
+            right.root.check()
+
+    def test_mkdir_cached_parent_refuses_inode_mode_and_link_changes_without_foreign_write(self):
+        for change in ("inode", "mode", "link"):
+            with self.subTest(change=change), closing(self.parent_output("mkdir-" + change)) as output:
+                with carrier._ParentHandles(output.root) as parents:
+                    output.mkdir("sdk/one/two/seed", parent_handles=parents)
+                    parent = output.path / "sdk/one/two"
+                    foreign = self.root / ("foreign-" + change)
+                    foreign.mkdir(mode=0o700)
+                    self.write(foreign / "marker", b"foreign bytes")
+                    if change == "mode":
+                        parent.chmod(0o500)
+                    else:
+                        parent.rename(parent.with_name("detached"))
+                        if change == "inode":
+                            parent.mkdir(mode=0o700)
+                            (parent / "seed").mkdir(mode=0o700)
+                        else:
+                            parent.symlink_to(foreign, target_is_directory=True)
+                    with self.assertRaises(ValueError):
+                        output.mkdir("sdk/one/two/new", parent_handles=parents)
+                    self.assertNotIn("sdk/one/two/new", output.root.named)
+                    self.assertFalse((foreign / "new").exists())
+                    self.assertEqual((foreign / "marker").read_bytes(), b"foreign bytes")
+                    self.assertEqual(stat.S_IMODE(foreign.stat().st_mode), 0o700)
+
+    def test_mkdir_cached_dup_still_refuses_named_parent_race(self):
+        with closing(self.parent_output()) as output:
+            with carrier._ParentHandles(output.root) as parents:
+                output.mkdir("sdk/one/two/seed", parent_handles=parents)
+                cached = parents.entries["sdk/one/two"][0]
+                real_dup, borrowed = os.dup, []
+                def replace_after_dup(fd):
+                    child = real_dup(fd)
+                    if fd == cached:
+                        borrowed.append(child)
+                        parent = output.path / "sdk/one/two"
+                        parent.rename(parent.with_name("detached"))
+                        parent.mkdir(mode=0o700)
+                    return child
+                with patch.object(carrier.os, "dup", side_effect=replace_after_dup):
+                    with self.assertRaisesRegex(ValueError, "internal-parent-race"):
+                        output.mkdir("sdk/one/two/new", parent_handles=parents)
+                self.assertEqual(len(borrowed), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(borrowed[0])
+                self.assertNotIn("sdk/one/two/new", output.root.named)
+
+    def test_mkdir_created_child_before_held_after_join_refuses_same_mode_replacement(self):
+        with closing(self.parent_output()) as output:
+            with carrier._ParentHandles(output.root) as parents:
+                output.mkdir("sdk/one/two/seed", parent_handles=parents)
+                real_open, created_fds = os.open, []
+                def replace_child(name, flags, *args, **kwargs):
+                    fd = real_open(name, flags, *args, **kwargs)
+                    if name == "new":
+                        created_fds.append(fd)
+                        child = output.path / "sdk/one/two/new"
+                        child.rename(child.with_name("detached-child"))
+                        child.mkdir(mode=0o700)
+                    return fd
+                with patch.object(carrier.os, "open", side_effect=replace_child):
+                    with self.assertRaisesRegex(ValueError, "created-directory-race"):
+                        output.mkdir("sdk/one/two/new", parent_handles=parents)
+                self.assertNotIn("sdk/one/two/new", output.root.named)
+                self.assertEqual(len(created_fds), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(created_fds[0])
+
+    def test_mkdir_scope_bounds_eviction_and_cancellation_descriptor_cleanup(self):
+        with closing(self.parent_output()) as output:
+            for index in range(34):
+                output.mkdir("sdk/d" + str(index))
+            parents = carrier._ParentHandles(output.root)
+            retained = []
+            real_open = os.open
+            def cancelled_child(name, flags, *args, **kwargs):
+                if name == "cancelled":
+                    raise KeyboardInterrupt("model cancellation")
+                return real_open(name, flags, *args, **kwargs)
+            with self.assertRaises(KeyboardInterrupt):
+                with parents:
+                    for index in range(34):
+                        output.mkdir("sdk/d" + str(index) + "/child", parent_handles=parents)
+                        self.assertLessEqual(len(parents.entries), 32)
+                    self.assertNotIn("sdk/d0", parents.entries)
+                    retained = [fd for fd, _ in parents.entries.values()]
+                    with patch.object(carrier.os, "open", side_effect=cancelled_child):
+                        output.mkdir("sdk/d33/cancelled", parent_handles=parents)
+            self.assertEqual(parents.entries, {})
+            for fd in retained:
+                with self.assertRaises(OSError):
+                    os.fstat(fd)
+            self.assertNotIn("sdk/d33/cancelled", output.root.named)
+            output.root.check()
+
+    def test_extract_directory_refusal_emits_bounded_checked_count_and_closes_scope(self):
+        for reason in ("role-cancel", "cancel", "deadline", "integer-deadline"):
+            with self.subTest(reason=reason):
+                root, _, pin = self.seal("directory-" + reason)
+                output = self.root / ("directory-out-" + reason)
+                original_mkdir, prepared, owners, retained = carrier.Output.mkdir, [0], [], []
+                def refuse_second(directory, name, *, parent_handles=None):
+                    if reason == "role-cancel" and name == "sdk" and parent_handles is None:
+                        raise KeyboardInterrupt("role directory cancellation")
+                    if parent_handles is not None:
+                        prepared[0] += 1
+                        if prepared[0] == 2:
+                            owners.append(parent_handles)
+                            retained.extend(fd for fd, _ in parent_handles.entries.values())
+                            if reason == "cancel":
+                                raise KeyboardInterrupt("directory cancellation")
+                            if reason == "deadline":
+                                with patch.object(carrier.time, "monotonic", return_value=directory.clock.deadline):
+                                    return original_mkdir(directory, name, parent_handles=parent_handles)
+                            directory.clock.until_ns = time.monotonic_ns() + 10**9
+                            with patch.object(carrier.time, "monotonic_ns", return_value=directory.clock.until_ns):
+                                return original_mkdir(directory, name, parent_handles=parent_handles)
+                    return original_mkdir(directory, name, parent_handles=parent_handles)
+                emitted = io.StringIO()
+                expected = KeyboardInterrupt if reason in ("role-cancel", "cancel") else ValueError
+                with redirect_stderr(emitted), patch.object(carrier.Output, "mkdir", new=refuse_second):
+                    with self.assertRaises(expected):
+                        carrier.extract(root, pin, output, self.deadline)
+                phases = self.extraction_phases(emitted.getvalue())
+                self.assertEqual([row[0] for row in phases],
+                    ["initial-start", "initial-bound", "directories-start", "directories-refused"])
+                self.assertEqual(phases[-1][2:], (0, 0, 0 if reason == "role-cancel" else 3))
+                self.assertFalse((output / "extraction-receipt.json").exists())
+                self.assertEqual(len(owners), 0 if reason == "role-cancel" else 1)
+                for owner in owners:
+                    self.assertEqual(owner.entries, {})
+                for fd in retained:
+                    with self.assertRaises(OSError):
+                        os.fstat(fd)
+
+
+
+    def test_payload_nar_window_complete_binding_matches_unbuffered_proof_with_fewer_real_preads(self):
+        root, report, pin = self.seal('window-binding')
+        real_read = os.pread
+        def unbuffered(fd, start, size, clock, window): return carrier.Range(fd, start, size, clock)
+        with patch.object(carrier, '_PayloadWindowRange', unbuffered), patch.object(carrier.os, 'pread', wraps=real_read) as before:
+            original = carrier.validate_binding(root, pin, self.deadline)
+            old_count = before.call_count
+        with patch.object(carrier.os, 'pread', wraps=real_read) as after:
+            actual = carrier.validate_binding(root, pin, self.deadline)
+            new_count = after.call_count
+        self.assertEqual(actual, original); self.assertEqual(actual, report)
+        self.assertLess(new_count, old_count)
+        self.assertEqual(carrier.publication_report(root, pin, self.deadline)['carrier_receipt_sha256'], pin)
+
+    def window_payload_fixture(self, name):
+        # Inert public regular bytes, no source/SDK readiness from this helper.
+        data = b'z'*17 + b'x'*17 + bytes(range(256))*300
+        path = self.root/name; self.write(path, data, 0o444)
+        descriptor = {'schemaVersion':1,'root':str(self.root),'nodes':[
+            {'path':'','type':'directory'}, {'path':'a','type':'directory'},
+            {'path':'a/x','type':'regular','size':17,'executable':False},
+            {'path':'a-z','type':'regular','size':17,'executable':False},
+            {'path':'b','type':'regular','size':len(data)-34,'executable':True},
+            {'path':'empty','type':'regular','size':0,'executable':False},
+            {'path':'inert','type':'symlink','target':'/unqualified/window-fixture'}]}
+        extents = {'a-z':(0,17),'a/x':(17,17),'b':(34,len(data)-34),'empty':(len(data),0)}
+        fd = None
+        try:
+            fd = os.open(path, os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            return fd, data, descriptor, extents
+        except BaseException as error:
+            if fd is not None:
+                try: os.close(fd)
+                except BaseException as cleanup:
+                    prior = BaseException.__cause__.__get__(error)
+                    raise error from (cleanup if prior is None else prior)
+            raise
+
+    def test_payload_nar_window_lexical_backward_jumps_boundary_and_zero_eof_match_protected_serializer(self):
+        fd, data, descriptor, extents = self.window_payload_fixture('window-lexical')
+        clock = carrier.Clock(self.deadline); visits=[]; real_read=os.pread
+        def original(unused, name): return carrier.Range(fd, *extents[name], clock)
+        try:
+            expected = carrier.nar.hash_descriptor(descriptor, opener=original, deadline=clock.deadline)
+            with carrier._PayloadNarWindow(fd, len(data), clock) as window:
+                def buffered(unused, name):
+                    visits.append(name)
+                    return carrier._PayloadWindowRange(fd, *extents[name], clock, window)
+                with patch.object(carrier.os, 'pread', wraps=real_read) as reads:
+                    actual = carrier.nar.hash_descriptor(descriptor, opener=buffered, deadline=clock.deadline)
+                self.assertEqual(actual, expected)
+                self.assertEqual(visits, ['a/x','a-z','b','empty'])
+                self.assertLessEqual(len(window.buffer), 65536)
+                self.assertTrue(all(call.args[1] <= 65536 for call in reads.call_args_list))
+            self.assertFalse(window.active); self.assertIsNone(window.buffer); self.assertIsNone(window.fd)
+            self.assertTrue(stat.S_ISREG(os.fstat(fd).st_mode)) # borrowed FD still caller owned
+        finally: os.close(fd)
+
+    def test_payload_nar_window_short_reads_and_true_truncation_preserve_actual_byte_order(self):
+        fd, data, descriptor, extents = self.window_payload_fixture('window-partial')
+        clock=carrier.Clock(self.deadline); real_read=os.pread
+        try:
+            def original(unused,name):return carrier.Range(fd,*extents[name],clock)
+            expected=carrier.nar.hash_descriptor(descriptor,opener=original,deadline=clock.deadline)
+            with carrier._PayloadNarWindow(fd,len(data),clock) as window:
+                def buffered(unused,name):return carrier._PayloadWindowRange(fd,*extents[name],clock,window)
+                def partial(selected,count,start):return real_read(selected,min(count,7),start)
+                with patch.object(carrier.os,'pread',partial):
+                    self.assertEqual(carrier.nar.hash_descriptor(descriptor,opener=buffered,deadline=clock.deadline),expected)
+            with carrier._PayloadNarWindow(fd,len(data),clock) as window:
+                with patch.object(carrier.os,'pread',return_value=b''):
+                    with self.assertRaises(ValueError):window.read(fd,0,17,clock)
+            self.assertFalse(window.active);self.assertIsNone(window.buffer)
+        finally:os.close(fd)
+
+    def test_payload_nar_window_hot_cached_bytes_cannot_hide_mutation_replacement_link_or_mode_from_full_binding(self):
+        for fault in ('mutation','restored-bytes','replacement','link','mode'):
+            with self.subTest(fault=fault):
+                root, unused, pin=self.seal('window-race-'+fault)
+                payload=root/'payload.bin';raw=payload.read_bytes();real=carrier._PayloadNarWindow.read;fired=[False]
+                def race(window,*args):
+                    result=real(window,*args)
+                    if not fired[0]:
+                        fired[0]=True
+                        if fault in ('mutation','restored-bytes'):
+                            previous=payload.stat()
+                            position=args[1] # actual byte already loaded into this NAR window
+                            payload.chmod(0o600)
+                            payload.write_bytes(raw[:position]+bytes([raw[position]^1])+raw[position+1:])
+                            if fault=='restored-bytes':
+                                payload.write_bytes(raw)
+                                os.utime(payload,ns=(previous.st_atime_ns,previous.st_mtime_ns))
+                            payload.chmod(0o444)
+                        elif fault=='mode':payload.chmod(0o400);payload.chmod(0o444)
+                        else:
+                            root.chmod(0o700);aside=root/'payload-aside';payload.rename(aside)
+                            if fault=='replacement':self.write(payload,raw,0o444)
+                            else:payload.symlink_to(aside.name)
+                            root.chmod(0o555)
+                    return result
+                with patch.object(carrier._PayloadNarWindow,'read',race):
+                    with self.assertRaises(ValueError):carrier.validate_binding(root,pin,self.deadline)
+                self.assertTrue(fired[0])
+
+    def test_payload_nar_window_refuses_original_expiry_foreign_owner_and_use_after_scope_even_at_zero_eof(self):
+        fd, data, unused, unused_extents=self.window_payload_fixture('window-owner')
+        clock=carrier.Clock(self.deadline);deadline=clock.deadline;clock.until_ns=time.monotonic_ns()+60*10**9
+        try:
+            with carrier._PayloadNarWindow(fd,len(data),clock) as window:
+                empty=carrier._PayloadWindowRange(fd,len(data),0,clock,window)
+                self.assertEqual(empty.read(1),b'')
+                with patch.object(carrier.os,'pread',wraps=os.pread) as reads:
+                    for args in ((fd+1,0,17,clock),(fd,0,17,carrier.Clock(self.deadline))):
+                        with self.assertRaises(ValueError):window.read(*args)
+                    with patch.object(carrier.threading,'get_ident',return_value=window.thread+1):
+                        with self.assertRaises(ValueError):empty.read(1)
+                    self.assertEqual(reads.call_count,0)
+                with patch.object(carrier.time,'monotonic',return_value=deadline):
+                    with self.assertRaises(ValueError):window.read(fd,0,17,clock)
+                with patch.object(carrier.time,'monotonic_ns',return_value=clock.until_ns):
+                    with self.assertRaises(ValueError):empty.read(1)
+                self.assertEqual(clock.deadline,deadline)
+            with self.assertRaises(ValueError):empty.read(1)
+            self.assertTrue(stat.S_ISREG(os.fstat(fd).st_mode))
+        finally:os.close(fd)
+
+    def test_payload_nar_window_scope_retirement_keeps_first_body_without_closing_borrowed_fd(self):
+        fd, data, unused, unused_extents=self.window_payload_fixture('window-body')
+        clock=carrier.Clock(self.deadline);first=MemoryError('synthetic public window body')
+        try:
+            with patch.object(carrier.os,'close',wraps=os.close) as closes:
+                with self.assertRaises(MemoryError) as failure:
+                    with carrier._PayloadNarWindow(fd,len(data),clock) as window:
+                        stream=carrier._PayloadWindowRange(fd,0,17,clock,window)
+                        self.assertEqual(stream.read(17),data[:17]);stream.close()
+                        with self.assertRaises(ValueError):stream.read(1)
+                        raise first
+                self.assertIs(failure.exception,first)
+                self.assertEqual(closes.call_count,0)
+            self.assertFalse(window.active);self.assertIsNone(window.buffer);self.assertIsNone(window.fd)
+            self.assertTrue(stat.S_ISREG(os.fstat(fd).st_mode))
+        finally:os.close(fd)
+
+
+if __name__ == "__main__":
+    unittest.main()

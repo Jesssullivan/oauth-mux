@@ -1,0 +1,1318 @@
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -78,6 +78,61 @@
+ 
+ use codex_rollout::state_db::StateDbHandle;
+ 
++// Actual Session lifecycle, not a caller-supplied running claim. Teardown
++// marks Stopped before any native shutdown await; the short final owner commit
++// holds this same mutex without awaiting any writer, activity, or map operation.
++pub(crate) struct NativeRuntime {
++    state: std::sync::Mutex<NativeRuntimeState>,
++}
++
++#[derive(Clone, Copy)]
++enum NativeRuntimeState {
++    Live,
++    Stopped,
++}
++
++impl Default for NativeRuntime {
++    fn default() -> Self {
++        Self { state: std::sync::Mutex::new(NativeRuntimeState::Live) }
++    }
++}
++
++impl NativeRuntime {
++    pub(crate) fn stop(&self) {
++        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
++        *state = NativeRuntimeState::Stopped;
++    }
++
++    fn with_live<F>(&self, commit: F) -> std::io::Result<()>
++    where
++        F: FnOnce() -> std::io::Result<()>,
++    {
++        let state = self.state.lock().map_err(|_| {
++            std::io::Error::other("native runtime lifecycle unavailable")
++        })?;
++        if !matches!(*state, NativeRuntimeState::Live) {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::ConnectionAborted,
++                "native runtime has stopped",
++            ));
++        }
++        let result = commit();
++        drop(state);
++        result
++    }
++
++    pub(crate) fn exit_guard(self: &Arc<Self>) -> NativeRuntimeExit {
++        NativeRuntimeExit(Arc::clone(self))
++    }
++}
++
++pub(crate) struct NativeRuntimeExit(Arc<NativeRuntime>);
++impl Drop for NativeRuntimeExit {
++    fn drop(&mut self) {
++        self.0.stop();
++    }
++}
++
+ static LIVE_THREADS: Gauge = Gauge::new("core.threads.live");
+ 
+ #[derive(Clone, Debug)]
+@@ -315,6 +370,39 @@
+         self.session
+             .ensure_rollout_materialized(PersistContext::Standard)
+             .await;
++    }
++
++    /// Serialize a synchronous owner commit with this actual Session's native
++    /// teardown. No caller boolean or copied task status supplies this authority.
++    #[doc(hidden)]
++    pub fn with_live_native_owner<F>(&self, commit: F) -> std::io::Result<()>
++    where
++        F: FnOnce() -> std::io::Result<()>,
++    {
++        self.session.owner_runtime.with_live(|| {
++            // Handles a loop cancelled before its first poll/exit guard, too:
++            // dropping its real receiver closes this actual submission channel.
++            if !self.is_running() {
++                return Err(std::io::Error::new(
++                    std::io::ErrorKind::ConnectionAborted,
++                    "native submission runtime closed",
++                ));
++            }
++            commit()
++        })
++    }
++
++    /// Result-bearing persistence for the actual ordinary loaded native writer.
++    /// This does not submit input, invoke a provider, or replay accepted work.
++    #[doc(hidden)]
++    pub async fn persist_owned_rollout(&self) -> std::io::Result<()> {
++        if matches!(self.session_source, SessionSource::Internal(_)) {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::Unsupported,
++                "native conversation surface is unsupported",
++            ));
++        }
++        persist_owned_session(&self.session).await
+     }
+ 
+     #[doc(hidden)]
+@@ -1077,3 +1165,228 @@
+         Ok(elicitations.count)
+     }
+ }
++
++// Keep missing/ephemeral writers distinct from the legacy warn-only helper.
++async fn persist_owned_session(session: &crate::session::Session) -> std::io::Result<()> {
++    let snapshot = session.thread_config_snapshot().await;
++    if snapshot.ephemeral || matches!(snapshot.session_source, SessionSource::Internal(_)) {
++        return Err(std::io::Error::new(
++            std::io::ErrorKind::Unsupported,
++            "native owner requires non-ephemeral ordinary history",
++        ));
++    }
++    let live_thread = session.live_thread_for_persistence("persist native owned history")
++        .map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "native history writer unavailable"))?;
++    let original_path = live_thread.local_rollout_path().await.map_err(std::io::Error::other)?
++        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Unsupported, "native local history writer required"))?;
++    live_thread.persist(PersistContext::Standard).await.map_err(std::io::Error::other)?;
++    let current_path = live_thread.local_rollout_path().await.map_err(std::io::Error::other)?;
++    if current_path.as_ref() != Some(&original_path) {
++        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "native history writer path changed"));
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod owned_history_tests {
++    use super::*;
++    use codex_protocol::models::BaseInstructions;
++    use codex_protocol::protocol::RolloutItem;
++    use codex_protocol::protocol::ThreadMemoryMode;
++    use codex_thread_store::CreateThreadParams;
++    use codex_thread_store::LiveThread;
++    use codex_thread_store::ThreadPersistenceMetadata;
++
++    async fn open_writer(session: &mut crate::session::Session) -> LiveThread {
++        let config = session.get_config().await;
++        let writer = LiveThread::create(
++            Arc::clone(&session.services.thread_store),
++            CreateThreadParams {
++                creator_user_id: None,
++                creator_account_id: None,
++                session_id: session.session_id(),
++                thread_id: session.thread_id,
++                extra_config: None,
++                forked_from_id: None,
++                parent_thread_id: None,
++                source: SessionSource::Exec,
++                thread_source: None,
++                originator: "owned_history_test".to_owned(),
++                base_instructions: BaseInstructions::default(),
++                dynamic_tools: Vec::new(),
++                selected_capability_roots: Vec::new(),
++                multi_agent_version: None,
++                history_mode: Default::default(),
++                subagent_history_start_ordinal: None,
++                history_base: None,
++                initial_window_id: uuid::Uuid::now_v7().to_string(),
++                runtime_workspace_roots: None,
++                metadata: ThreadPersistenceMetadata {
++                    cwd: Some(config.cwd.to_path_buf()),
++                    model_provider: config.model_provider_id.clone(),
++                    memory_mode: ThreadMemoryMode::Disabled,
++                },
++            },
++        ).await.expect("open actual native writer");
++        session.services.live_thread = Some(writer.clone());
++        writer
++    }
++
++    #[tokio::test]
++    async fn owned_persist_requires_an_actual_writer() {
++        let (session, _) = crate::session::tests::make_session_and_context().await;
++        assert_eq!(persist_owned_session(&session).await.unwrap_err().kind(), std::io::ErrorKind::NotFound);
++    }
++
++    #[tokio::test]
++    async fn owned_persist_materializes_only_native_session_meta_and_is_idempotent() {
++        let (mut session, _) = crate::session::tests::make_session_and_context().await;
++        let writer = open_writer(&mut session).await;
++        // No submit, turn, append, or provider operation is involved.
++        persist_owned_session(&session).await.expect("materialize empty native history");
++        let path = writer.local_rollout_path().await.expect("native path").expect("materialized path");
++        let first = tokio::fs::read(&path).await.expect("native writer bytes");
++        assert!(!first.is_empty());
++        let history = writer.load_history(false).await.expect("actual native history");
++        assert_eq!(history.thread_id, session.thread_id);
++        assert!(!history.items.is_empty());
++        assert!(history.items.iter().all(|item| matches!(item, RolloutItem::SessionMeta(_))));
++        persist_owned_session(&session).await.expect("duplicate persistence barrier");
++        assert_eq!(tokio::fs::read(&path).await.expect("native bytes again"), first);
++        writer.shutdown().await.expect("close actual writer");
++    }
++
++    #[tokio::test]
++    async fn owned_persist_propagates_closed_writer_failure() {
++        let (mut session, _) = crate::session::tests::make_session_and_context().await;
++        let writer = open_writer(&mut session).await;
++        writer.shutdown().await.expect("stop actual writer");
++        assert!(persist_owned_session(&session).await.is_err());
++    }
++
++    #[tokio::test]
++    async fn owned_persist_propagates_actual_native_file_open_failure() {
++        let (mut session, _) = crate::session::tests::make_session_and_context().await;
++        let writer = open_writer(&mut session).await;
++        let path = writer.local_rollout_path().await.expect("deferred path").expect("local writer");
++        // A directory at the actual writer's selected file makes its own open
++        // fail. No substitute writer, SQL mutation, or synthetic rollout exists.
++        tokio::fs::create_dir_all(&path).await.expect("block actual writer file");
++        assert!(persist_owned_session(&session).await.is_err());
++        let _ = writer.shutdown().await;
++    }
++
++    #[tokio::test]
++    async fn owned_persist_refuses_ephemeral_even_with_no_writer() {
++        let (session, _, _) = crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
++            codex_login::CodexAuth::from_api_key("owned-history-test"),
++            Vec::new(),
++            |config| config.ephemeral = true,
++        ).await;
++        assert_eq!(persist_owned_session(&session).await.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
++    }
++}
++
++#[cfg(test)]
++mod native_runtime_lifecycle_tests {
++    use super::*;
++    use std::cell::Cell;
++    use std::future::Future;
++
++    #[tokio::test]
++    async fn actual_session_lifecycle_stop_serializes_after_synchronous_commit() {
++        let (session, _) = crate::session::tests::make_session_and_context().await;
++        let session = Arc::new(session);
++        let (attempted, attempt) = std::sync::mpsc::channel();
++        let (completed, completion) = std::sync::mpsc::channel();
++        let commits = Cell::new(0);
++        let mut stopper = None;
++        session.owner_runtime.with_live(|| {
++            let other = Arc::clone(&session);
++            stopper = Some(std::thread::spawn(move || {
++                assert!(matches!(other.owner_runtime.state.try_lock(), Err(std::sync::TryLockError::WouldBlock)));
++                attempted.send(()).expect("actual lifecycle mutex is held");
++                other.owner_runtime.stop();
++                completed.send(()).expect("stop completed");
++            }));
++            attempt.recv_timeout(std::time::Duration::from_secs(10)).expect("bounded stop attempt");
++            assert!(matches!(completion.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
++            commits.set(commits.get() + 1);
++            Ok(())
++        }).expect("synchronous commit before stop");
++        completion.recv_timeout(std::time::Duration::from_secs(10)).expect("stop after guard release");
++        stopper.expect("owned stop thread").join().expect("join stop");
++        assert_eq!(commits.get(), 1);
++        let after = session.owner_runtime.with_live(|| { commits.set(commits.get() + 1); Ok(()) });
++        assert_eq!(after.unwrap_err().kind(), std::io::ErrorKind::ConnectionAborted);
++        assert_eq!(commits.get(), 1);
++    }
++
++    #[tokio::test]
++    async fn submission_exit_guard_cancellation_retires_actual_session_lifecycle() {
++        let (session, _) = crate::session::tests::make_session_and_context().await;
++        let mut loop_scope = Box::pin(async {
++            let _exit = session.owner_runtime.exit_guard();
++            std::future::pending::<()>().await;
++        });
++        std::future::poll_fn(|context| {
++            assert!(matches!(loop_scope.as_mut().poll(context), std::task::Poll::Pending));
++            std::task::Poll::Ready(())
++        }).await;
++        drop(loop_scope);
++        let commits = Cell::new(0);
++        let result = session.owner_runtime.with_live(|| { commits.set(commits.get() + 1); Ok(()) });
++        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::ConnectionAborted);
++        assert_eq!(commits.get(), 0);
++        session.owner_runtime.stop();
++        assert!(session.owner_runtime.with_live(|| Ok(())).is_err());
++    }
++
++    #[tokio::test]
++    async fn lifecycle_panic_and_poison_remain_closed_without_masking_original_panic() {
++        let (session, _) = crate::session::tests::make_session_and_context().await;
++        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            let _exit = session.owner_runtime.exit_guard();
++            let _ = session.owner_runtime.with_live(|| -> std::io::Result<()> {
++                std::panic::panic_any(1234_u32);
++            });
++        })).expect_err("original synchronous panic");
++        assert_eq!(panic.downcast_ref::<u32>(), Some(&1234));
++        let commits = Cell::new(0);
++        assert!(session.owner_runtime.with_live(|| { commits.set(commits.get() + 1); Ok(()) }).is_err());
++        assert_eq!(commits.get(), 0);
++        // Teardown on poison still sets Stopped; it never restores Live.
++        session.owner_runtime.stop();
++        assert!(session.owner_runtime.with_live(|| Ok(())).is_err());
++    }
++
++    #[tokio::test]
++    async fn synchronous_owner_failure_releases_lifecycle_without_replay_or_false_stop() {
++        let (session, _) = crate::session::tests::make_session_and_context().await;
++        let attempts = Cell::new(0);
++        let result = session.owner_runtime.with_live(|| {
++            attempts.set(attempts.get() + 1);
++            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
++        });
++        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
++        assert_eq!(attempts.get(), 1);
++        assert!(session.owner_runtime.state.try_lock().is_ok());
++        session.owner_runtime.with_live(|| Ok(())).expect("failure did not fabricate shutdown");
++        assert_eq!(attempts.get(), 1);
++    }
++
++    #[tokio::test]
++    async fn unpolled_spawn_scope_retirement_cannot_leave_live_runtime_authority() {
++        let (session, _) = crate::session::tests::make_session_and_context().await;
++        let enrolled = session.owner_runtime.exit_guard();
++        let unpolled_loop = async move {
++            let _exit = enrolled;
++            std::future::pending::<()>().await;
++        };
++        drop(unpolled_loop);
++        let commits = Cell::new(0);
++        let result = session.owner_runtime.with_live(|| { commits.set(commits.get() + 1); Ok(()) });
++        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::ConnectionAborted);
++        assert_eq!(commits.get(), 0);
++    }
++}
+diff --git a/codex-rs/core/src/native_peer.rs b/codex-rs/core/src/native_peer.rs
+--- a/codex-rs/core/src/native_peer.rs
++++ b/codex-rs/core/src/native_peer.rs
+@@ -89,6 +89,8 @@
+         packet: i32,
+         count: *mut usize,
+     ) -> i32;
++    fn omux_peer_alive(peer: *const Context) -> i32;
++    fn omux_peer_duplicate(peer: *const Context, out: *mut Context) -> i32;
+     fn omux_peer_close(peer: *mut Context);
+ }
+ 
+@@ -455,7 +457,105 @@
+     }
+ }
+ 
++/// One dispatch-scoped owner of descriptors duplicated from an authenticated
++/// packet. It never reads packets or creates a new attempt deadline.
++pub struct PeerLease {
++    #[cfg(unix)]
++    context: ContextOwner,
++    #[cfg(unix)]
++    deadline: Instant,
++    #[cfg(not(unix))]
++    unavailable: (),
++}
++
++#[cfg(unix)]
++struct ContextOwner(Context);
++#[cfg(unix)]
++impl ContextOwner {
++    fn empty() -> Self {
++        Self(Context {
++            socket_fd: -1,
++            pidfd: -1,
++            owns_socket: 0,
++            witness: Witness::default(),
++        })
++    }
++}
++#[cfg(unix)]
++impl Drop for ContextOwner {
++    fn drop(&mut self) {
++        // Safety: this single owner closes whichever descriptors were enrolled,
++        // including partial capture/duplicate failures. C clears the context.
++        unsafe { omux_peer_close(&mut self.0) };
++    }
++}
++impl PeerLease {
++    pub fn witness(&self) -> PeerWitness {
++        #[cfg(unix)]
++        {
++            PeerWitness(self.context.0.witness)
++        }
++        #[cfg(not(unix))]
++        {
++            unreachable!("unsupported platforms cannot construct peer leases")
++        }
++    }
++
++    /// Re-capture kernel identity from the held socket, rather than treating a
++    /// copied witness as current authority after an async native writer barrier.
++    pub fn check(&self) -> io::Result<()> {
++        #[cfg(unix)]
++        {
++            self.tick()?;
++            // Safety: context is owned for this entire synchronous check.
++            status(unsafe { omux_peer_alive(&self.context.0) })?;
++            let mut current = ContextOwner::empty();
++            // Safety: output already has an RAII owner; socket is still held.
++            status(unsafe {
++                omux_peer_capture(self.context.0.socket_fd, libc::getuid(), &mut current.0)
++            })?;
++            if current.0.witness != self.context.0.witness {
++                return Err(io::Error::new(
++                    io::ErrorKind::PermissionDenied,
++                    "native owner peer authority changed",
++                ));
++            }
++            let mut poll = libc::pollfd {
++                fd: self.context.0.socket_fd,
++                events: libc::POLLHUP | libc::POLLERR,
++                revents: 0,
++            };
++            // Safety: this observes connection closure without reading a frame.
++            if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
++                return Err(io::Error::last_os_error());
++            }
++            if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
++                return Err(io::Error::new(
++                    io::ErrorKind::ConnectionAborted,
++                    "native owner peer departed",
++                ));
++            }
++            drop(current);
++            status(unsafe { omux_peer_alive(&self.context.0) })?;
++            self.tick()
++        }
++        #[cfg(not(unix))]
++        {
++            Err(io::Error::new(io::ErrorKind::Unsupported, "native peer profile unavailable"))
++        }
++    }
++
++    #[cfg(unix)]
++    fn tick(&self) -> io::Result<()> {
++        if Instant::now() >= self.deadline {
++            return Err(io::Error::new(io::ErrorKind::TimedOut, "native exchange timed out"));
++        }
++        Ok(())
++    }
++}
++
+ pub struct VerifiedPacket {
++    verified_packet: bool,
+     #[cfg(unix)]
+     connection: Connection,
+     #[cfg(not(unix))]
+@@ -497,6 +597,7 @@
+         {
+             Ok(Self {
+                 connection: Connection::connect(path, true)?,
++                verified_packet: false,
+             })
+         }
+         #[cfg(not(unix))]
+@@ -508,6 +609,30 @@
+             ))
+         }
+     }
++    /// At most one lease may be derived from each successfully verified packet.
++    /// A failed receive disarms derivation; no JSON or caller witness can arm it.
++    pub fn lease(&mut self) -> io::Result<PeerLease> {
++        if !std::mem::take(&mut self.verified_packet) {
++            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "verified owner packet required"));
++        }
++        #[cfg(unix)]
++        {
++            if Instant::now() >= self.connection.deadline {
++                return Err(io::Error::new(io::ErrorKind::TimedOut, "native exchange timed out"));
++            }
++            let mut context = ContextOwner::empty();
++            // Safety: only the verified connection supplies this context. The
++            // output owner exists before C can allocate either duplicate.
++            status(unsafe { omux_peer_duplicate(&self.connection.peer, &mut context.0) })?;
++            let lease = PeerLease { context, deadline: self.connection.deadline };
++            lease.check()?;
++            Ok(lease)
++        }
++        #[cfg(not(unix))]
++        {
++            Err(io::Error::new(io::ErrorKind::Unsupported, "native peer profile unavailable"))
++        }
++    }
+     pub fn send_packet(&mut self, bytes: &[u8]) -> io::Result<()> {
+         #[cfg(unix)]
+         {
+@@ -525,7 +650,10 @@
+     pub fn recv_packet(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+         #[cfg(unix)]
+         {
+-            self.connection.receive(bytes)
++            self.verified_packet = false;
++            let count = self.connection.receive(bytes)?;
++            self.verified_packet = true;
++            Ok(count)
+         }
+         #[cfg(not(unix))]
+         {
+@@ -596,6 +724,7 @@
+             let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+             Ok(VerifiedPacket {
+                 connection: Connection::capture(socket, true, Instant::now() + EXCHANGE_TIMEOUT)?,
++                verified_packet: false,
+             })
+         }
+         #[cfg(not(target_os = "linux"))]
+@@ -724,4 +853,149 @@
+         );
+         Ok(())
+     }
+-}
++
++    fn authenticated_packet() -> io::Result<(tempfile::TempDir, VerifiedPacket, VerifiedPacket)> {
++        let directory = tempfile::tempdir()?;
++        let listener = PacketListener::bind(&directory.path().join("owner.sock"))?;
++        let mut client = VerifiedPacket::connect(&directory.path().join("owner.sock"))?;
++        let mut server = listener.try_accept()?;
++        client.send_packet(b"owner/register")?;
++        let mut bytes = [0u8; 64];
++        assert_eq!(server.recv_packet(&mut bytes)?, 14);
++        Ok((directory, client, server))
++    }
++
++    #[test]
++    fn packet_lease_is_one_shot_and_retains_real_descriptors_without_a_second_reader() -> io::Result<()> {
++        if std::env::var_os("OMUX_NATIVE_PEER_TEST_CLOSE_ISOLATED").is_none() {
++            let status = std::process::Command::new(std::env::current_exe()?)
++                .args([
++                    "--exact",
++                    "native_peer::tests::packet_lease_is_one_shot_and_retains_real_descriptors_without_a_second_reader",
++                    "--test-threads=1",
++                ])
++                .env("OMUX_NATIVE_PEER_TEST_CLOSE_ISOLATED", "1")
++                .stdin(std::process::Stdio::null())
++                .stdout(std::process::Stdio::null())
++                .stderr(std::process::Stdio::null())
++                .status()?;
++            assert!(status.success(), "isolated actual descriptor ownership test refused");
++            return Ok(());
++        }
++        let (_directory, mut client, mut server) = authenticated_packet()?;
++        let lease = server.lease()?;
++        let socket_fd = lease.context.0.socket_fd;
++        let pidfd = lease.context.0.pidfd;
++        assert!(socket_fd >= 0 && pidfd >= 0);
++        assert_ne!(socket_fd, server.connection.socket.as_raw_fd());
++        assert_eq!(lease.deadline, server.connection.deadline);
++        assert_eq!(server.lease().err().unwrap().kind(), io::ErrorKind::PermissionDenied);
++        lease.check()?;
++        client.send_packet(b"next")?;
++        let mut bytes = [0u8; 64];
++        assert_eq!(server.recv_packet(&mut bytes)?, 4);
++        assert_eq!(&bytes[..4], b"next");
++        let next_lease = server.lease()?;
++        next_lease.check()?;
++        drop(next_lease);
++        drop(lease);
++        // This body runs as the sole test in the isolated same-executable child:
++        // no other parallel case can reuse these retired descriptor numbers.
++        assert_eq!(unsafe { libc::fcntl(socket_fd, libc::F_GETFD) }, -1);
++        assert_eq!(unsafe { libc::fcntl(pidfd, libc::F_GETFD) }, -1);
++        server.send_packet(b"reply")?;
++        assert_eq!(client.recv_packet(&mut bytes)?, 5);
++        Ok(())
++    }
++
++    #[test]
++    fn packet_lease_rechecks_identity_deadline_and_connection_departure() -> io::Result<()> {
++        let (_directory, client, mut server) = authenticated_packet()?;
++        let mut lease = server.lease()?;
++        lease.context.0.witness.gid ^= 1;
++        assert_eq!(lease.check().unwrap_err().kind(), io::ErrorKind::PermissionDenied);
++        lease.context.0.witness.gid ^= 1;
++        lease.check()?;
++        let original = lease.deadline;
++        lease.deadline = Instant::now();
++        assert_eq!(lease.check().unwrap_err().kind(), io::ErrorKind::TimedOut);
++        lease.deadline = original;
++        drop(client);
++        assert_eq!(lease.check().unwrap_err().kind(), io::ErrorKind::ConnectionAborted);
++        Ok(())
++    }
++
++    #[test]
++    fn unreceived_or_failed_packet_cannot_create_a_lease() -> io::Result<()> {
++        let directory = tempfile::tempdir()?;
++        let path = directory.path().join("owner.sock");
++        let listener = PacketListener::bind(&path)?;
++        let mut client = VerifiedPacket::connect(&path)?;
++        let mut server = listener.try_accept()?;
++        assert_eq!(server.lease().err().unwrap().kind(), io::ErrorKind::PermissionDenied);
++        client.send_packet(&[b'x'; 128])?;
++        assert_eq!(server.recv_packet(&mut [0u8; 8]).unwrap_err().kind(), io::ErrorKind::InvalidData);
++        assert_eq!(server.lease().err().unwrap().kind(), io::ErrorKind::PermissionDenied);
++        Ok(())
++    }
++
++    // This helper is invoked only by the actual departed-process test, through
++    // this same declared Rust test executable. It performs no provider work.
++    #[test]
++    #[ignore = "child of packet_lease_refuses_actual_peer_process_exit"]
++    fn peer_lease_process_child() -> io::Result<()> {
++        let path = std::env::var_os("OMUX_NATIVE_PEER_TEST_SOCKET")
++            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
++        let mut client = VerifiedPacket::connect(Path::new(&path))?;
++        client.send_packet(b"child")?;
++        let mut reply = [0u8; 16];
++        client.recv_packet(&mut reply)?;
++        Ok(())
++    }
++
++    #[test]
++    fn packet_lease_refuses_actual_peer_process_exit() -> io::Result<()> {
++        struct ChildOwner(std::process::Child);
++        impl Drop for ChildOwner {
++            fn drop(&mut self) {
++                // Attempt both cleanup operations even after an earlier error.
++                let _ = self.0.kill();
++                let _ = self.0.wait();
++            }
++        }
++        let directory = tempfile::tempdir()?;
++        let path = directory.path().join("owner.sock");
++        let listener = PacketListener::bind(&path)?;
++        let mut child = ChildOwner(std::process::Command::new(std::env::current_exe()?)
++            .args(["--exact", "native_peer::tests::peer_lease_process_child", "--ignored"])
++            .env("OMUX_NATIVE_PEER_TEST_SOCKET", &path)
++            .stdin(std::process::Stdio::null())
++            .stdout(std::process::Stdio::null())
++            .stderr(std::process::Stdio::null())
++            .spawn()?);
++        wait(listener.socket.as_raw_fd(), libc::POLLIN, Instant::now() + EXCHANGE_TIMEOUT)?;
++        let mut server = listener.try_accept()?;
++        let mut bytes = [0u8; 16];
++        assert_eq!(server.recv_packet(&mut bytes)?, 5);
++        let lease = server.lease()?;
++        lease.check()?;
++        child.0.kill()?;
++        child.0.wait()?;
++        assert_eq!(lease.check().unwrap_err().kind(), io::ErrorKind::ConnectionAborted);
++        Ok(())
++    }
++
++    #[test]
++    fn lease_failure_keeps_original_connection_owner_and_spent_packet() -> io::Result<()> {
++        let (_directory, _client, mut server) = authenticated_packet()?;
++        let original_deadline = server.connection.deadline;
++        server.connection.deadline = Instant::now();
++        assert_eq!(server.lease().err().unwrap().kind(), io::ErrorKind::TimedOut);
++        server.connection.deadline = original_deadline;
++        assert_eq!(server.lease().err().unwrap().kind(), io::ErrorKind::PermissionDenied);
++        // Expired lease derivation never takes the connection's original FDs.
++        assert!(unsafe { libc::fcntl(server.connection.socket.as_raw_fd(), libc::F_GETFD) } >= 0);
++        assert!(unsafe { libc::fcntl(server.connection.peer.pidfd, libc::F_GETFD) } >= 0);
++        Ok(())
++    }
++}
+diff --git a/codex-rs/app-server/src/owner_control.rs b/codex-rs/app-server/src/owner_control.rs
+--- a/codex-rs/app-server/src/owner_control.rs
++++ b/codex-rs/app-server/src/owner_control.rs
+@@ -291,6 +291,7 @@
+         bytes: &[u8],
+         peer: native_peer::PeerWitness,
+         owner: &ProcessOwner,
++        lease: &native_peer::PeerLease,
+         source_context: &SourceDeclaration,
+         deadline: std::time::Instant,
+     ) -> io::Result<Value> {
+@@ -397,6 +398,7 @@
+                     &p.capability_path,
+                     ack.clone(),
+                     peer,
++                    lease,
+                 )
+                 .await?;
+                 ack_result(ack, "registered")
+@@ -464,7 +466,8 @@
+         {
+             return Err(invalid());
+         }
+-        let peer = connection.witness();
++        let lease = connection.lease()?;
++        let peer = lease.witness();
+         let result = tokio::time::timeout(
+             std::time::Duration::from_secs(8),
+             async {
+@@ -474,7 +477,7 @@
+                     let guard = source_context.transfer_guard(&owner,&acquired)?;
+                     Ok((acquired.value,Some(acquired.descriptor),Some(guard)))
+                 } else {
+-                    processor.dispatch_owner(&request.method,&bytes,peer,&owner,&source_context,connection.deadline()).await
++                    processor.dispatch_owner(&request.method,&bytes,peer,&owner,&lease,&source_context,connection.deadline()).await
+                         .map(|value| (value,None,None))
+                 }
+             },
+diff --git a/codex-rs/app-server/src/message_processor.rs b/codex-rs/app-server/src/message_processor.rs
+--- a/codex-rs/app-server/src/message_processor.rs
++++ b/codex-rs/app-server/src/message_processor.rs
+@@ -848,6 +848,7 @@
+         capability: &str,
+         ack: codex_core::auth_broker::NativeAckTuple,
+         peer: codex_core::native_peer::PeerWitness,
++        lease: &codex_core::native_peer::PeerLease,
+     ) -> std::io::Result<()> {
+         if !codex_core::auth_broker::registration_paths_match(
+             thread_id,
+@@ -859,12 +860,19 @@
+         // The MessageProcessor owns the worker task and its awaited stop
+         // barrier. Authenticate before stopping it; the native handler repeats
+         // authority/activity checks before its drains and final atomic commit.
++        lease.check()?;
++        if lease.witness() != peer {
++            return Err(std::io::Error::new(
++                    std::io::ErrorKind::PermissionDenied,
++                    "native owner peer mismatch",
++                ));
++        }
+         codex_core::auth_broker::check_registration(thread_id, &ack, peer)?;
+         if let Some(worker) = &self.turn_cost_worker {
+             worker.shutdown_and_wait().await;
+         }
+         self.thread_processor
+-            .owner_activate(thread_id, socket, capability, ack, peer)
++            .owner_activate(thread_id, socket, capability, ack, peer, lease)
+             .await
+     }
+ 
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -580,15 +580,27 @@
+         Ok(())
+     }
+ 
+-    async fn owner_attach_admission(&self, thread_id: ThreadId) -> std::io::Result<()> {
+-        #[cfg(test)]
+-        OWNER_ATTACH_ADMISSION_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++    async fn owner_activity_admission(
++        &self,
++        thread_id: ThreadId,
++    ) -> std::io::Result<std::sync::Arc<codex_core::CodexThread>> {
+         self.owner_loaded_thread(thread_id).await?;
+         let thread = self
+             .thread_manager
+             .get_thread(thread_id)
+             .await
+             .map_err(|_| std::io::Error::other("native owner requires a loaded thread"))?;
++        self.owner_activity_for_thread(thread_id, &thread).await?;
++        Ok(thread)
++    }
++
++    // With a held map membership, do not reenter the fair RwLock: a queued
++    // remover must not deadlock this final activity check through commit.
++    async fn owner_activity_for_thread(
++        &self,
++        thread_id: ThreadId,
++        thread: &std::sync::Arc<codex_core::CodexThread>,
++    ) -> std::io::Result<()> {
+         let status = if codex_core::auth_broker::is_startup_registration(thread_id) {
+             // Internal prepared startup has been inserted in ThreadManager but
+             // deliberately has not published readiness to the watch manager.
+@@ -604,6 +616,23 @@
+             thread.has_active_realtime_conversation().await,
+         )
+         .map_err(|_| std::io::Error::other("native thread cannot safely attach"))?;
++        let snapshot = thread.config_snapshot().await;
++        if snapshot.ephemeral || snapshot.session_source.is_internal() {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::Unsupported,
++                "native owner requires non-ephemeral ordinary history",
++            ));
++        }
++        Ok(())
++    }
++
++    async fn owner_attach_admission(
++        &self,
++        thread_id: ThreadId,
++    ) -> std::io::Result<std::sync::Arc<codex_core::CodexThread>> {
++        #[cfg(test)]
++        OWNER_ATTACH_ADMISSION_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++        let thread = self.owner_activity_admission(thread_id).await?;
+         self.thread_manager
+             .disable_native_analytics_delivery()
+             .await;
+@@ -612,7 +641,7 @@
+             .drain_broker_mcp_authority(thread_id)
+             .await
+             .map_err(|_| std::io::Error::other("native ancillary authority did not drain"))?;
+-        Ok(())
++        Ok(thread)
+     }
+ 
+     pub(crate) async fn owner_activate(
+@@ -622,6 +651,7 @@
+         capability: &str,
+         ack: codex_core::auth_broker::NativeAckTuple,
+         peer: codex_core::native_peer::PeerWitness,
++        lease: &codex_core::native_peer::PeerLease,
+     ) -> std::io::Result<()> {
+         if !codex_core::auth_broker::registration_paths_match(
+             thread_id,
+@@ -632,11 +662,46 @@
+         }
+         // Authenticate before stopping telemetry or draining any native
+         // authority. Activation repeats the locked check after these awaits.
+-        codex_core::auth_broker::check_registration(thread_id, &ack, peer)?;
+-        self.owner_attach_admission(thread_id).await?;
+-        codex_core::auth_broker::activate_registration(thread_id, ack, peer)?;
+-        self.thread_manager.enter_broker_descriptive_mode();
+-        Ok(())
++        let check = || {
++            lease.check()?;
++            if lease.witness() != peer
++                || !codex_core::auth_broker::registration_paths_match(
++                    thread_id,
++                    std::path::Path::new(socket),
++                    std::path::Path::new(capability),
++                )
++            {
++                return Err(std::io::Error::new(
++                    std::io::ErrorKind::PermissionDenied,
++                    "native owner authority changed",
++                ));
++            }
++            codex_core::auth_broker::check_registration(thread_id, &ack, peer)
++        };
++        owner_commit_barrier(
++            check,
++            async {
++                let thread = self.owner_attach_admission(thread_id).await?;
++                check()?;
++                thread.persist_owned_rollout().await?;
++                let membership = self.thread_manager.hold_loaded_thread(thread_id, &thread).await?;
++                self.owner_activity_for_thread(thread_id, membership.thread()).await?;
++                Ok(membership)
++            },
++            |membership| {
++                // This actual read guard excludes removal/replacement until
++                // the existing locked registration commit has returned.
++                membership.thread().with_live_native_owner(|| {
++                    // Acquire actual runtime authority, then repeat peer and
++                    // pending generation before the same synchronous commit.
++                    check()?;
++                    codex_core::auth_broker::activate_registration(thread_id, ack.clone(), peer)?;
++                    self.thread_manager.enter_broker_descriptive_mode();
++                    Ok(())
++                })
++            },
++        )
++        .await
+     }
+ 
+     pub(crate) async fn owner_announce(
+@@ -6592,3 +6657,166 @@
+ #[cfg(test)]
+ #[path = "thread_processor_tests.rs"]
+ mod thread_processor_tests;
++
++// Private sequencing only: production supplies actual lease/registry checks,
++// actual writer/drain/activity awaits and the existing locked activation.
++async fn owner_commit_barrier<F, C, A, G>(check: C, persistence: F, activate: A) -> std::io::Result<()>
++where
++    F: std::future::Future<Output = std::io::Result<G>>,
++    C: Fn() -> std::io::Result<()>,
++    A: FnOnce(G) -> std::io::Result<()>,
++{
++    check()?;
++    let membership = persistence.await?;
++    check()?;
++    activate(membership)
++}
++
++// Keep the original sequencing models unchanged, testing the same generic
++// production barrier with a unit guard rather than fabricated native authority.
++#[cfg(test)]
++async fn owner_persistence_barrier<F, C, A>(check: C, persistence: F, activate: A) -> std::io::Result<()>
++where
++    F: std::future::Future<Output = std::io::Result<()>>,
++    C: Fn() -> std::io::Result<()>,
++    A: FnOnce() -> std::io::Result<()>,
++{
++    owner_commit_barrier(check, persistence, |()| activate()).await
++}
++
++#[cfg(test)]
++mod owned_persistence_barrier_tests {
++    use super::owner_persistence_barrier;
++    use std::cell::Cell;
++    use std::io;
++
++    #[tokio::test]
++    async fn owner_barrier_does_not_commit_on_writer_error_or_changed_authority() {
++        for changed_authority in [false, true] {
++            let current = Cell::new(true);
++            let checks = Cell::new(0);
++            let writes = Cell::new(0);
++            let commits = Cell::new(0);
++            let result = owner_persistence_barrier(
++                || {
++                    checks.set(checks.get() + 1);
++                    if current.get() { Ok(()) } else { Err(io::Error::from(io::ErrorKind::PermissionDenied)) }
++                },
++                async {
++                    writes.set(writes.get() + 1);
++                    if changed_authority {
++                        current.set(false);
++                        Ok(())
++                    } else {
++                        Err(io::Error::from(io::ErrorKind::BrokenPipe))
++                    }
++                },
++                || { commits.set(commits.get() + 1); Ok(()) },
++            ).await;
++            assert_eq!(result.unwrap_err().kind(), if changed_authority { io::ErrorKind::PermissionDenied } else { io::ErrorKind::BrokenPipe });
++            assert_eq!(checks.get(), if changed_authority { 2 } else { 1 });
++            assert_eq!(writes.get(), 1);
++            assert_eq!(commits.get(), 0);
++        }
++    }
++
++    #[tokio::test]
++    async fn owner_barrier_requires_pre_and_post_authority_without_replay() {
++        let checks = Cell::new(0);
++        let writes = Cell::new(0);
++        let commits = Cell::new(0);
++        owner_persistence_barrier(
++            || { checks.set(checks.get() + 1); Ok(()) },
++            async {
++                assert_eq!(checks.get(), 1);
++                writes.set(writes.get() + 1);
++                Ok(())
++            },
++            || {
++                assert_eq!(checks.get(), 2);
++                assert_eq!(writes.get(), 1);
++                commits.set(commits.get() + 1);
++                Ok(())
++            },
++        ).await.expect("complete ordered barrier");
++        assert_eq!(commits.get(), 1);
++        assert_eq!(writes.get(), 1);
++        let blocked = owner_persistence_barrier(
++            || Err(io::Error::from(io::ErrorKind::PermissionDenied)),
++            async { writes.set(writes.get() + 1); Ok(()) },
++            || { commits.set(commits.get() + 1); Ok(()) },
++        ).await;
++        assert_eq!(blocked.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
++        assert_eq!(writes.get(), 1);
++        assert_eq!(commits.get(), 1);
++    }
++
++    #[tokio::test]
++    async fn owner_barrier_cancellation_never_commits_or_retries() {
++        let polls = Cell::new(0);
++        let commits = Cell::new(0);
++        let pending = std::future::poll_fn(|_| {
++            polls.set(polls.get() + 1);
++            std::task::Poll::<io::Result<()>>::Pending
++        });
++        let mut barrier = Box::pin(owner_persistence_barrier(
++            || Ok(()), pending, || { commits.set(commits.get() + 1); Ok(()) },
++        ));
++        tokio::select! {
++            biased;
++            _ = &mut barrier => panic!("pending native writer unexpectedly completed"),
++            _ = std::future::ready(()) => {}
++        }
++        drop(barrier);
++        assert_eq!(polls.get(), 1);
++        assert_eq!(commits.get(), 0);
++    }
++}
++
++#[cfg(test)]
++mod owned_commit_guard_tests {
++    use super::owner_commit_barrier;
++    use std::cell::Cell;
++    use std::io;
++
++    struct Guard<'a>(&'a Cell<usize>);
++    impl Drop for Guard<'_> {
++        fn drop(&mut self) { self.0.set(self.0.get() + 1); }
++    }
++
++    #[tokio::test]
++    async fn final_authority_refusal_drops_membership_without_committing() {
++        let checks = Cell::new(0);
++        let drops = Cell::new(0);
++        let commits = Cell::new(0);
++        let result = owner_commit_barrier(
++            || {
++                checks.set(checks.get() + 1);
++                if checks.get() == 1 { Ok(()) } else { Err(io::Error::from(io::ErrorKind::PermissionDenied)) }
++            },
++            async { Ok(Guard(&drops)) },
++            |_membership| { commits.set(commits.get() + 1); Ok(()) },
++        ).await;
++        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
++        assert_eq!(drops.get(), 1);
++        assert_eq!(commits.get(), 0);
++    }
++
++    #[tokio::test]
++    async fn activation_owns_membership_until_commit_returns() {
++        let drops = Cell::new(0);
++        let commits = Cell::new(0);
++        owner_commit_barrier(
++            || Ok(()),
++            async { Ok(Guard(&drops)) },
++            |membership| {
++                assert_eq!(drops.get(), 0);
++                commits.set(commits.get() + 1);
++                drop(membership);
++                Ok(())
++            },
++        ).await.expect("guarded synchronous commit");
++        assert_eq!(commits.get(), 1);
++        assert_eq!(drops.get(), 1);
++    }
++}
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -389,6 +389,21 @@
+     pub(crate) client_mcp_extensions: Option<ClientMcpExtensions>,
+ }
+ 
++/// Non-serializable current loaded-map membership. No public constructor or
++/// mutation API exists; dropping it releases the real manager map read guard.
++pub struct LoadedThreadGuard<'a> {
++    threads: tokio::sync::RwLockReadGuard<'a, HashMap<ThreadId, Arc<CodexThread>>>,
++    thread_id: ThreadId,
++}
++
++impl LoadedThreadGuard<'_> {
++    pub fn thread(&self) -> &Arc<CodexThread> {
++        // The entry was joined before construction and cannot be removed or
++        // replaced while this private read guard is owned.
++        self.threads.get(&self.thread_id).expect("held native map member")
++    }
++}
++
+ /// Shared, `Arc`-owned state for [`ThreadManager`]. This `Arc` is required to have a single
+ /// `Arc` reference that can be downgraded to by `LocalAgentControl` while preventing every single
+ /// function to require an `Arc<&Self>`.
+@@ -922,6 +937,27 @@
+ 
+     pub async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
+         self.state.get_thread(thread_id).await
++    }
++
++    /// Hold exact current native map membership through a synchronous owner
++    /// commit. Removal/replacement uses this same map's write lock.
++    #[doc(hidden)]
++    pub async fn hold_loaded_thread(
++        &self,
++        thread_id: ThreadId,
++        expected: &Arc<CodexThread>,
++    ) -> std::io::Result<LoadedThreadGuard<'_>> {
++        let threads = self.state.threads.read().await;
++        let current = threads.get(&thread_id).ok_or_else(|| {
++            std::io::Error::new(std::io::ErrorKind::NotFound, "native thread is no longer loaded")
++        })?;
++        if current.session_source.is_internal() || !Arc::ptr_eq(current, expected) {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::PermissionDenied,
++                "native loaded thread instance changed",
++            ));
++        }
++        Ok(LoadedThreadGuard { threads, thread_id })
+     }
+ 
+     /// Updates metadata for loaded and cold threads through one entrypoint.
+@@ -2634,3 +2670,162 @@
+ #[cfg(all(test, target_os = "linux"))]
+ #[path = "native_owner_startup_tests.rs"]
+ mod native_owner_startup_tests;
++
++#[cfg(test)]
++mod loaded_owner_membership_tests {
++    use super::*;
++    use std::cell::Cell;
++    use std::future::Future;
++
++    async fn loaded_manager() -> (tempfile::TempDir, ThreadManager, NewThread, Config) {
++        let directory = tempfile::tempdir().expect("native manager directory");
++        let mut config = crate::config::test_config().await;
++        config.codex_home = AbsolutePathBuf::from_absolute_path_checked(directory.path().join("home"))
++            .expect("absolute native home");
++        config.cwd = config.codex_home.clone();
++        std::fs::create_dir_all(&config.codex_home).expect("native home");
++        let manager = ThreadManager::with_models_provider_and_home_for_tests(
++            CodexAuth::from_api_key("loaded-membership-test"),
++            config.model_provider.clone(),
++            config.codex_home.to_path_buf(),
++            Arc::new(EnvironmentManager::default_for_tests()),
++        );
++        let thread = manager.start_thread(StartThreadOptions {
++            environments: Some(Vec::new()),
++            ..StartThreadOptions::new(config.clone())
++        }).await.expect("start actual loaded native thread");
++        (directory, manager, thread, config)
++    }
++
++    #[tokio::test]
++    async fn loaded_membership_refuses_removal_during_last_activity_await() {
++        let (_directory, manager, thread, _) = loaded_manager().await;
++        let earlier = manager.get_thread(thread.thread_id).await.expect("earlier native Arc");
++        let committed = Cell::new(false);
++        let (removed, removal_finished) = tokio::sync::oneshot::channel();
++        let final_activity_then_commit = async {
++            // Deterministically suspend at the last activity await with the
++            // earlier Arc, just as V1 could retain a now-removed map instance.
++            removal_finished.await.expect("removal finished during await");
++            let membership = manager.hold_loaded_thread(thread.thread_id, &earlier).await?;
++            let _current = membership.thread();
++            committed.set(true);
++            Ok::<_, std::io::Error>(())
++        };
++        let remove = async {
++            let actual = manager.remove_thread_for_client(&thread.thread_id).await
++                .expect("actual client removal").expect("loaded member");
++            assert!(Arc::ptr_eq(&actual, &earlier));
++            removed.send(()).expect("wake final activity await");
++        };
++        let (result, ()) = tokio::join!(final_activity_then_commit, remove);
++        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
++        assert!(!committed.get());
++        assert!(Arc::ptr_eq(&earlier, &thread.thread));
++        assert!(manager.captured_ops().is_empty());
++        thread.thread.shutdown_and_wait().await.expect("close original native thread");
++    }
++
++    #[tokio::test]
++    async fn loaded_membership_refuses_replacement_during_last_activity_await() {
++        let (_directory, manager, original, config) = loaded_manager().await;
++        let replacement = manager.start_thread(StartThreadOptions {
++            environments: Some(Vec::new()),
++            ..StartThreadOptions::new(config)
++        }).await.expect("actual distinct replacement runtime");
++        let earlier = manager.get_thread(original.thread_id).await.expect("earlier native Arc");
++        let committed = Cell::new(false);
++        let (replaced, replacement_finished) = tokio::sync::oneshot::channel();
++        let final_activity_then_commit = async {
++            replacement_finished.await.expect("replacement during final await");
++            let membership = manager.hold_loaded_thread(original.thread_id, &earlier).await?;
++            let _current = membership.thread();
++            committed.set(true);
++            Ok::<_, std::io::Error>(())
++        };
++        let replace = async {
++            // Only test-owned map access substitutes another real native Arc
++            // under the same key; no registration or ready authority is forged.
++            manager.state.threads.write().await.insert(original.thread_id, replacement.thread.clone());
++            replaced.send(()).expect("wake final activity await");
++        };
++        let (result, ()) = tokio::join!(final_activity_then_commit, replace);
++        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
++        assert!(!committed.get());
++        assert!(manager.captured_ops().is_empty());
++        original.thread.shutdown_and_wait().await.expect("close original runtime");
++        replacement.thread.shutdown_and_wait().await.expect("close replacement runtime");
++    }
++
++    #[tokio::test]
++    async fn loaded_membership_excludes_queued_removal_through_final_await_and_commit() {
++        let (_directory, manager, thread, _) = loaded_manager().await;
++        let membership = manager.hold_loaded_thread(thread.thread_id, &thread.thread)
++            .await.expect("hold actual current membership");
++        let mut removal = Box::pin(manager.remove_thread_for_client(&thread.thread_id));
++        std::future::poll_fn(|context| {
++            assert!(matches!(removal.as_mut().poll(context), std::task::Poll::Pending));
++            std::task::Poll::Ready(())
++        }).await;
++        // This actual final snapshot can await while the remover is queued.
++        // It must not recursively reacquire the manager's fair map read lock.
++        let snapshot = membership.thread().config_snapshot().await;
++        assert!(!snapshot.ephemeral);
++        assert!(Arc::ptr_eq(membership.thread(), &thread.thread));
++        assert!(manager.state.threads.try_write().is_err());
++        let commit_observed = Cell::new(false);
++        let commit = || { commit_observed.set(true); };
++        commit();
++        assert!(commit_observed.get());
++        drop(membership);
++        let removed = removal.await.expect("removal after commit").expect("original map member");
++        assert!(Arc::ptr_eq(&removed, &thread.thread));
++        assert!(manager.captured_ops().is_empty());
++        thread.thread.shutdown_and_wait().await.expect("close native runtime");
++    }
++
++    #[tokio::test]
++    async fn loaded_membership_cancellation_releases_actual_map_guard() {
++        let (_directory, manager, thread, _) = loaded_manager().await;
++        let membership = manager.hold_loaded_thread(thread.thread_id, &thread.thread)
++            .await.expect("actual map guard");
++        let mut final_activity = Box::pin(async move {
++            let held = membership;
++            std::future::pending::<()>().await;
++            drop(held);
++        });
++        std::future::poll_fn(|context| {
++            assert!(matches!(final_activity.as_mut().poll(context), std::task::Poll::Pending));
++            std::task::Poll::Ready(())
++        }).await;
++        assert!(manager.state.threads.try_write().is_err());
++        drop(final_activity);
++        let removed = manager.remove_thread_for_client(&thread.thread_id).await
++            .expect("remove after cancellation").expect("original runtime");
++        assert!(Arc::ptr_eq(&removed, &thread.thread));
++        assert!(manager.captured_ops().is_empty());
++        thread.thread.shutdown_and_wait().await.expect("close native runtime");
++    }
++
++    #[tokio::test]
++    async fn stopped_but_still_mapped_native_runtime_cannot_commit_owner_activation() {
++        let (_directory, manager, thread, _) = loaded_manager().await;
++        thread.thread.persist_owned_rollout().await.expect("actual native writer barrier");
++        let membership = manager.hold_loaded_thread(thread.thread_id, &thread.thread)
++            .await.expect("hold actual map membership");
++        // The actual submission loop accepts Shutdown while still mapped. Its
++        // real runtime and native writer terminate without needing the map W.
++        thread.thread.shutdown_and_wait().await.expect("actual native shutdown");
++        assert!(Arc::ptr_eq(membership.thread(), &thread.thread));
++        let commits = Cell::new(0);
++        let result = membership.thread().with_live_native_owner(|| {
++            commits.set(commits.get() + 1);
++            Ok(())
++        });
++        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::ConnectionAborted);
++        assert_eq!(commits.get(), 0);
++        drop(membership);
++        assert!(manager.remove_thread_for_client(&thread.thread_id).await
++            .expect("remove stopped native map entry").is_some());
++    }
++}
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -57,6 +57,7 @@
+ /// A session has at most 1 running task at a time, and can be interrupted by user input.
+ pub(crate) struct Session {
+     pub(crate) thread_id: ThreadId,
++    pub(crate) owner_runtime: Arc<crate::codex_thread::NativeRuntime>,
+     pub(crate) installation_id: String,
+     pub(super) tx_event: Sender<Event>,
+     pub(super) agent_status: watch::Sender<AgentStatus>,
+@@ -1783,6 +1784,7 @@
+             let (mcp_prewarm_tx, mcp_prewarm_rx) = async_channel::bounded(1);
+             let sess = Arc::new(Session {
+                 thread_id,
++                owner_runtime: Default::default(),
+                 installation_id,
+                 tx_event: tx_event.clone(),
+                 agent_status,
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -284,6 +284,9 @@
+ }
+ 
+ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
++    // Linearize teardown before touching any native producer/writer. This
++    // mutex is released before all shutdown awaits; pending never blocks stop.
++    sess.owner_runtime.stop();
+     if let Some(startup_prewarm) = sess.take_session_startup_prewarm().await {
+         startup_prewarm.abort().await;
+     }
+@@ -413,6 +416,9 @@
+     config: Arc<Config>,
+     rx_sub: Receiver<Submission>,
+ ) {
++    // Completion, cancellation and panic retire the actual runtime even when
++    // graceful teardown cannot finish. No lifecycle mutex crosses an await.
++    let _runtime_exit = sess.owner_runtime.exit_guard();
+     // To break out of this loop, send Op::Shutdown.
+     let mut shutdown_received = false;
+     while let Ok(sub) = rx_sub.recv().await {
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -6538,6 +6538,7 @@
+ 
+     let session = Session {
+         thread_id,
++        owner_runtime: Default::default(),
+         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
+         tx_event,
+         agent_status: agent_status_tx,
+@@ -8808,6 +8809,7 @@
+ 
+     let session = Arc::new(Session {
+         thread_id,
++        owner_runtime: Default::default(),
+         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
+         tx_event,
+         agent_status: agent_status_tx,
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -947,7 +947,11 @@
+ 
+         // This task will run until Op::Shutdown is received.
+         let session_for_loop = Arc::clone(&session);
++        // Own retirement before spawn: even cancellation before the first
++        // future poll drops this actual Session's monotonic runtime authority.
++        let runtime_exit = session_for_loop.owner_runtime.exit_guard();
+         let session_loop_handle = tokio::spawn(async move {
++            let _runtime_exit = runtime_exit;
+             submission_loop(session_for_loop, configured_config, rx_sub)
+                 .instrument(info_span!("session_loop", thread_id = %thread_id))
+                 .await;

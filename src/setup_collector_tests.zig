@@ -137,6 +137,219 @@ test "prefix sibling digest mode and duplicate entry validation deny forged inve
     invalid[2] = invalid[0];
     try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
 }
+
+test "production receipt parser types desktop placement and preserves legacy schema one" {
+    const allocator = std.testing.allocator;
+    const legacy =
+        "{\"schemaVersion\":1,\"prefix\":\"/opt/omux\",\"product\":\"omux\",\"product\":\"legacy ignored field\",\"files\":[" ++
+        "{\"path\":\"/opt/omux/bin/omux\",\"sha256\":\"" ++ digest ++ "\",\"mode\":493}," ++
+        "{\"path\":\"/opt/omux/bin/omuxd\",\"sha256\":\"" ++ digest ++ "\",\"mode\":493}," ++
+        "{\"path\":\"/opt/omux/bin/omux-native-host\",\"sha256\":\"" ++ digest ++ "\",\"mode\":493}]";
+    for ([_][]const u8{ "", ",\"desktopDirectory\":null" }) |field| {
+        const bytes = try std.fmt.allocPrint(allocator, "{s}{s}}}", .{ legacy, field });
+        defer allocator.free(bytes);
+        const parsed = try collector.parseReceipt(allocator, bytes);
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value.desktopDirectory == null);
+        try collector.validateReceipt(parsed.value, "/opt/omux", null);
+    }
+    for ([_][]const u8{ "7", "true", "[]", "{}", "[47,116,109,112]", "false", "1.5", "null,\"desktopDirectory\":null" }) |wrong_type| {
+        const bytes = try std.fmt.allocPrint(allocator, "{s},\"desktopDirectory\":{s}}}", .{ legacy, wrong_type });
+        defer allocator.free(bytes);
+        const result = collector.parseReceipt(allocator, bytes);
+        if (result) |unexpected| {
+            // A parser regression must fail without leaking its parsed arena.
+            unexpected.deinit();
+            return error.TestUnexpectedResult;
+        } else |err| {
+            try std.testing.expectEqual(error.InvalidReceipt, err);
+        }
+    }
+    const string_bytes = try std.fmt.allocPrint(allocator, "{s},\"desktopDirectory\":\"/tmp/applications\"}}", .{legacy});
+    defer allocator.free(string_bytes);
+    const string_value = try collector.parseReceipt(allocator, string_bytes);
+    defer string_value.deinit();
+    try std.testing.expectEqualStrings("/tmp/applications", string_value.value.desktopDirectory.?);
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, collector.parseReceipt(failing.allocator(), string_bytes));
+    const oversized = try allocator.alloc(u8, collector.max_receipt_bytes + 1);
+    defer allocator.free(oversized);
+    @memset(oversized, ' ');
+    try std.testing.expectError(error.InvalidReceipt, collector.parseReceipt(allocator, oversized));
+}
+
+test "desktop placement admits only exact channel data with control and retains service selection" {
+    var entries = [_]collector.Entry{
+        files[0],                                                                   files[1],                                                                                                          files[2],
+        .{ .path = "/opt/omux/bin/omux-control", .sha256 = digest, .mode = 0o755 }, .{ .path = "/home/operator/.local/share/applications/ai.xoxd.omux.dev.desktop", .sha256 = digest, .mode = 0o644 }, .{ .path = "/home/operator/.config/systemd/user/ai.xoxd.omux.dev.service", .sha256 = digest, .mode = 0o600 },
+    };
+    var receipt = valid();
+    receipt.artifact = .{ .channel = "development", .manifestSha256 = digest };
+    receipt.desktopDirectory = "/home/operator/.local/share/applications";
+    receipt.files = entries[0..5];
+    try collector.validateReceipt(receipt, "/opt/omux", null);
+    entries[4].path = "/opt/omux/share/applications/ai.xoxd.omux.dev.desktop";
+    receipt.desktopDirectory = "/opt/omux/share/applications";
+    try collector.validateReceipt(receipt, "/opt/omux", null);
+    entries[4].path = "/home/operator/.local/share/applications/ai.xoxd.omux.desktop";
+    receipt.desktopDirectory = "/home/operator/.local/share/applications";
+    receipt.artifact.?.channel = "release";
+    try collector.validateReceipt(receipt, "/opt/omux", null);
+    receipt.artifact.?.channel = "development";
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    entries[4].path = "/home/operator/.local/share/applications/ai.xoxd.omux.dev.desktop";
+    receipt.userService = entries[5].path;
+    receipt.files = &entries;
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    try collector.validateReceipt(receipt, "/opt/omux", entries[5].path);
+    receipt.userService = null;
+    receipt.files = entries[0..5];
+    for ([_][]const u8{ "/home/operator/.local/share/applications/other.desktop", "/home/operator/.local/share/applications/ai.xoxd.omux.dev.desktop/child", "/home/operator/.local/share/applications-other/ai.xoxd.omux.dev.desktop", "/home/operator/.ssh/config" }) |foreign| {
+        entries[4].path = foreign;
+        try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    }
+    entries[4].path = "/home/operator/.local/share/applications/ai.xoxd.omux.dev.desktop";
+    for ([_]u32{ 0o600, 0o755 }) |mode| {
+        entries[4].mode = mode;
+        try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    }
+    entries[4].mode = 0o644;
+    entries[4].sha256 = "bad";
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    entries[4].sha256 = digest;
+    entries[3].path = "/opt/omux/bin/other-control";
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    entries[3].path = "/opt/omux/bin/omux-control";
+    entries[3].mode = 0o644;
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    entries[3].mode = 0o755;
+    receipt.files = entries[0..4];
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    receipt.files = entries[0..5];
+    // Keep the valid selected desktop while adding a separate foreign row.
+    // Refusal must come from the outside-prefix boundary, not missing desktop.
+    entries[5] = .{ .path = "/home/operator/.ssh/config", .sha256 = digest, .mode = 0o644 };
+    receipt.files = &entries;
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    receipt.files = entries[0..5];
+    for ([_][]const u8{ "unknown", "dev" }) |channel| {
+        receipt.artifact.?.channel = channel;
+        try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    }
+    receipt.artifact = null;
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    receipt.artifact = .{ .channel = "development", .manifestSha256 = digest };
+    for ([_][]const u8{ "", "relative", "/home/operator/../applications", "/home/operator/applications/", "/home/operator/applications\n", "/home/operator/applications\x7f" }) |unsafe| {
+        receipt.desktopDirectory = unsafe;
+        try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    }
+    var oversized: [collector.max_path_bytes]u8 = @splat('a');
+    oversized[0] = '/';
+    receipt.desktopDirectory = &oversized;
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    receipt.desktopDirectory = "/home/operator/.local/share/applications";
+    receipt.owner = "home-manager";
+    receipt.prefix = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-omux";
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, receipt.prefix, null));
+    receipt.owner = null;
+    receipt.prefix = "/opt/omux";
+    receipt.schemaVersion = 2;
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+    receipt.schemaVersion = 1;
+    entries[5] = entries[4];
+    receipt.files = &entries;
+    try std.testing.expectError(error.InvalidReceipt, collector.validateReceipt(receipt, "/opt/omux", null));
+}
+
+test "real collector hashes external owned desktop and refuses changed missing or linked entries without readiness promotion" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const io = std.testing.io;
+    var nonce: [8]u8 = undefined;
+    io.random(&nonce);
+    const base = try std.fmt.allocPrint(allocator, "{s}/omux-desktop-evidence-{s}", .{ if (builtin.os.tag == .macos) "/private/tmp" else "/tmp", std.fmt.bytesToHex(nonce, .lower) });
+    defer std.Io.Dir.cwd().deleteTree(io, base) catch |err| std.log.err("desktop fixture cleanup failed: {s}", .{@errorName(err)});
+    const root = try paths.openPrivateRoot(allocator, base, true);
+    defer _ = c.close(root);
+    for ([_][:0]const u8{ "prefix", "prefix/bin", "applications" }) |directory| {
+        if (c.mkdirat(root, directory.ptr, 0o700) != 0) return error.FixtureWriteFailed;
+    }
+    const prefix = try std.fmt.allocPrint(allocator, "{s}/prefix", .{base});
+    const applications = try std.fmt.allocPrint(allocator, "{s}/applications", .{base});
+    const payload = "synthetic installed byte custody fixture\n";
+    var payload_digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(payload, &payload_digest, .{});
+    const payload_hex = std.fmt.bytesToHex(payload_digest, .lower);
+    var entries: [5]collector.Entry = undefined;
+    for ([_][]const u8{ "omux", "omuxd", "omux-native-host", "omux-control" }, 0..) |name, index| {
+        const path = try std.fmt.allocPrint(allocator, "{s}/bin/{s}", .{ prefix, name });
+        try fixtureWrite(allocator, path, payload, 0o755);
+        entries[index] = .{ .path = path, .sha256 = &payload_hex, .mode = 0o755 };
+    }
+    const desktop = try std.fmt.allocPrint(allocator, "{s}/ai.xoxd.omux.dev.desktop", .{applications});
+    try fixtureWrite(allocator, desktop, payload, 0o644);
+    entries[4] = .{ .path = desktop, .sha256 = &payload_hex, .mode = 0o644 };
+    var receipt: collector.Receipt = .{ .schemaVersion = 1, .prefix = prefix, .desktopDirectory = applications, .artifact = .{ .channel = "development", .manifestSha256 = digest }, .files = &entries, .serviceActivated = true };
+    const receipt_path = try std.fmt.allocPrint(allocator, "{s}/install.json", .{base});
+    const bytes = try std.json.Stringify.valueAlloc(allocator, receipt, .{});
+    try fixtureWrite(allocator, receipt_path, bytes, 0o600);
+    var options: collector.Options = .{ .prefix = prefix, .receipt_path = receipt_path, .deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) }) };
+    const verified = try collector.collect(io, allocator, options);
+    try std.testing.expectEqual(collector.Failure.none, verified.failure);
+    try std.testing.expectEqual(evidence.Probe.matches, verified.artifact.payload);
+    try std.testing.expectEqual(evidence.Probe.unknown, verified.artifact.running_executable);
+    const projected = evidence.project(verified.artifact, verified.service);
+    try std.testing.expectEqual(onboarding.State.unknown, projected.artifact.state);
+    try std.testing.expectEqual(onboarding.State.unknown, projected.service.state);
+    try std.testing.expectEqual(evidence.Probe.unknown, verified.service.login_enabled);
+    try std.testing.expectEqual(evidence.Probe.unknown, verified.service.responder_binding);
+    // These refusals run through the same typed JSON parser as installation
+    // observation, rather than only through constructed Receipt values.
+    for ([_][]const u8{ "release", "unknown" }) |channel| {
+        receipt.artifact.?.channel = channel;
+        const invalid_bytes = try std.json.Stringify.valueAlloc(allocator, receipt, .{});
+        try fixtureWrite(allocator, receipt_path, invalid_bytes, 0o600);
+        options.deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+        try std.testing.expectEqual(collector.Failure.invalid_receipt, (try collector.collect(io, allocator, options)).failure);
+    }
+    receipt.artifact.?.channel = "development";
+    receipt.desktopDirectory = null;
+    const unselected_bytes = try std.json.Stringify.valueAlloc(allocator, receipt, .{});
+    try fixtureWrite(allocator, receipt_path, unselected_bytes, 0o600);
+    options.deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+    try std.testing.expectEqual(collector.Failure.invalid_receipt, (try collector.collect(io, allocator, options)).failure);
+    receipt.desktopDirectory = applications;
+    try fixtureWrite(allocator, receipt_path, bytes, 0o600);
+    try fixtureWrite(allocator, desktop, "modified desktop fixture\n", 0o644);
+    options.deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+    try std.testing.expectEqual(evidence.Probe.differs, (try collector.collect(io, allocator, options)).artifact.payload);
+    if (c.unlinkat(root, "applications/ai.xoxd.omux.dev.desktop", 0) != 0) return error.FixtureWriteFailed;
+    options.deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+    try std.testing.expectEqual(evidence.Probe.absent, (try collector.collect(io, allocator, options)).artifact.payload);
+    const alias = try std.fmt.allocPrint(allocator, "{s}/owned-alias", .{applications});
+    try fixtureWrite(allocator, alias, payload, 0o644);
+    if (c.symlinkat("owned-alias", root, "applications/ai.xoxd.omux.dev.desktop") != 0) return error.FixtureWriteFailed;
+    options.deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+    try std.testing.expectEqual(collector.Failure.unsafe_file, (try collector.collect(io, allocator, options)).failure);
+    if (c.unlinkat(root, "applications/ai.xoxd.omux.dev.desktop", 0) != 0) return error.FixtureWriteFailed;
+    try fixtureWrite(allocator, desktop, payload, 0o644);
+    if (c.symlinkat("applications", root, "applications-link") != 0) return error.FixtureWriteFailed;
+    receipt.desktopDirectory = try std.fmt.allocPrint(allocator, "{s}/applications-link", .{base});
+    entries[4].path = try std.fmt.allocPrint(allocator, "{s}/ai.xoxd.omux.dev.desktop", .{receipt.desktopDirectory.?});
+    const linked_bytes = try std.json.Stringify.valueAlloc(allocator, receipt, .{});
+    try fixtureWrite(allocator, receipt_path, linked_bytes, 0o600);
+    options.deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+    try std.testing.expectEqual(collector.Failure.unsafe_path, (try collector.collect(io, allocator, options)).failure);
+    // Managed-looking aliases cannot turn this mutable placement into HM custody.
+    receipt.owner = "home-manager";
+    const managed_bytes = try std.json.Stringify.valueAlloc(allocator, receipt, .{});
+    try fixtureWrite(allocator, receipt_path, managed_bytes, 0o600);
+    options.deadline = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+    try std.testing.expectEqual(collector.Failure.invalid_receipt, (try collector.collect(io, allocator, options)).failure);
+}
+
 test "legacy serviceActivated field remains declaration rather than live service evidence" {
     var receipt = valid();
     receipt.serviceActivated = true;

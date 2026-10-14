@@ -1,0 +1,17 @@
+{
+  "kind": "omux-native-n10-content-input-v1",
+  "parent": {
+    "inventory_sha256": "5f38b4089e6e60b153f56201a7bf97fceb9cea0160c26adc586e4989af56cd2a",
+    "producer": {
+      "graph_sha256": "be24de82208bcdbee78dcf72176b54f361aa312e45614874b78ca8a7ea6aba91",
+      "receipt": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/c188ba31-1b27-4344-89a0-6850d725229f/receipt.json",
+      "sha256": "bd861c017e86370554229b81ff0b3c10e17591d91176f04f9180b85b34e657c2",
+      "source_commit": "4a79ad1e88cb704e3fed4301d05bd69025eb822c"
+    },
+    "receipt_bytes": 1595824,
+    "receipt_sha256": "ccb780581bf81feb7621f859534407b75c9d1f42f26c1fb81563091621b24d25",
+    "root": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/c188ba31-1b27-4344-89a0-6850d725229f/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_source_file_writer_producer/test.outputs/native-source-file-writer-boundary"
+  },
+  "schema_version": 1,
+  "status": "selected-N10-content-uncompiled"
+}

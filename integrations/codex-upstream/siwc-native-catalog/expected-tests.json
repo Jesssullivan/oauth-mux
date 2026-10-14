@@ -1,0 +1,45 @@
+{
+  "V4_original_15_methods_preserved_unrun": true,
+  "app_server_unit_tests": [
+    "config_manager::provider_tests::siwc_saved_empty_reasoning_effort_clears_actual_global_high_after_config_reload"
+  ],
+  "core_unit_tests": [
+    "broker_model_catalog::tests::actual_named_catalog_preserves_account_order_without_bundled_model_metadata",
+    "broker_model_catalog::tests::bootstrap_catalog_cannot_claim_a_conversation_lease_or_credential",
+    "broker_model_catalog::tests::actual_issued_catalog_requires_exact_account_handle_route_and_original_expiry",
+    "broker_model_catalog::tests::duplicate_hidden_empty_overlong_or_sequence_models_refuse",
+    "broker_model_catalog::tests::expired_snapshot_is_unknown_not_native_auth_or_vendor_catalog_fallback",
+    "broker_model_catalog::tests::final_catalog_observation_refuses_expiry_or_any_issued_route_change",
+    "broker_model_catalog::tests::actual_private_peer_manager_bootstraps_without_auth_file_and_refreshes_account_catalog",
+    "broker_model_catalog::tests::unavailable_account_manager_exposes_fallible_hook_and_no_vendor_catalog",
+    "broker_model_catalog::tests::explicit_or_resumed_model_is_preserved_but_absent_account_default_is_not_invented",
+    "broker_model_catalog::tests::typed_unknown_is_not_empty_known_catalog_or_invented_model_support",
+    "broker_model_catalog::tests::old_observation_cannot_republish_after_account_refresh_or_sequence_retirement",
+    "auth_broker::tests::unix_transport::catalog_bootstrap_uses_real_private_peer_metadata_only_without_native_thread",
+    "auth_broker::tests::unix_transport::issued_siwc_catalog_uses_original_native_ref_and_lease_without_materialization",
+    "auth_broker::tests::unix_transport::unknown_catalog_preserves_explicit_issued_authorization_without_reacquire_or_native_auth",
+    "auth_broker::tests::unix_transport::fresh_confirmed_missing_model_refuses_before_materialization"
+  ],
+  "default_builds": [
+    "//codex-rs/cli:codex",
+    "//codex-rs/core:core",
+    "//codex-rs/models-manager:models-manager",
+    "//codex-rs/app-server:app-server",
+    "//codex-rs/tui:tui"
+  ],
+  "native_targets": [
+    "//codex-rs/core:core-unit-tests",
+    "//codex-rs/tui:tui-unit-tests",
+    "//codex-rs/models-manager:models-manager-unit-tests",
+    "//codex-rs/app-server:app-server-unit-tests"
+  ],
+  "new_methods": 20,
+  "no_mirrored_harness_or_filtered_compile": true,
+  "status": "ALL_UNRUN",
+  "tui_unit_tests": [
+    "app_server_session::tests::siwc_cold_resume_preserves_thread_model_and_uses_configured_local_route_without_native_login",
+    "app_server_session::tests::siwc_saved_resume_metadata_preserves_model_effort_and_refuses_wrong_thread",
+    "tests::siwc_unknown_catalog_bootstrap_preserves_explicit_model_without_native_login_or_vendor_choices",
+    "tests::siwc_saved_startup_preference_is_only_admitted_for_embedded_cold_resume"
+  ]
+}

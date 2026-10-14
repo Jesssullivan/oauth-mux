@@ -21,6 +21,7 @@ MARKER = {"owner": "omux-development-stage", "revision": 1}
 LIMIT = 64 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 2048
 COMMANDS = ("omux", "omux-native-host", "omuxd")
+CONTROL = "omux-control"
 
 
 class StageError(Exception):
@@ -114,16 +115,18 @@ def stable_launcher(name):
     return ('#!/bin/sh\nexport OMUX_INSTANCE=dev\ndirectory=${0%/*}\nexec "$directory/../current/lib/' + name + '" "$@"\n').encode()
 
 
-def stable_commands(root, install=False):
+def stable_commands(root, install=False, *, control=False):
     directory = root / "bin"
     if not directory.exists():
         if not install:
             raise StageError("stable development commands are missing")
         directory.mkdir(mode=0o700)
     private_directory(directory)
-    if any(path.name not in COMMANDS for path in directory.iterdir()):
+    present = {path.name for path in directory.iterdir()}
+    if present - set((*COMMANDS, CONTROL)):
         raise StageError("stable command directory contains unowned files")
-    for name in COMMANDS:
+    required = (*COMMANDS, CONTROL) if control else COMMANDS
+    for name in sorted(set(required) | present):
         path = directory / name
         if not path.exists() and not path.is_symlink() and install:
             write(path, stable_launcher(name), 0o700)
@@ -171,6 +174,7 @@ def validate_existing(root):
     receipt = json.loads(artifact(receipt_path))
     if receipt.get("ownership") != MARKER or receipt.get("files") != inventory(directory):
         raise StageError("owned development generation changed")
+    return receipt
 
 
 def unpack(data, directory, metadata):
@@ -215,7 +219,8 @@ def unpack(data, directory, metadata):
 
 
 def stage_generation(root, core, daemon, extension_zip, metadata, replace_owned=False,
-                     runtime_files=None, patchelf=None, ca_bundle=None):
+                     runtime_files=None, patchelf=None, ca_bundle=None, *,
+                     control=None, qt_runtime_files=None, qt_plugins=None, resolution_witness=None):
     metadata = dict(metadata)
     if any(metadata.get(k) != v for k, v in {
             "channel": "development", "instance": "dev", "native_host": HOST}.items()):
@@ -224,7 +229,15 @@ def stage_generation(root, core, daemon, extension_zip, metadata, replace_owned=
     if not isinstance(extension, dict) or not re.fullmatch(r"[a-p]{32}", extension.get("id", "")):
         raise StageError("invalid development extension identity")
     inputs = {"core": artifact(core), "daemon": artifact(daemon), "extension": artifact(extension_zip)}
+    if control is not None:
+        inputs["control"] = artifact(control)
+        if not inputs["control"].startswith(b"\x7fELF") or not qt_runtime_files or not qt_plugins:
+            raise StageError("development control requires ELF and complete declared Qt closure/plugins")
+    elif qt_runtime_files or qt_plugins or resolution_witness is not None:
+        raise StageError("Qt inputs require a development control artifact")
     native_elf = any(inputs[name].startswith(b"\x7fELF") for name in ("core", "daemon"))
+    if control is not None and not native_elf:
+        raise StageError("development control requires a portable native runtime")
     portable_requested = bool(runtime_files or patchelf or ca_bundle)
     if native_elf or portable_requested:
         if not native_elf or not runtime_files or patchelf is None or ca_bundle is None:
@@ -252,7 +265,9 @@ def stage_generation(root, core, daemon, extension_zip, metadata, replace_owned=
         if current.exists() or current.is_symlink():
             if not replace_owned:
                 raise StageError("replacement requires --replace-owned")
-            validate_existing(root)
+            previous = validate_existing(root)
+            if "control" in previous.get("artifacts", {}) and control is None:
+                raise StageError("replacement must retain the owned development control")
             stable_commands(root)
         if native_elf:
             from portable import assemble_linux, elf_metadata, verify_linux_runtime
@@ -260,9 +275,14 @@ def stage_generation(root, core, daemon, extension_zip, metadata, replace_owned=
                 machine = elf_metadata(inputs["core"])["machine"]
                 target = {62: "x86_64-linux", 183: "aarch64-linux"}[machine]
                 runtime_payload, runtime = assemble_linux(Path(core), Path(daemon), list(runtime_files),
-                                                         Path(patchelf), target, Path(ca_bundle), channel="development")
+                    Path(patchelf), target, Path(ca_bundle),
+                    control=Path(control) if control is not None else None,
+                    qt_runtime_files=list(qt_runtime_files) if qt_runtime_files else None,
+                    qt_plugins=list(qt_plugins) if qt_plugins else None,
+                    resolution_witness=resolution_witness, channel="development")
                 verify_linux_runtime(runtime_payload, {"target": target, "runtime": runtime, "channel": "development"})
-                if artifact(core) != inputs["core"] or artifact(daemon) != inputs["daemon"]:
+                if (artifact(core) != inputs["core"] or artifact(daemon) != inputs["daemon"]
+                        or (control is not None and artifact(control) != inputs["control"])):
                     raise StageError("native source artifacts changed during runtime assembly")
             except (OSError, ValueError, subprocess.CalledProcessError) as error:
                 raise StageError("declared portable development runtime assembly failed") from error
@@ -277,12 +297,18 @@ def stage_generation(root, core, daemon, extension_zip, metadata, replace_owned=
                 (temporary / "source").mkdir(mode=0o700)
                 write(temporary / "source/core", inputs["core"])
                 write(temporary / "source/daemon", inputs["daemon"])
+                if control is not None:
+                    write(temporary / "source/control", inputs["control"])
                 for name, value in sorted(runtime_payload.items()):
                     destination = temporary / "runtime" / name
                     private_directory(destination.parent)
-                    executable = name.startswith("bin/") or "/libexec/" in name or name == runtime["loader"]
+                    executable = (name.startswith("bin/") or "/libexec/" in name
+                        or name in {runtime["loader"], runtime.get("qt", {}).get("loader")})
                     write(destination, value, 0o700 if executable else 0o600)
-            for name, source in (("omux", "core"), ("omux-native-host", "core"), ("omuxd", "daemon")):
+            commands = [("omux", "core"), ("omux-native-host", "core"), ("omuxd", "daemon")]
+            if control is not None:
+                commands.append((CONTROL, "control"))
+            for name, source in commands:
                 payload = ('#!/bin/sh\nset -eu\ndirectory=${0%/*}\nexec "$directory/../runtime/bin/' + name + '" "$@"\n').encode() if native_elf else inputs[source]
                 write(temporary / "lib" / name, payload, 0o700)
                 launcher = ('#!/bin/sh\nexport OMUX_INSTANCE=dev\ndirectory=${0%/*}\nexec "$directory/../lib/' + name + '" "$@"\n').encode()
@@ -298,7 +324,7 @@ def stage_generation(root, core, daemon, extension_zip, metadata, replace_owned=
             receipt_bytes = (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode()
             write(temporary / "receipt.json", receipt_bytes)
             os.rename(temporary, generations / generation)
-            stable_commands(root, install=True)
+            stable_commands(root, install=True, control=control is not None)
             pointer = root / (".current-" + generation)
             pointer.symlink_to("generations/" + generation)
             os.replace(pointer, current)
@@ -314,12 +340,14 @@ def stage_generation(root, core, daemon, extension_zip, metadata, replace_owned=
 
 
 def stage(root, core, daemon, extension_zip, metadata, replace_owned=False,
-          runtime_files=None, patchelf=None, ca_bundle=None):
+          runtime_files=None, patchelf=None, ca_bundle=None, *,
+          control=None, qt_runtime_files=None, qt_plugins=None, resolution_witness=None):
     # Keep the existing API and CLI receipt bytes unchanged. Only callers of
     # stage_generation receive the identity captured inside the transaction.
     return stage_generation(root, core, daemon, extension_zip, metadata, replace_owned,
                             runtime_files=runtime_files, patchelf=patchelf,
-                            ca_bundle=ca_bundle).receipt
+                            ca_bundle=ca_bundle, control=control, qt_runtime_files=qt_runtime_files,
+                            qt_plugins=qt_plugins, resolution_witness=resolution_witness).receipt
 
 
 def main():
@@ -333,6 +361,11 @@ def main():
     parser.add_argument("--runtime-files", default="")
     parser.add_argument("--patchelf", type=Path)
     parser.add_argument("--ca-bundle", type=Path)
+    parser.add_argument("--control", type=Path)
+    parser.add_argument("--qt-runtime-file", type=Path, action="append", default=[])
+    parser.add_argument("--qt-plugin", type=Path, action="append", default=[])
+    parser.add_argument("--resolution-witness", type=Path)
+    parser.add_argument("--select-generation", action="store_true")
     args = parser.parse_args()
     try:
         if len(args.runtime_files) > 1024 * 1024:
@@ -343,9 +376,24 @@ def main():
         runtime_files.extend(Path(value) for value in args.runtime_files.split())
         if len(runtime_files) > 4096:
             raise StageError("declared runtime path count exceeds bound")
-        result = stage(args.root, args.core, args.daemon, args.extension,
-                       json.loads(artifact(args.metadata)), args.replace_owned,
-                       runtime_files=runtime_files, patchelf=args.patchelf, ca_bundle=args.ca_bundle)
+        if len(args.qt_runtime_file) > 4096 or len(args.qt_plugin) > 128:
+            raise StageError("declared Qt input count exceeds bound")
+        witness = None
+        if args.resolution_witness is not None:
+            raw = artifact(args.resolution_witness)
+            if len(raw) > 1024 * 1024:
+                raise StageError("Qt resolution witness exceeds bound")
+            witness = json.loads(raw)
+        kwargs = {"replace_owned":args.replace_owned, "runtime_files":runtime_files,
+            "patchelf":args.patchelf, "ca_bundle":args.ca_bundle,
+            "control":args.control, "qt_runtime_files":args.qt_runtime_file,
+            "qt_plugins":args.qt_plugin, "resolution_witness":witness}
+        if args.select_generation:
+            from dev_stage_selected import produce
+            result = produce(args.root,args.core,args.daemon,args.extension,args.metadata,**kwargs)
+        else:
+            result = stage(args.root,args.core,args.daemon,args.extension,
+                json.loads(artifact(args.metadata)),**kwargs)
         print(json.dumps(result, sort_keys=True))
     except (StageError, ValueError) as error:
         print("omux dev stage: " + str(error), file=sys.stderr)

@@ -1,0 +1,215 @@
+{
+  "kind": "wide_product_reality_reattachment",
+  "authority": "User-directed wide estate examination and continuing integrated implementation; AGENTS/R-HOOK-CONVERGENCE-20261004/R-N13",
+  "review_source": "52d91acfd7a27f84d415bb9b3c86fd006292bab9",
+  "current_source": {
+    "commit": "ddb4c23053cf362f40913274efc9c92d321e8f1c",
+    "parent": "52d91acfd7a27f84d415bb9b3c86fd006292bab9",
+    "tree": "9296674a911af74e0ff16d1a64448d8bc1effd02",
+    "graph_sha256": "eeba024b8cd8faf190d54e44ebd6766b2c6df8e9990c47e4eed76a44084b9b1d",
+    "graph_files": 443,
+    "clean": true,
+    "signed": false,
+    "pushed": true,
+    "remote_head": "ddb4c23053cf362f40913274efc9c92d321e8f1c",
+    "nonforce": true,
+    "original_mixed_index_unchanged": true,
+    "nine_helpers_unchanged": true,
+    "change": "Adopt exact actual PF1 declared Zig formatter output for one setup-collector fixture initializer; independent review proves identical literals/nonwhitespace token ordering and unchanged behavior. Original PR1 collector/docs/format failures retain outcomes, actual focused correction verification remains required.; checks UNRUN at adoption."
+  },
+  "agents": [
+    {
+      "agent": "estate_account_lifecycle",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_account_lifecycle/docs/agent-notes/2026-10-11-lifecycle-reality-delta-52d91ac.md",
+      "sha256": "2469e8b8e61d901648dd8b48d79f76a724d5828093a1030c8cd7628f68848b2b",
+      "bytes": 11571
+    },
+    {
+      "agent": "estate_adapter_scope",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_adapter_scope/docs/agent-notes/2026-10-11-adapter-product-reality-52d91ac.SOURCE-ONLY.md",
+      "sha256": "e827b66131849ff01b711ab1348fe7f3ca978601c0beb9e7d3d1704a2e7e8ffd",
+      "bytes": 13309
+    },
+    {
+      "agent": "estate_browser_flow",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_browser_flow/docs/agent-notes/2026-10-11-browser-userflow-reality-52d91ac.md",
+      "sha256": "88eaa15da7979cd4bb06fab122549cb5e157a1e6a07070689ea41e86500be8a1",
+      "bytes": 16524
+    },
+    {
+      "agent": "estate_codex_native",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_codex_native/docs/agent-notes/2026-10-11-carrier-adopted-next-gates.SOURCE-ONLY.md",
+      "sha256": "807e9f81e53827f93883b579dacd87522a02b4df84c8693a27c6e05d563dba54",
+      "bytes": 6248
+    },
+    {
+      "agent": "estate_darwin_platform",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_darwin_platform/docs/agent-notes/2026-10-11T104444Z-darwin-52d91ac-platform-reality-review.md",
+      "sha256": "cd621b1b772a9f96b5a70caee0bf6dc71d3b9c0498b98f8fd798eab261a51ca5",
+      "bytes": 15589
+    },
+    {
+      "agent": "estate_docs_authority",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_docs_authority/docs/agent-notes/2026-10-11-current-authority-52d91acf-delta.txt",
+      "sha256": "84469e84b5dc42b8618218f9c1b7cb21c05fbb6ef8049274dc344c1d2fcc5ff4",
+      "bytes": 7204
+    },
+    {
+      "agent": "estate_execution_reapi",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_execution_reapi/docs/agent-notes/2026-10-11-52d91-execution-lab-reapi-reality.SOURCE-ONLY.md",
+      "sha256": "7299aa92f3a61a7a4230f64fe3a209d1a4cbd92d561b73dec8555b80d458431c",
+      "bytes": 13838
+    },
+    {
+      "agent": "estate_extension_distribution",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_extension_distribution/docs/agent-notes/2026-10-11-extension-delivery-owned52d91ac-delta.md",
+      "sha256": "c1439ff70bb2187887014b1de9dacb12bba29c608857f0d27ab67b78742fda79",
+      "bytes": 11021
+    },
+    {
+      "agent": "estate_home_manager",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_home_manager/docs/agent-notes/2026-10-11-home-manager-fleet-reality-audit-52d91ac.md",
+      "sha256": "98336fda7991dab8b6df81a2fad8bcdf1e9866ed6b55d206f0d250ff29c2bb6b",
+      "bytes": 18318
+    },
+    {
+      "agent": "estate_installation",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_installation/docs/agent-notes/2026-10-11T104228Z-installation-reality-52d91ac-delta-audit.md",
+      "sha256": "b2696d84b5cd3f2e6c5e83bec51acbc038732187039fdcc46b5a1dedb7262d14",
+      "bytes": 14198
+    },
+    {
+      "agent": "estate_linear_scope",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_linear_scope/docs/agent-notes/2026-10-11-linear-story-reattachment-104732Z.json",
+      "sha256": "4bf2358dc295b6705492d34e0175e872447f20823f83174823f1df3e06b4af14",
+      "bytes": 25858
+    },
+    {
+      "agent": "estate_linux_platform",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_linux_platform/docs/agent-notes/2026-10-11-1044UTC-linux-installed-platform-reattachment-52d91ac.md",
+      "sha256": "fd246b40ad60a734eaaba9cc5fce5d265da2669dd3dddaddc9e7df1142ba0ff4",
+      "bytes": 19460
+    },
+    {
+      "agent": "estate_native_messaging",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_native_messaging/docs/agent-notes/2026-10-11-native-messaging-compatibility-audit-52d91ac.md",
+      "sha256": "7a01b213bae426ab2c8aecb6967d90f52b3089b69c3c7cda2739a2c31025ea49",
+      "bytes": 13832
+    },
+    {
+      "agent": "estate_permissions_consent",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_permissions_consent/docs/agent-notes/2026-10-11-wide-permission-path-52d91ac.md",
+      "sha256": "86e62de9820f64a2e13d568553a8b849a38278a0259e9414a855f8adb9a63cad",
+      "bytes": 19894
+    },
+    {
+      "agent": "estate_pr_goal_sequence",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_pr_goal_sequence/docs/agent-notes/2026-10-11-52d-pr-goal-timeline-delta.md",
+      "sha256": "86668d7e5434885b9595dde714365cfa971a463515d21487c719340f47c05393",
+      "bytes": 10295
+    },
+    {
+      "agent": "estate_product_story",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_product_story/docs/agent-notes/2026-10-11-product-story-delta-52d91ac-source-audit.md",
+      "sha256": "9f4f32cb77d3c0e4ba7aef94f2d18555f03a8fd4b9f1c5660dc7b073ce29799f",
+      "bytes": 15906
+    },
+    {
+      "agent": "estate_reliability_roles",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_reliability_roles/docs/agent-notes/2026-10-11-reliability-roles-operations-owned52d91ac.md",
+      "sha256": "30f6efd752aa3fb93299653afed9a6d6c86875a359813472074f7869e3847c74",
+      "bytes": 19875
+    },
+    {
+      "agent": "estate_renewal_resources",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_renewal_resources/docs/agent-notes/2026-10-11-renewal-resource-52d91ac-reality-audit.md",
+      "sha256": "b897c919fecf84d9915457526d65b56c7422206fa5658decc031946571b1155e",
+      "bytes": 15523
+    },
+    {
+      "agent": "estate_signing_release",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_signing_release/docs/agent-notes/2026-10-11-release-delivery-reattachment-52d91ac.md",
+      "sha256": "f0896188fda08cba4051a5a3a9c2613dc1e00a424f01130a678786d8199409b9",
+      "bytes": 15857
+    },
+    {
+      "agent": "estate_status_ui",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_status_ui/docs/agent-notes/2026-10-11-status-ui-52d91ac-feature-readiness-audit.md",
+      "sha256": "ed3b1bb82f01b641827bf6b13519f3f0427facd40b8e0b4f044dad1115c06181",
+      "bytes": 16960
+    },
+    {
+      "agent": "estate_updates_removal",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_updates_removal/docs/agent-notes/2026-10-11-update-removal-full-story-52d91ac-source-audit.md",
+      "sha256": "9d9c435145b125a4e858131c460962e17ff7b29f01000bd62d623cfa24dd25b0",
+      "bytes": 18470
+    },
+    {
+      "agent": "estate_user_stories",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_user_stories/docs/agent-notes/2026-10-11-104424Z-28-story-product-delta-52d91acf.md",
+      "sha256": "54c28794b41fa0e58ce74ddeb142092e0770f6631ee5de3c2e1491c8aed655b8",
+      "bytes": 12686
+    },
+    {
+      "agent": "estate_vault_recovery",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_vault_recovery/docs/agent-notes/2026-10-11-custody-userflow-reality-52d91ac.md",
+      "sha256": "991d9b440de94acaed1dd4ba17e159b3569c23d85de0e84bbb034f9e734dee5a",
+      "bytes": 14210
+    },
+    {
+      "agent": "estate_web_presence",
+      "path": "/home/jess/.local/state/omux-proposals-20261010/estate_web_presence/docs/agent-notes/2026-10-11-website-next-finite-proof-52d91ac.md",
+      "sha256": "b9c34738a4524f6287db57a32e165c3a34813d31fc99d92088b5dcbaa7263925",
+      "bytes": 8332
+    }
+  ],
+  "latest_formatter": {
+    "epoch": "02ff564a-37ea-403f-84e6-ca8dcfbdfde2",
+    "source": "52d91acfd7a27f84d415bb9b3c86fd006292bab9",
+    "graph_sha256": "eeba024b8cd8faf190d54e44ebd6766b2c6df8e9990c47e4eed76a44084b9b1d",
+    "outer_exit": 0,
+    "workload_exit": 0,
+    "receipt_sha256": "c1f1640a201fdd028a58eecd1765c330763571adcedee38fc68027d499bec465",
+    "manifest_sha256": null,
+    "files": 0,
+    "bytes": 0,
+    "rows": [],
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "controller_failure": null,
+    "descendants_empty": true,
+    "cgroup_absent": true,
+    "cleanup_qualified": false,
+    "claim": "Actual declared formatter execution only. No tests or test-evidence manifest applicable; original failures retained. Formatted postimages require separate reviewed source adoption and tests."
+  },
+  "current_executor": {
+    "epoch": "8fef10e8-32ca-40cb-a07c-dd159b1bb9a4",
+    "root": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/8fef10e8-32ca-40cb-a07c-dd159b1bb9a4",
+    "supervisor_pid": 387225,
+    "start_ticks": "3659040",
+    "argv_exact": true,
+    "uid": 1000,
+    "image_matches": true,
+    "state": "live_verified_original_supervisor",
+    "tool_handle": 17493,
+    "observed_at": "2026-10-11T10:50:34.222637+00:00",
+    "source_commit": "ddb4c23053cf362f40913274efc9c92d321e8f1c",
+    "graph_sha256": "eeba024b8cd8faf190d54e44ebd6766b2c6df8e9990c47e4eed76a44084b9b1d",
+    "cohort": "PR2 finite declared target vector, not installed/continuity proof"
+  },
+  "original_goal_clock": {
+    "start": "2026-10-05T04:03:36Z",
+    "deadline": "2026-10-05T19:03:36Z",
+    "status": "active_overdue_incomplete",
+    "reset": false
+  },
+  "project105_alignment_result": "/home/jess/.local/state/omux-proposals-20261010/root/docs/agent-notes/2026-10-11-project105-summary-result.json",
+  "claim": "24 source/read-only audits are dated at original52d source. PR2 currently live; real import syntax failure in new carrier models observed, original terminal pending. No user-journey gate closes from audits/source review; final exact terminal overlays separately retained.",
+  "recorded_at": "2026-10-11T10:56:30.388421+00:00",
+  "report_count": 24,
+  "report_bytes": 354978
+}

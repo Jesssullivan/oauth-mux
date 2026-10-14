@@ -41,10 +41,16 @@ def fixture(tool_path=TOOL_PATH):
         arguments = [TOOL_ROOT + "/bin/tool", "--output", output]
         graph["actions"].append({"targetId": index, "mnemonic": mnemonic, "arguments": arguments, "environmentVariables": [{"key": "PATH", "value": ""}], "inputDepSetIds": [1], "outputIds": [artifact(output)], "executionPlatform": "@@+omux_nix_repository+omux_nix//:execution_platform"})
         receipts.append({"targetLabel": label, "mnemonic": mnemonic, "commandArgs": arguments, "environmentVariables": [{"name": "PATH", "value": ""}], "listedOutputs": [output], "platform": {"properties": [{"name": "nix_closure", "value": CLOSURE}]}, "inputs": [{"path": tool_path, "digest": {"hash": "b" * 64, "sizeBytes": "1", "hashFunctionName": "SHA-256"}}], "status": "", "exitCode": 0, "remotable": True, "cacheHit": False, "runner": "remote", "digest": {"hash": "a" * 64, "sizeBytes": "123", "hashFunctionName": "SHA-256"}, "actualOutputs": [{"path": output, "digest": {"hash": hashlib.sha256(b"artifact").hexdigest(), "sizeBytes": "8", "hashFunctionName": "SHA-256"}}]})
+    core_index = next(index for index, record in enumerate(receipts) if record["targetLabel"] == "//:omux")
+    daemon_index = next(index for index, record in enumerate(receipts) if record["targetLabel"] == "//:omuxd")
+    graph["actions"][daemon_index]["inputDepSetIds"] = [4]
+    receipts[daemon_index]["inputs"].append(copy.deepcopy(receipts[core_index]["actualOutputs"][0]))
     archive_index = next(index for index, record in enumerate(receipts) if record["targetLabel"] == "//clients/macos:archive")
     graph["depSetOfFiles"].append({"id": 2, "transitiveDepSetIds": [1], "directArtifactIds": [action["outputIds"][0] for index, action in enumerate(graph["actions"]) if index != archive_index]})
     graph["actions"][archive_index]["inputDepSetIds"] = [2]
     receipts[archive_index]["inputs"].extend(copy.deepcopy(record["actualOutputs"][0]) for index, record in enumerate(receipts) if index != archive_index)
+    # Preserve the existing root depset's index and fixture id=3 extensions.
+    graph["depSetOfFiles"].append({"id": 4, "transitiveDepSetIds": [1], "directArtifactIds": graph["actions"][core_index]["outputIds"]})
     return graph, receipts
 
 
@@ -54,6 +60,18 @@ class ProvenanceTest(unittest.TestCase):
 
     def plan(self, graph=None):
         return provenance.action_plan(graph if graph is not None else self.graph, MANIFEST, TOOL_ROOT + "\n")[0]
+
+    def test_named_daemon_copy_requires_actual_compiled_runtime_edge(self):
+        def disconnect(graph):
+            target = next(row["id"] for row in graph["targets"] if row["label"] == "//:omuxd")
+            next(row for row in graph["actions"] if row["targetId"] == target)["inputDepSetIds"] = [1]
+        self.reject_graph(disconnect)
+
+    def test_prior_independent_daemon_compile_is_not_current_copy_evidence(self):
+        def prior(graph):
+            target = next(row["id"] for row in graph["targets"] if row["label"] == "//:omuxd")
+            next(row for row in graph["actions"] if row["targetId"] == target)["mnemonic"] = "ZigBuildExe"
+        self.reject_graph(prior)
 
     def reject_graph(self, transform):
         graph = copy.deepcopy(self.graph)
@@ -286,6 +304,8 @@ class ProvenanceTest(unittest.TestCase):
         self.receipts[0]["actualOutputs"][0]["path"] = base + "/child"
         archive = next(item for item in self.receipts if item["targetLabel"] == "//clients/macos:archive")
         archive["inputs"] = [copy.deepcopy(self.receipts[0]["actualOutputs"][0]) if item["path"] == base else item for item in archive["inputs"]]
+        daemon = next(item for item in self.receipts if item["targetLabel"] == "//:omuxd")
+        daemon["inputs"] = [copy.deepcopy(self.receipts[0]["actualOutputs"][0]) if item["path"] == base else item for item in daemon["inputs"]]
         metadata, _ = provenance.reconcile(self.plan(), self.receipts, CLOSURE)
         self.assertFalse(metadata["tree_output_materialization_verified"])
         self.reject_receipt(lambda records: records[0]["actualOutputs"][0].update(path=base + "-prefix/child"))

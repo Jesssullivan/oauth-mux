@@ -13,8 +13,8 @@ export function sendNativeRequest(api, envelope, { timeoutMs = 10000, setTimer =
       if (timer !== undefined) clearTimer(timer);
       port?.onMessage.removeListener(onMessage);
       port?.onDisconnect.removeListener(onDisconnect);
-      // Disconnect closes native-host transport; source actions are idempotent
-      // if the daemon committed before a response/transport timeout was seen.
+      // Closing transport cannot cancel a delayed daemon operation or establish
+      // its outcome. Retained identity alone does not make Connect idempotent.
       if (port) {
         try { port.disconnect(); } catch { /* A disconnected port needs no cleanup. */ }
       }

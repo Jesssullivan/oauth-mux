@@ -55,9 +55,52 @@ separately. A fast refusal improves only the response-time measure.
 ## Installed lifecycle measurements
 
 The following acceptance amendments are adopted measurement requirements, not
-implemented instrumentation or achieved targets. REL-001 through REL-008 and
+achieved targets. Partial collectors and persisted terminal-outcome projections
+are implemented with the scopes described below; complete REL-013 through REL-019
+coverage remains acceptance work. `reliability.lifecycle` still marks successful
+install/activation, adopted renewal, ordinary native launch/resume and update
+phases unobserved. Complete supported-demand coverage, user end-to-end timing
+and scheduled durable baselines remain unmeasured. REL-001 through REL-008 and
 their zero-budget invariants remain unchanged. Do not invent numerical success
 targets for new phases before obtaining a version-bound baseline.
+
+The separate `reliability.lifecycle.owned_pair_renewal` projection partitions
+the existing SQLite-coupled last-operation witness for each retained daemon-owned
+SIWC pair. Its retained-attempt denominator is one last issued operation per
+pair, classified as committed successor, unresolved issued or completion unknown;
+pairs without a retained renewal are reported separately. A later issuance
+replaces the prior witness, so this is neither lifetime attempt history nor all
+renewal opportunities covered by REL-015. A committed successor records the verified atomic grant
+rotation, including a historical witness on a later retired pair; it does not
+assert present readiness, a successful user journey or completion before authority
+expiry. Poisoned, locked or unavailable custody suppresses its counters and marks
+authority unavailable. Refusals, typed causes, durations, deployment provenance
+and end-to-end timing are unmeasured in this projection. The aggregate successful
+renewal phase remains unobserved; REL-015/REL-019 coverage and achieved SLO remain
+unproved.
+
+The separate `reliability.lifecycle.owned_pair_renewal_attempts` aggregate counts
+authenticated owned-pair renewal admissions since its actual optional activation
+in this Store. A new issuance and its one terminal transition update the counters
+in the same authenticated SQLite snapshot transaction as the original operation.
+Unique operation IDs and paired generation/state fences prevent recounting;
+pruning older completed operation rows does not remove the aggregate. Fixed
+outcome/cause keys continue beyond any diagnostic sample size. Counter saturation
+is explicit and makes counts inexact; optional activation that cannot prepay the
+whole finite widening promise leaves collection absent and preserves renewal.
+Legacy witnesses are not backfilled, and missing collection is never zero demand.
+Retained last-operation capacity exclusions remain separate diagnostics; they are
+not a complete capacity-loss history or part of the admission denominator.
+
+A verified committed successor, safe refusal before transport accepted work,
+unresolved issuance and unknown accepted/indeterminate completion are separate
+populations. The counters record actual observed stage causes, including explicit
+retirement and stranded restart; a committed successor does not prove a successful
+user journey. Local work, user/provider wait, user end-to-end duration, deployment
+provenance, all renewal opportunities and completion before authority expiry remain
+unknown or unmeasured. This partial source instrumentation does not close the
+full renewal or durable-baseline gate, establish a numerical baseline or achieve
+an SLO/SLA. Original targets and zero-budget invariants remain unchanged.
 
 | ID | Phase and successful user outcome | Denominator and coverage |
 | --- | --- | --- |
@@ -85,6 +128,20 @@ Measurement retention must not reset credential generations, tombstones or
 request authority. The existing in-memory diagnostic export is not this durable
 baseline. Baseline receipts identify workload, sample counts, observation window,
 outcome definitions and unrun gates before any achieved-SLO or support claim.
+
+The source-only resident REL-016 collector now defines one observation for each
+selected admitted resident evaluation attempt in the existing immutable guard
+receipt: [collector](../../tools/execution_guard.py),
+[producer and strict reader](../../tools/guard_resident_continuity_profile.py).
+Success requires the actual native/resident proof and successful outer exit,
+source readback and empty owned cleanup; admitted failure and unresolved
+cleanup/controller states remain separate. No safe pre-effect refusal is
+inferred. Stored elapsed time covers only the original same-guardian monotonic
+entry-to-terminal interval before receipt writing, and survives receipt reread
+without subtracting a new process clock. User elapsed, local work, user/provider
+wait, pre-admission refusals, complete supported-demand/lifecycle coverage and
+scheduled baseline remain unmeasured. Source/models and actual outcomes remain
+unqualified; this closes no full REL gate and establishes no achieved SLO/SLA.
 
 Implementation trace: [TIN-2063](https://linear.app/tinyland/issue/TIN-2063) owns
 installation/readiness, [TIN-2720](https://linear.app/tinyland/issue/TIN-2720) owns
@@ -152,9 +209,22 @@ storage recovery writes. The legacy no-revision decoder refuses witness-bearing
 rows. Older readers may reject the new optional record fields; downgrade must
 not discard those fields or restore earlier credential/replay authority.
 
-The projection reports all retained records without a time window. Local-work
-and user/provider-wait durations, deployment provenance, full demand coverage,
-end-to-end latency and achieved SLO remain explicitly unknown or unproved.
+The projection reports all retained records without a time window. The current
+schema2 source measures daemon-owned local work from optional timing admission
+through the original committed outcome, plus authorized control-handler entry
+through that commit. Handler timing begins after ingress parsing; it excludes
+socket framing and complete user latency. Historical schema1 intervals remain
+unknown. External user/provider wait, deployment provenance, full demand
+coverage, end-to-end latency and achieved SLO remain unknown or unproved.
+
+Setup-verification schema2 adds observed admission-to-terminal-before-commit
+duration to safe refusals and collection timeouts. Successful verification and
+safe refusal retain separate counters and latency populations; a timely refusal
+does not establish installation or enrollment success. Original immutable
+results preserve these measurements across replay and restart. Unknown clocks
+remain unknown. CLI and Qt readers accept the versioned result without treating
+unknown phases as readiness. These source changes require their own current
+runtime and installed receipts; the historical passes below do not qualify them.
 Epoch `8229cb7a-d9d1-4d53-b2e6-793cddfd7cb9` passed 27 helper/ledger predicates
 and all 247 actor/imported predicates, including the five real actor/SQLite
 timing cases. The overall batch failed separately on storage declaration,
@@ -219,7 +289,7 @@ New explicit setup-verification source is independently reviewed. Scoped Linux
 passes include engine 228 cases and Qt transport 13/setup UI in `33452a55`, and
 CLI 16, Qt transport/setup UI, verification 28 and collector 33 in `08581f31`.
 The latter overall batch failed; passing targets do not close failed gates.
-Latest experimental Linux epoch `ef255a3e-8d6d-4bb7-a044-d9a42e20aded`
+The October 5 experimental Linux epoch `ef255a3e-8d6d-4bb7-a044-d9a42e20aded`
 passed all twelve targets with controller/workload exit zero and empty descendants:
 live self-image observation, collector hardlink recheck, engine timeout/refusal
 classification, stalled-service C bridge, CLI 16, full Qt installed custody with
@@ -248,8 +318,12 @@ an unmeasured diagnostic. Existing external mutation authority durably records
 started state and prepays terminal space before worker execution. Exact replay
 returns the cached result; changed intent conflicts. Busy or missing installation
 selection is a classified safe refusal. Collection timeout records immutable
-`safe_refusal` / `collection_timed_out`, null duration and seven unknown phase
-facts; its dedicated refusal counter never increments verification completion.
+`safe_refusal` / `collection_timed_out` and seven unknown phase facts. Historical
+schema1 refusals retain null duration; current schema2 source may retain an
+observed process-local admission-to-terminal-before-commit duration, with missing
+duration remaining null. Refusal counters and latency populations remain separate
+from verification completion; optional timing establishes neither successful
+installation/enrollment nor complete coverage or an achieved SLO.
 Shutdown/restart uncertainty never
 authorizes reissue; query `operation.status` using the same ID.
 
@@ -261,9 +335,13 @@ or `unknown`. Timing is process-local admission-to-terminal before commit only.
 `reliability.lifecycle.setup_verification` derives its bounded summary from
 immutable results in the existing 4096-entry mutation ledger, with no new ledger,
 persisted field or migration. Started/indeterminate uncertainty, old-window,
-future-clock and missing-timing records remain visible. Empty refresh/passive
-polls add no attempts. No end-to-end latency, coverage baseline, achieved SLO or
-SLA is established by this source.
+future-clock and missing-timing records remain visible. The source projection's
+`retained_identified_attempts` counts only retained identified verification rows;
+`in_window_terminal_attempts` counts only in-window verification completions plus
+safe refusals. Unresolved rows have no terminal timestamp and remain outside that
+window cohort. Neither count is an installation-success or complete user-demand
+denominator. Empty refresh/passive polls add no attempts. No end-to-end latency,
+coverage baseline, achieved SLO or SLA is established by this source.
 Joint-readiness projection passed `//:reliability_readiness_test` in `c5d684a2`:
 248 cases (six new and 242 imported), plus setup-verification, docs and source
 capture targets. The fourteen-target batch exited 3 with empty descendants;

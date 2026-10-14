@@ -124,6 +124,12 @@ def prepare_worker(coordinator, command, input_paths, *, host_home, gid):
         "inputSha256": dict(coordinator.digests), "displayWitness": coordinator.witness,
         "vaultWrapperAuthority": coordinator.vault_wrapper_authority, "sourceRoot": coordinator.source_root,
         "sourceFilesSha256": coordinator.source_files_sha256}
+    if coordinator.reserved_entry is not None:
+        import guard_yoga_toolbar_reserved as reservation
+        require('reserved_runtime' not in vars(coordinator), 'plan_invalid')
+        coordinator.reserved_runtime = reservation.runtime(coordinator.reserved_entry, coordinator.deadline)
+        plan['scope'] = reservation.PLAN_SCOPE
+        plan['reservation'] = reservation.policy(coordinator.reserved_entry, coordinator.deadline, coordinator.reserved_runtime)
     payload = canonical(plan)
     coordinator.write("worker-plan.json", payload)
     coordinator.launch_plan = plan
@@ -148,7 +154,8 @@ def read_worker_ready(coordinator, *, expected_pid):
             raise LaunchError("worker_unavailable") from None
         value = decode(payload)
         require(type(value) is dict and set(value) == READY_FIELDS and type(value["schemaVersion"]) is int
-                and value["schemaVersion"] == 1 and value["scope"] == "yoga-guard-worker-ready-v1"
+                and value["schemaVersion"] == 1 and value["scope"] ==
+                    ('yoga-guard-reserved-worker-ready-v1' if coordinator.reserved_entry is not None else 'yoga-guard-worker-ready-v1')
                 and value["proofId"] == coordinator.proof_id and value["planSha256"] == coordinator.launch_plan_sha256
                 and value["commandSha256"] == coordinator.launch_plan["commandSha256"]
                 and type(value["pid"]) is int and value["pid"] == expected_pid
@@ -335,10 +342,16 @@ def namespace_snapshot(plan, *, now=time.monotonic_ns):
     relative = text.removeprefix("0::").strip()
     require(Path(relative).name == plan["unit"] and ".." not in Path(relative).parts, "namespace_invalid")
     path = Path("/sys/fs/cgroup") / relative.lstrip("/")
-    expected = {"memory.max": "4294967296", "memory.swap.max": "0", "pids.max": "512", "memory.oom.group": "1"}
-    require(all((path / name).read_text().strip() == value for name, value in expected.items()), "namespace_invalid")
-    quota, period = (path / "cpu.max").read_text().split()
-    require(quota.isdecimal() and period.isdecimal() and 0 < int(quota) <= 2 * int(period), "namespace_invalid")
+    if plan['scope'] == 'yoga-guard-reserved-worker-plan-v1':
+        import guard_yoga_toolbar_reserved as reservation
+        reservation.plan(plan)
+        reservation.verify_cgroup({name: (path / name).read_text().strip() for name in
+            ('memory.max', 'memory.swap.max', 'pids.max', 'memory.oom.group', 'cpu.max')})
+    else:
+        expected = {"memory.max": "4294967296", "memory.swap.max": "0", "pids.max": "512", "memory.oom.group": "1"}
+        require(all((path / name).read_text().strip() == value for name, value in expected.items()), "namespace_invalid")
+        quota, period = (path / "cpu.max").read_text().split()
+        require(quota.isdecimal() and period.isdecimal() and 0 < int(quota) <= 2 * int(period), "namespace_invalid")
     info = path.stat()
     return {"pid": os.getpid(), "cgroupPath": str(path), "device": info.st_dev, "inode": info.st_ino}
 
@@ -427,13 +440,18 @@ def run_worker(run, command):
         payload = bounded_read(directory, "worker-plan.json", os.getuid())
         require(hashlib.sha256(payload).hexdigest() == expected_sha, "plan_invalid")
         plan = decode(payload)
-        require(type(plan) is dict and set(plan) == PLAN_FIELDS and type(plan["schemaVersion"]) is int
-                and plan["schemaVersion"] == 1 and plan["scope"] == "yoga-guard-worker-plan-v1"
+        reserved = type(plan) is dict and plan.get('scope') == 'yoga-guard-reserved-worker-plan-v1'
+        require(type(plan) is dict and set(plan) == (PLAN_FIELDS | {'reservation'} if reserved else PLAN_FIELDS)
+                and type(plan["schemaVersion"]) is int and plan["schemaVersion"] == 1
+                and plan["scope"] == ('yoga-guard-reserved-worker-plan-v1' if reserved else 'yoga-guard-worker-plan-v1')
                 and plan["root"] == root and type(plan["uid"]) is int and plan["uid"] == os.getuid()
                 and type(plan["gid"]) is int and plan["gid"] == os.getgid()
                 and type(plan["proofId"]) is str and support.UUID.fullmatch(plan["proofId"])
                 and plan["unit"] == "omux-execution-" + plan["proofId"] + ".service"
                 and plan["commandSha256"] == command_digest(command), "plan_invalid")
+        if reserved:
+            import guard_yoga_toolbar_reserved as reservation
+            reservation.plan(plan)
         support.wrapper_metadata(plan['vaultWrapperAuthority'], plan['sourceRoot'], plan['sourceFilesSha256'])
         wrapper_value = dict(plan, controllerTools=plan['vaultWrapperAuthority']['controllerTools'],
             controllerInventory=plan['vaultWrapperAuthority']['controllerInventory'],
@@ -444,7 +462,7 @@ def run_worker(run, command):
         require(bound == plan["displayWitness"]["snapshot"], "ready_invalid")
         checked = yoga_proof_inputs.check_inputs(plan["inputPaths"], plan["inputSha256"], plan["deadlineNs"])
         captured_wrappers.check()
-        ready = {"schemaVersion": 1, "scope": "yoga-guard-worker-ready-v1", "proofId": plan["proofId"],
+        ready = {"schemaVersion": 1, "scope": 'yoga-guard-reserved-worker-ready-v1' if reserved else 'yoga-guard-worker-ready-v1', "proofId": plan["proofId"],
             "planSha256": expected_sha, "commandSha256": plan["commandSha256"], "pid": os.getpid(),
             "startTicks": display.pid_start(os.getpid(), os.getuid()), "coordinator": own, "displaySnapshot": bound,
             "inputSha256": checked, "namespaceChecked": True,

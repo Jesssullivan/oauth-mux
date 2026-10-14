@@ -1,6 +1,9 @@
 //! Credential-aware native owner discovery and explicit legacy WebSocket inspection.
 //! No provider traffic, token transfer, native login or transcript mutation.
 const std = @import("std");
+const source_acquisition = @import("../native_source_acquisition.zig");
+const source_consent = @import("../native_source_consent.zig");
+const setup = @import("setup.zig");
 const builtin = @import("builtin");
 const curl = @import("c");
 const posix = std.c;
@@ -20,6 +23,77 @@ pub const maximum_loaded_result_bytes = 64 * 1024;
 pub const maximum_owner_packet = 64 * 1024;
 pub const owner_protocol_version: u32 = 2;
 pub const maximum_owner_threads = 1024;
+
+pub const SourceContextIdentity = struct { id: [32]u8, generation: u64 };
+pub const SourceContextSelector = struct {
+    owner_id: [32]u8,
+    native_nonce: [32]u8,
+    endpoint_generation: u64,
+    context: ?SourceContextIdentity = null,
+
+    pub fn validate(self: SourceContextSelector) !void {
+        if (std.mem.allEqual(u8, &self.owner_id, 0) or std.mem.allEqual(u8, &self.native_nonce, 0) or self.endpoint_generation == 0) return error.InvalidNativeSourceContext;
+        if (self.context) |context| if (std.mem.allEqual(u8, &context.id, 0) or context.generation == 0) return error.InvalidNativeSourceContext;
+    }
+};
+pub const SourceContextDeclaration = struct {
+    owner_id: [32]u8,
+    native_nonce: [32]u8,
+    endpoint_generation: u64,
+    witness: peer.Witness,
+    status: enum { available, unavailable },
+    context: ?SourceContextIdentity,
+    store_present: ?bool,
+    credential_acquisition_authorized: bool = false,
+};
+
+/// Opaque installed evidence and a previously actor-committed digest are
+/// mandatory. Neither a discovery declaration nor an HMAC proof selects an
+/// executable image. The caller retains both carrier and installation FD.
+pub const SourceImage = struct {
+    selection: *const setup.VerifiedRuntimeSelection,
+    options: setup.Options,
+    expected: setup.RuntimeSelectionExpectation,
+    pub fn verify(self: SourceImage, connection: *OwnerConnection) !void {
+        try source_acquisition.deadline(connection.io, connection.until);
+        // A mapped backend can be a decoy. Only the separately qualified Nix
+        // direct-main profile exposes the actual primary executable identity.
+        // Portable explicit-loader packages remain metadata-only here.
+        if (self.selection.launchProfile() != .linux_nix_direct_main_v1) return error.NativeImageUnavailable;
+        if (self.selection.acquisitionContract() != .omux_native_source_acquire_v1) return error.NativeImageUnavailable;
+        var options = self.options;
+        options.deadline = connection.until;
+        var roles = try self.selection.recheckAndOpenRoles(connection.io, connection.allocator, options, self.expected);
+        defer roles.deinit();
+        try connection.context.verifyExecutableImage(roles.backend);
+        try self.selection.recheck(connection.io, connection.allocator, options, self.expected);
+        _ = try connection.verifiedWitness();
+        try source_acquisition.deadline(connection.io, connection.until);
+    }
+};
+
+fn decodeSourceContext(result: std.json.Value, selector: SourceContextSelector, witness: peer.Witness) !SourceContextDeclaration {
+    try selector.validate();
+    try requireOwnerKeys(result, &.{ "protocolVersion", "ownerId", "processNonce", "endpointGeneration", "status", "sourceContextId", "sourceContextGeneration", "storePresent", "credentialAcquisitionAuthorized" });
+    const owner_id = try ownerHex(result, "ownerId");
+    const nonce = try ownerHex(result, "processNonce");
+    const generation = try parseOwnerGeneration(result.object.get("endpointGeneration").?);
+    if (!std.mem.eql(u8, &owner_id, &selector.owner_id) or !std.mem.eql(u8, &nonce, &selector.native_nonce) or generation != selector.endpoint_generation) return error.NativeOwnerIdentityMismatch;
+    const acquisition = result.object.get("credentialAcquisitionAuthorized").?;
+    if (acquisition != .bool or acquisition.bool) return error.InvalidNativeSourceContext;
+    const status = try requiredOwnerString(result, "status");
+    const id = result.object.get("sourceContextId").?;
+    const context_generation = result.object.get("sourceContextGeneration").?;
+    const store = result.object.get("storePresent").?;
+    if (std.mem.eql(u8, status, "unavailable")) {
+        if (id != .null or context_generation != .null or store != .null) return error.InvalidNativeSourceContext;
+        return .{ .owner_id = owner_id, .native_nonce = nonce, .endpoint_generation = generation, .witness = witness, .status = .unavailable, .context = null, .store_present = null };
+    }
+    if (!std.mem.eql(u8, status, "available") or store != .bool) return error.InvalidNativeSourceContext;
+    const context: SourceContextIdentity = .{ .id = try ownerHex(result, "sourceContextId"), .generation = try parseOwnerGeneration(context_generation) };
+    if (selector.context) |expected| if (!std.mem.eql(u8, &context.id, &expected.id) or context.generation != expected.generation) return error.NativeSourceContextMismatch;
+    return .{ .owner_id = owner_id, .native_nonce = nonce, .endpoint_generation = generation, .witness = witness, .status = .available, .context = context, .store_present = store.bool };
+}
 
 /// Captured read-only process metadata, not an owner admission or live hook
 /// proof. Capabilities describe compatibility; the actor grants custody.
@@ -473,6 +547,40 @@ pub const OwnerConnection = struct {
         return .{ .owner_id = owner_id, .native_nonce = nonce, .endpoint_generation = generation, .witness = witness, .threads = rows };
     }
 
+    /// ff7e read-only declaration: hint context is compared locally, never sent
+    /// as a field unsupported by the version-bound native request schema.
+    pub fn sourceContext(self: *OwnerConnection, operation_id: native_owner.OperationId, selector: SourceContextSelector) !SourceContextDeclaration {
+        errdefer self.failed = true;
+        try selector.validate();
+        try native_owner.validateOperation(operation_id);
+        try self.io.checkCancel();
+        if (self.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.NativeTimeout;
+        const original = try self.verifiedWitness();
+        const owner = std.fmt.bytesToHex(selector.owner_id, .lower);
+        const nonce = std.fmt.bytesToHex(selector.native_nonce, .lower);
+        var generation_buffer: [20]u8 = undefined;
+        const generation = try std.fmt.bufPrint(&generation_buffer, "{d}", .{selector.endpoint_generation});
+        const request = try std.json.Stringify.valueAlloc(self.allocator, .{ .jsonrpc = "2.0", .id = operation_id[0..], .method = "owner/source/context", .params = .{
+            .protocolVersion = owner_protocol_version,
+            .ownerId = owner[0..],
+            .processNonce = nonce[0..],
+            .endpointGeneration = generation,
+        } }, .{});
+        defer wipeOwnerPacket(self.allocator, request);
+        const response = try self.exchange(request);
+        defer wipeOwnerPacket(self.allocator, response);
+        var parsed = try parseOwnerEnvelope(self.allocator, response, operation_id);
+        defer {
+            @import("../control.zig").wipeJson(parsed.value);
+            parsed.deinit();
+        }
+        const result = try decodeSourceContext(parsed.value.object.get("result").?, selector, original);
+        if (!peer.sameOriginal(original, try self.verifiedWitness())) return error.NativeOwnerPeerMismatch;
+        try self.io.checkCancel();
+        if (self.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.NativeTimeout;
+        return result;
+    }
+
     pub fn register(self: *OwnerConnection, request: OwnerRequest, expected: peer.Witness) !OwnerAck {
         try request.validate();
         const broker_socket = request.broker_socket orelse return error.NativeOwnerBrokerConfigRequired;
@@ -547,6 +655,118 @@ pub const OwnerConnection = struct {
         if (!ack.reference.same(request.reference) or !std.mem.eql(u8, &ack.native_nonce, &request.native_nonce)) return error.NativeOwnerReferenceMismatch;
         if (!peer.sameOriginal(ack.witness, expected)) return error.NativeOwnerPeerMismatch;
         return ack;
+    }
+
+    pub fn sourceOrigin(self: *OwnerConnection, operation: native_owner.OperationId, selector: SourceContextSelector, key: [32]u8, image: SourceImage) !source_consent.Handle {
+        errdefer self.failed = true;
+        try image.verify(self);
+        const expected = selector.context orelse return error.NativeSourceContextRequired;
+        const before = try self.sourceContext(operation, selector);
+        if (before.status != .available) return error.NativeSourceUnavailable;
+        var arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const owner_id = std.fmt.bytesToHex(selector.owner_id, .lower);
+        const nonce = std.fmt.bytesToHex(selector.native_nonce, .lower);
+        const context_id = std.fmt.bytesToHex(expected.id, .lower);
+        const payload = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = operation[0..], .method = "owner/source/origin", .params = .{ .protocolVersion = owner_protocol_version, .ownerId = owner_id[0..], .processNonce = nonce[0..], .endpointGeneration = try std.fmt.allocPrint(a, "{d}", .{selector.endpoint_generation}), .sourceContextId = context_id[0..], .sourceContextGeneration = try std.fmt.allocPrint(a, "{d}", .{expected.generation}) } }, .{});
+        const response = try self.exchange(payload);
+        defer wipeOwnerPacket(self.allocator, response);
+        var parsed = try parseOwnerEnvelope(self.allocator, response, operation);
+        defer {
+            @import("../control.zig").wipeJson(parsed.value);
+            parsed.deinit();
+        }
+        const result = parsed.value.object.get("result") orelse return error.InvalidNativeSourcePayload;
+        const owner: source_consent.Owner = .{ .id = selector.owner_id, .nonce = selector.native_nonce, .endpoint_generation = selector.endpoint_generation, .witness = before.witness };
+        const origin = try source_acquisition.verifyOrigin(a, result, owner, .{ .id = expected.id, .generation = expected.generation }, key);
+        const after = try self.sourceContext(operation, selector);
+        if (after.status != .available or !peer.sameOriginal(before.witness, after.witness)) return error.NativeSourceUnavailable;
+        try source_acquisition.deadline(self.io, self.until);
+        try image.verify(self);
+        return origin;
+    }
+
+    pub const AccessCopy = struct {
+        candidate: @import("../discovery.zig").OwnedCandidate,
+        binding: source_consent.MaterializedBinding,
+        origin: source_consent.Handle,
+        pub fn deinit(self: *AccessCopy) void {
+            self.candidate.deinit();
+            self.* = undefined;
+        }
+    };
+    pub fn acquireSource(self: *OwnerConnection, request: source_acquisition.Request, key: [32]u8, now: i64, image: SourceImage) !AccessCopy {
+        errdefer self.failed = true;
+        try image.verify(self);
+        try request.validate();
+        if (now >= request.consent_expires_at) return error.NativeSourceUnauthorized;
+        const selected: SourceContextSelector = .{ .owner_id = request.admission.owner.id, .native_nonce = request.admission.owner.nonce, .endpoint_generation = request.admission.owner.endpoint_generation, .context = .{ .id = request.admission.context.id, .generation = request.admission.context.generation } };
+        if (!peer.sameOriginal(try self.verifiedWitness(), request.admission.owner.witness)) return error.NativeOwnerPeerMismatch;
+        const initial = try self.sourceContext(request.operation, selected);
+        if (initial.status != .available or initial.store_present != true) return error.NativeSourceUnavailable;
+        const actual_origin = try self.sourceOrigin(request.operation, selected, key, image);
+        if (!std.mem.eql(u8, &actual_origin, &request.origin)) return error.NativeSourceOriginChanged;
+        var arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const payload = try source_acquisition.encodeRequest(a, request, key);
+        const packet = try self.exchangeDescriptor(payload);
+        defer wipeOwnerPacket(self.allocator, packet.bytes);
+        // readDescriptor consumes the transferred fd even on expiry/cancel/error.
+        const bytes = try source_acquisition.readDescriptor(self.io, self.allocator, packet.descriptor, self.until);
+        defer {
+            std.crypto.secureZero(u8, bytes);
+            self.allocator.free(bytes);
+        }
+        var parsed = try parseOwnerEnvelope(self.allocator, packet.bytes, request.operation);
+        defer {
+            @import("../control.zig").wipeJson(parsed.value);
+            parsed.deinit();
+        }
+        try source_acquisition.verifyReply(a, parsed.value.object.get("result") orelse return error.InvalidNativeSourcePayload, request, key, bytes);
+        const source_id = std.fmt.bytesToHex(request.admission.source_id, .lower);
+        var candidate = try source_acquisition.parsePayload(self.allocator, &source_id, bytes, now, request.custody_seconds);
+        errdefer candidate.deinit();
+        const after = try self.sourceContext(request.operation, selected);
+        if (after.status != .available or after.store_present != true or !peer.sameOriginal(after.witness, request.admission.owner.witness)) return error.NativeSourceUnavailable;
+        try source_acquisition.deadline(self.io, self.until);
+        try image.verify(self);
+        return .{ .candidate = candidate, .binding = .{ .owner = request.admission.owner, .context = request.admission.context }, .origin = request.origin };
+    }
+
+    const DescriptorPacket = struct { bytes: []u8, descriptor: posix.fd_t };
+    fn exchangeDescriptor(self: *OwnerConnection, payload: []const u8) !DescriptorPacket {
+        if (self.failed) return error.NativeOwnerConnectionFailed;
+        if (payload.len == 0 or payload.len > maximum_owner_packet) return error.NativeOwnerPacketTooLarge;
+        errdefer self.failed = true;
+        try self.context.alive();
+        while (true) {
+            try waitOwnerReady(self.io, self.fd, posix.POLL.OUT, self.until);
+            const sent = posix.send(self.fd, payload.ptr, payload.len, posix.MSG.NOSIGNAL);
+            if (sent < 0) {
+                switch (posix.errno(sent)) {
+                    .INTR, .AGAIN => continue,
+                    else => return error.NativeDisconnected,
+                }
+            }
+            if (sent != payload.len) return error.NativeOwnerInvalidPacket;
+            break;
+        }
+        var buffer: [maximum_owner_packet]u8 = undefined;
+        defer std.crypto.secureZero(u8, &buffer);
+        while (true) {
+            try waitOwnerReady(self.io, self.fd, posix.POLL.IN, self.until);
+            const received = self.context.receivePacketDescriptor(&buffer) catch |err| switch (err) {
+                error.WouldBlock, error.Interrupted => continue,
+                else => return err,
+            };
+            errdefer _ = posix.close(received.descriptor);
+            if (received.bytes == 0) return error.NativeDisconnected;
+            try self.context.alive();
+            try source_acquisition.deadline(self.io, self.until);
+            return .{ .bytes = try self.allocator.dupe(u8, buffer[0..received.bytes]), .descriptor = received.descriptor };
+        }
     }
 
     fn exchange(self: *OwnerConnection, payload: []const u8) ![]u8 {
@@ -941,6 +1161,26 @@ pub fn loadedOwnerThreadsWithDeadline(io: std.Io, allocator: std.mem.Allocator, 
     var connection = try OwnerConnection.open(io, allocator, endpoint, null, deadline);
     defer connection.deinit();
     return readLoadedOwner(&connection);
+}
+
+pub fn inspectSourceContextWithDeadline(io: std.Io, allocator: std.mem.Allocator, endpoint: []const u8, expected: peer.Witness, selector: SourceContextSelector, deadline: ?std.Io.Clock.Timestamp) !SourceContextDeclaration {
+    try selector.validate();
+    var connection = try OwnerConnection.open(io, allocator, endpoint, expected, deadline);
+    defer connection.deinit();
+    return connection.sourceContext(try ownerReadOperation(io), selector);
+}
+
+pub fn inspectAutomaticSourceContextWithDeadline(io: std.Io, allocator: std.mem.Allocator, candidate: *const inventory.Candidate, expected: peer.Witness, selector: SourceContextSelector, deadline: ?std.Io.Clock.Timestamp) !SourceContextDeclaration {
+    try selector.validate();
+    try expected.validate();
+    if (!candidate.matchesOwner(selector.owner_id)) return error.NativeOwnerIdentityMismatch;
+    var connection = try OwnerConnection.openAutomatic(io, allocator, candidate, deadline);
+    defer connection.deinit();
+    if (!peer.sameOriginal(expected, try connection.verifiedWitness())) return error.NativeOwnerPeerMismatch;
+    const result = try connection.sourceContext(try ownerReadOperation(io), selector);
+    try verifyAutomaticPublication(&connection, candidate);
+    if (!peer.sameOriginal(expected, result.witness)) return error.NativeOwnerPeerMismatch;
+    return result;
 }
 
 /// Qualified read-only inventory from one captured peer and one bounded

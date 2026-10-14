@@ -1,0 +1,848 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -2122,6 +2122,7 @@
+  "futures",
+  "hmac 0.12.1",
+  "http 1.4.0",
++ "libc",
+  "opentelemetry",
+  "opentelemetry_sdk",
+  "pretty_assertions",
+@@ -2148,6 +2149,7 @@
+  "tracing-subscriber",
+  "url",
+  "uuid",
++ "zeroize",
+  "wiremock",
+ ]
+ 
+diff --git a/codex-rs/app-server/Cargo.toml b/codex-rs/app-server/Cargo.toml
+--- a/codex-rs/app-server/Cargo.toml
++++ b/codex-rs/app-server/Cargo.toml
+@@ -100,6 +100,9 @@
+ serde = { workspace = true, features = ["derive"] }
+ serde_json = { workspace = true }
+ sha2 = { workspace = true }
++hmac = { workspace = true }
++libc = { workspace = true }
++zeroize = { workspace = true }
+ tempfile = { workspace = true }
+ thiserror = { workspace = true }
+ time = { workspace = true }
+@@ -136,7 +139,6 @@
+ codex-utils-cargo-bin = { workspace = true }
+ core_test_support = { workspace = true }
+ flate2 = { workspace = true }
+-hmac = { workspace = true }
+ http = { workspace = true }
+ opentelemetry = { workspace = true }
+ opentelemetry_sdk = { workspace = true }
+diff --git a/codex-rs/app-server/src/lib.rs b/codex-rs/app-server/src/lib.rs
+--- a/codex-rs/app-server/src/lib.rs
++++ b/codex-rs/app-server/src/lib.rs
+@@ -3,6 +3,7 @@
+ 
+ mod owner_control;
+ mod owner_source_context;
++mod owner_source_acquisition;
+ 
+ use codex_arg0::Arg0DispatchPaths;
+ use codex_code_mode::CodeModeSessionProvider;
+@@ -963,6 +964,8 @@
+         let initialize_notification_sender = outgoing_message_sender.clone();
+         let outbound_control_tx = outbound_control_tx;
+         let owner_home = config.codex_home.to_path_buf();
++        // Existing reversible integration configuration; never infer an auth path.
++        let owner_source_capability = config.omux_broker_config().ok().flatten().map(|value| value.capability_path);
+         let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
+             outgoing: outgoing_message_sender,
+             analytics_events_client,
+@@ -999,7 +1002,7 @@
+         let mut remote_control_status = remote_control_status_rx.borrow().clone();
+         let transport_shutdown_token = transport_shutdown_token.clone();
+         async move {
+-            let _owner_service = match owner_control::start(Arc::clone(&processor), owner_home)
++            let _owner_service = match owner_control::start(Arc::clone(&processor), owner_home, owner_source_capability)
+                 .await
+             {
+                 Ok(service) => Some(service),
+diff --git a/codex-rs/app-server/src/owner_control.rs b/codex-rs/app-server/src/owner_control.rs
+--- a/codex-rs/app-server/src/owner_control.rs
++++ b/codex-rs/app-server/src/owner_control.rs
+@@ -2,6 +2,7 @@
+ 
+ use crate::message_processor::MessageProcessor;
+ use crate::owner_source_context::{SourceContext, SourceSnapshot};
++use crate::owner_source_acquisition::{Authorization, AcquireRequest, OriginRequest, Acquired};
+ use codex_app_server_protocol::{
+     OmuxBrokerCapabilities, OmuxOwnerAnnounceParams, OmuxOwnerAnnounceResponse,
+     OmuxOwnerCapabilitiesParams, OmuxOwnerCapabilitiesResponse, OmuxOwnerIdentifyParams,
+@@ -114,6 +115,7 @@
+ // Preparation/recheck refusal is explicit unavailable metadata, never readiness.
+ struct SourceDeclaration {
+     original: Option<Arc<SourceContext>>,
++    authorization: Option<Arc<Authorization>>,
+     current: std::sync::Mutex<Option<SourceSnapshot>>,
+     worker: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+     stopping: std::sync::atomic::AtomicBool,
+@@ -127,7 +129,7 @@
+     prepare: impl FnOnce() -> io::Result<SourceContext>,
+     install: impl FnOnce() -> io::Result<()>,
+ ) -> io::Result<SourceDeclaration> {
+-    let declaration = SourceDeclaration { original: prepare().ok().map(Arc::new),
++    let declaration = SourceDeclaration { original: prepare().ok().map(Arc::new), authorization: None,
+         current: std::sync::Mutex::new(None), worker: std::sync::Mutex::new(None),
+         stopping: std::sync::atomic::AtomicBool::new(false), active: std::sync::atomic::AtomicBool::new(false) };
+     install()?;
+@@ -189,6 +191,81 @@
+         *current = Some(snapshot);
+         Ok(result)
+     }
++    async fn source_work<T: Send + 'static>(&self, owner: &ProcessOwner, deadline: std::time::Instant,
++        operation: impl FnOnce(&SourceContext, &ProcessOwner, &SourceSnapshot, std::time::Instant) -> io::Result<T> + Send + 'static) -> io::Result<T> {
++        use std::sync::atomic::Ordering;
++        if self.stopping.load(Ordering::Acquire) || std::time::Instant::now() >= deadline { return Err(invalid()); }
++        let original = Arc::clone(self.original.as_ref().ok_or_else(invalid)?);
++        self.active.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).map_err(|_|invalid())?;
++        let _active = CaptureGuard(&self.active);
++        let (send,receive) = tokio::sync::oneshot::channel();
++        {
++            let mut worker = self.worker.try_lock().map_err(|_|invalid())?;
++            if worker.as_ref().is_some_and(|handle| !handle.is_finished()) { return Err(invalid()); }
++            *worker = None;
++            let previous = self.current.try_lock().map_err(|_|invalid())?.as_ref().map(SourceSnapshot::key);
++            let owner = owner.clone();
++            *worker = Some(tokio::task::spawn_blocking(move || {
++                let result = original.snapshot(&owner,previous).and_then(|snapshot| {
++                    let value = operation(&original,&owner,&snapshot,deadline)?;
++                    Ok((snapshot,value))
++                });
++                // On late delivery every captured descriptor/payload is dropped.
++                let _ = send.send(result);
++            }));
++        }
++        let (snapshot,value) = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline),receive)
++            .await.map_err(|_|invalid())?.map_err(|_|invalid())??;
++        let mut current = self.current.try_lock().map_err(|_|invalid())?;
++        if self.stopping.load(Ordering::Acquire) || std::time::Instant::now() >= deadline { return Err(invalid()); }
++        *current = Some(snapshot);
++        Ok(value)
++    }
++    async fn origin(&self, owner: &ProcessOwner, request: OriginRequest, deadline: std::time::Instant) -> io::Result<Value> {
++        request.validate_owner(owner)?;
++        let Some(authorization) = self.authorization.as_ref() else {
++            return Ok(json!({"protocolVersion":2,"ownerId":owner.owner_id,"processNonce":owner.process_nonce,
++                "endpointGeneration":owner.endpoint_generation,"sourceContextId":null,"sourceContextGeneration":null,
++                "sourceOriginId":null,"status":"unavailable","credentialAcquisitionAuthorized":false,"originProof":null}));
++        };
++        let authorization = Arc::clone(authorization);
++        self.source_work(owner,deadline,move |_,owner,snapshot,deadline| {
++            request.validate(owner,snapshot)?;
++            authorization.origin(owner,snapshot,deadline)
++        }).await
++    }
++    async fn acquire(&self, owner: &ProcessOwner, request: AcquireRequest, deadline: std::time::Instant) -> io::Result<Acquired> {
++        let authorization = Arc::clone(self.authorization.as_ref().ok_or_else(invalid)?);
++        self.source_work(owner,deadline,move |original,owner,snapshot,deadline| {
++            authorization.acquire(original,owner,snapshot,request,deadline)
++        }).await
++    }
++    fn transfer_guard(self: &Arc<Self>, owner: &ProcessOwner, acquired: &Acquired) -> io::Result<Box<dyn FnMut() -> io::Result<()> + Send>> {
++        let original = Arc::clone(self.original.as_ref().ok_or_else(invalid)?);
++        let authorization = Arc::clone(self.authorization.as_ref().ok_or_else(invalid)?);
++        let owner = owner.clone(); let key = acquired.snapshot_key.clone(); let expires_at = acquired.consent_expires_at;
++        let declaration = Arc::clone(self);
++        Ok(Box::new(move || {
++            #[cfg(all(target_os = "linux",target_arch = "x86_64"))]
++            {
++                let selected = || -> io::Result<()> {
++                    let current = declaration.current.try_lock().map_err(|_|invalid())?;
++                    if declaration.stopping.load(std::sync::atomic::Ordering::Acquire)
++                        || current.as_ref().map(SourceSnapshot::key) != Some(key.clone()) { return Err(invalid()); }
++                    Ok(())
++                };
++                selected()?;
++                original.acquisition_recheck(&owner,key.clone())?;
++                authorization.recheck()?;
++                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|invalid())?.as_secs();
++                if now >= expires_at { return Err(invalid()); }
++                selected()?;
++                Ok(())
++            }
++            #[cfg(not(all(target_os = "linux",target_arch = "x86_64")))]
++            { let _ = (&original,&authorization,&owner,&key,expires_at,&declaration); Err(invalid()) }
++        }))
++    }
+     async fn drain(&self) {
+         self.stopping.store(true, std::sync::atomic::Ordering::Release);
+         let worker = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+@@ -218,6 +295,10 @@
+         deadline: std::time::Instant,
+     ) -> io::Result<Value> {
+         match method {
++            "owner/source/origin" => {
++                let p: OriginRequest = frame_params(bytes)?;
++                source_context.origin(owner,p,deadline).await
++            }
+             "owner/source/context" => {
+                 let p: OmuxOwnerSourceContextParams = frame_params(bytes)?;
+                 source_context_selector(&p, owner)?;
+@@ -386,22 +467,32 @@
+         let peer = connection.witness();
+         let result = tokio::time::timeout(
+             std::time::Duration::from_secs(8),
+-            processor.dispatch_owner(&request.method, &bytes, peer, &owner, &source_context, connection.deadline()),
++            async {
++                if request.method == "owner/source/acquire" {
++                    let params: AcquireRequest = frame_params(&bytes)?;
++                    let acquired = source_context.acquire(&owner,params,connection.deadline()).await?;
++                    let guard = source_context.transfer_guard(&owner,&acquired)?;
++                    Ok((acquired.value,Some(acquired.descriptor),Some(guard)))
++                } else {
++                    processor.dispatch_owner(&request.method,&bytes,peer,&owner,&source_context,connection.deadline()).await
++                        .map(|value| (value,None,None))
++                }
++            },
+         )
+         .await;
+-        let response = match result {
+-            Ok(Ok(result)) => json!({"jsonrpc":"2.0","id":request.id,"result":result}),
++        let (response,descriptor,guard) = match result {
++            Ok(Ok((result,descriptor,guard))) => (json!({"jsonrpc":"2.0","id":request.id,"result":result}),descriptor,guard),
+             Ok(Err(error)) => {
+                 #[cfg(test)]
+                 eprintln!("native owner operation refused: {:?}", error.kind());
+                 #[cfg(not(test))]
+                 let _ = error;
+-                json!({"jsonrpc":"2.0","id":request.id,"error":{"code":-32602,"message":"native owner operation refused"}})
++                (json!({"jsonrpc":"2.0","id":request.id,"error":{"code":-32602,"message":"native owner operation refused"}}),None,None)
+             }
+             Err(_) => {
+                 #[cfg(test)]
+                 eprintln!("native owner operation refused: dispatch timeout");
+-                json!({"jsonrpc":"2.0","id":request.id,"error":{"code":-32602,"message":"native owner operation refused"}})
++                (json!({"jsonrpc":"2.0","id":request.id,"error":{"code":-32602,"message":"native owner operation refused"}}),None,None)
+             }
+         };
+         let bytes = serde_json::to_vec(&response).map_err(|_| invalid())?;
+@@ -409,7 +500,10 @@
+             return Err(invalid());
+         }
+         connection = tokio::task::spawn_blocking(move || {
+-            connection.send_packet(&bytes)?;
++            if let Some(descriptor) = descriptor {
++                connection.send_packet_descriptor_guarded(&bytes,&descriptor,guard.ok_or_else(invalid)?)?;
++            }
++            else { connection.send_packet(&bytes)?; }
+             Ok::<_, io::Error>(connection)
+         })
+         .await
+@@ -419,7 +513,7 @@
+ }
+ 
+ #[cfg(target_os = "linux")]
+-fn prepare_endpoint(home: &Path) -> io::Result<(PacketListener, EndpointCleanup, ProcessOwner, SourceDeclaration)> {
++fn prepare_endpoint(home: &Path, capability_path: Option<&Path>) -> io::Result<(PacketListener, EndpointCleanup, ProcessOwner, SourceDeclaration)> {
+     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+     let owner_id = native_peer::random_handle()?;
+     let process_nonce = native_peer::random_handle()?;
+@@ -456,21 +550,24 @@
+         owner_endpoint: endpoint.clone(),
+         endpoint_generation: "1".to_owned(),
+     };
+-    let source_context = install_owner_with_source_context(
++    let mut source_context = install_owner_with_source_context(
+         || SourceContext::prepare(home, &owner, &endpoint),
+         || auth_broker::install_process_owner(owner.clone()),
+     )?;
++    source_context.authorization = capability_path.and_then(|path| source_context.original.as_ref()
++        .and_then(|context| Authorization::prepare(context,&owner,path).ok())).map(Arc::new);
+     Ok((listener, cleanup, owner, source_context))
+ }
+ 
+ pub(crate) async fn start(
+     processor: Arc<MessageProcessor>,
+     home: PathBuf,
++    capability_path: Option<PathBuf>,
+ ) -> io::Result<OwnerService> {
+     #[cfg(target_os = "linux")]
+     {
+         let (listener, cleanup, owner, source_context) =
+-            tokio::task::spawn_blocking(move || prepare_endpoint(&home))
++            tokio::task::spawn_blocking(move || prepare_endpoint(&home,capability_path.as_deref()))
+                 .await
+                 .map_err(|_| invalid())??;
+         let source_context = Arc::new(source_context);
+@@ -514,7 +611,7 @@
+     }
+     #[cfg(not(target_os = "linux"))]
+     {
+-        let _ = (processor, home);
++        let _ = (processor, home, capability_path);
+         Err(io::Error::new(
+             io::ErrorKind::Unsupported,
+             "native owner peer profile unavailable",
+@@ -525,6 +622,67 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++    #[tokio::test]
++    async fn late_acquired_descriptor_is_owned_until_terminal_and_never_adopted() {
++        use hmac::{Hmac,Mac}; use sha2::Sha256;
++        use std::os::{fd::AsRawFd,unix::{fs::PermissionsExt,net::UnixListener}};
++        let root = tempfile::tempdir().unwrap();
++        let home = root.path().join("home"); let runtime = root.path().join("runtime"); let parent = home.join("owner");
++        for path in [&home,&runtime,&parent] {
++            std::fs::create_dir(path).unwrap(); std::fs::set_permissions(path,std::fs::Permissions::from_mode(0o700)).unwrap();
++        }
++        let endpoint = parent.join("owner.sock"); let _listener = UnixListener::bind(&endpoint).unwrap();
++        std::fs::set_permissions(&endpoint,std::fs::Permissions::from_mode(0o600)).unwrap();
++        let owner = ProcessOwner { owner_id:"a".repeat(64),process_nonce:"b".repeat(64),owner_endpoint:endpoint,endpoint_generation:"1".into() };
++        let path = home.join("auth.json");
++        std::fs::write(&path,br#"{"tokens":{"access_token":"synthetic-access"}}"#).unwrap();
++        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
++        let capability = runtime.join("codex.capability"); std::fs::write(&capability,"1".repeat(64)).unwrap();
++        std::fs::set_permissions(&capability,std::fs::Permissions::from_mode(0o600)).unwrap();
++        let mut declaration = install_owner_with_source_context(
++            || SourceContext::prepare_fixture(&home,&owner,&owner.owner_endpoint,&runtime),|| Ok(())).unwrap();
++        let original = declaration.original.as_ref().unwrap();
++        let authorization = Arc::new(Authorization::prepare(original,&owner,&capability).unwrap());
++        let snapshot = original.snapshot(&owner,None).unwrap();
++        let origin = authorization.origin(&owner,&snapshot,std::time::Instant::now()+std::time::Duration::from_secs(8)).unwrap();
++        let mut request = AcquireRequest { protocol_version:2,owner_id:owner.owner_id.clone(),process_nonce:owner.process_nonce.clone(),
++            endpoint_generation:"1".into(),source_origin_id:origin["sourceOriginId"].as_str().unwrap().into(),
++            source_context_id:snapshot.context_id.clone(),source_context_generation:snapshot.generation.clone(),operation_id:"c".repeat(64),
++            consent_id:"d".repeat(64),consent_generation:"1".into(),
++            consent_expires_at:(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()+3600).to_string(),source_id:"e".repeat(64),source_generation:"1".into(),
++            forget_epoch:"0".into(),custody_seconds:"3600".into(),proof:String::new() };
++        let mut mac = Hmac::<Sha256>::new_from_slice(&[0x11;32]).unwrap();
++        mac.update(&request.canonical("omux-native-source-acquire-v1"));
++        request.proof = mac.finalize().into_bytes().iter().map(|v|format!("{v:02x}")).collect();
++        declaration.authorization = Some(Arc::clone(&authorization));
++        let declaration = Arc::new(declaration);
++        let gate = Arc::new((std::sync::Mutex::new(false),std::sync::Condvar::new()));
++        let work_gate = Arc::clone(&gate); let (send,ready) = tokio::sync::oneshot::channel();
++        let work_declaration = Arc::clone(&declaration); let work_owner = owner.clone();
++        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(2);
++        let work = tokio::spawn(async move {
++            work_declaration.source_work(&work_owner,deadline,move |original,owner,snapshot,deadline| {
++                let acquired = authorization.acquire(original,owner,snapshot,request,deadline)?;
++                let _ = send.send(acquired.descriptor.as_raw_fd());
++                let (lock,wake) = &*work_gate; let mut release = lock.lock().unwrap();
++                while !*release { release = wake.wait(release).unwrap(); }
++                Ok(acquired)
++            }).await
++        });
++        let fd = ready.await.unwrap(); // Actual sanitized/sealed payload exists.
++        assert!(work.await.unwrap().is_err());
++        assert!(declaration.current.lock().unwrap().is_none());
++        assert!(declaration.worker.lock().unwrap().as_ref().is_some_and(|v|!v.is_finished()));
++        assert!(declaration.capture(&owner,std::time::Instant::now()+std::time::Duration::from_secs(1)).await.is_err());
++        let drain_declaration = Arc::clone(&declaration);
++        let drain = tokio::spawn(async move { drain_declaration.drain().await; });
++        tokio::task::yield_now().await; assert!(!drain.is_finished());
++        let (lock,wake) = &*gate; *lock.lock().unwrap() = true; wake.notify_all();
++        drain.await.unwrap();
++        assert_eq!(unsafe { libc::fcntl(fd,libc::F_GETFD) },-1);
++        assert!(declaration.current.lock().unwrap().is_none());
++    }
+     async fn settle(declaration: &SourceDeclaration) {
+         let worker = declaration.worker.lock().unwrap().take();
+         if let Some(worker) = worker { worker.await.unwrap(); }
+diff --git a/codex-rs/app-server/src/owner_source_acquisition.rs b/codex-rs/app-server/src/owner_source_acquisition.rs
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/app-server/src/owner_source_acquisition.rs
+@@ -0,0 +1,328 @@
++//! Consent-authenticated access-only descriptor transfer. No refresh ownership.
++use crate::owner_source_context::{SourceContext, SourceSnapshot, SourceSnapshotKey};
++use codex_core::auth_broker::ProcessOwner;
++use serde::{Deserialize, Serialize};
++use serde_json::Value;
++use std::{fs::File, io, path::Path, time::Instant};
++
++pub const PAYLOAD_FORMAT: &str = "omux-codex-access-v1";
++pub const MAX_PAYLOAD: usize = 16 * 1024;
++fn invalid() -> io::Error { io::Error::other("native source acquisition refused") }
++fn require(value: bool) -> io::Result<()> { if value { Ok(()) } else { Err(invalid()) } }
++fn opaque(value: &str) -> io::Result<()> {
++    require(value.len() == 64 && value.bytes().all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
++        && value.bytes().any(|v| v != b'0'))
++}
++fn generation(value: &str, zero: bool) -> io::Result<u64> {
++    require(!value.is_empty() && value.len() <= 20 && value.bytes().all(|v| v.is_ascii_digit())
++        && (value == "0" || !value.starts_with('0')))?;
++    let value: u64 = value.parse().map_err(|_| invalid())?;
++    require(zero || value != 0)?;
++    Ok(value)
++}
++#[derive(Deserialize, Serialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++pub struct AcquireRequest {
++    pub protocol_version: u32,
++    pub owner_id: String, pub process_nonce: String, pub endpoint_generation: String,
++    pub source_origin_id: String, pub source_context_id: String, pub source_context_generation: String,
++    pub operation_id: String, pub consent_id: String, pub consent_generation: String,
++    pub consent_expires_at: String,
++    pub source_id: String, pub source_generation: String, pub forget_epoch: String,
++    pub custody_seconds: String,
++    #[serde(skip_serializing)]
++    pub proof: String,
++}
++impl AcquireRequest {
++    pub fn validate(&self, owner: &ProcessOwner, snapshot: &SourceSnapshot) -> io::Result<()> {
++        require(self.protocol_version == 2 && self.owner_id == owner.owner_id
++            && self.process_nonce == owner.process_nonce && self.endpoint_generation == owner.endpoint_generation
++            && self.source_context_id == snapshot.context_id && self.source_context_generation == snapshot.generation
++            && snapshot.store_present)?;
++        for value in [&self.owner_id, &self.process_nonce, &self.source_origin_id, &self.source_context_id,
++            &self.operation_id, &self.consent_id, &self.source_id] { opaque(value)?; }
++        for value in [&self.endpoint_generation, &self.source_context_generation, &self.consent_generation,
++            &self.source_generation] { generation(value, false)?; }
++        require(generation(&self.consent_expires_at, false)? <= i64::MAX as u64)?;
++        generation(&self.forget_epoch, true)?;
++        let custody = generation(&self.custody_seconds, false)?;
++        require(custody <= 3600 && self.proof.len() == 64
++            && self.proof.bytes().all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v)))
++    }
++    pub(crate) fn canonical(&self, domain: &str) -> Vec<u8> {
++        let mut value = Vec::new();
++        for field in [domain, "2", &self.owner_id, &self.process_nonce, &self.endpoint_generation,
++            &self.source_origin_id, &self.source_context_id, &self.source_context_generation,
++            &self.operation_id, &self.consent_id, &self.consent_generation, &self.consent_expires_at, &self.source_id,
++            &self.source_generation, &self.forget_epoch, &self.custody_seconds] {
++            value.extend_from_slice(field.as_bytes()); value.push(b'\n');
++        }
++        value
++    }
++}
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++pub struct OriginRequest {
++    pub protocol_version: u32,
++    pub owner_id: String, pub process_nonce: String, pub endpoint_generation: String,
++    pub source_context_id: String, pub source_context_generation: String,
++}
++impl OriginRequest {
++    pub fn validate_owner(&self, owner: &ProcessOwner) -> io::Result<()> {
++        require(self.protocol_version == 2 && self.owner_id == owner.owner_id
++            && self.process_nonce == owner.process_nonce && self.endpoint_generation == owner.endpoint_generation)?;
++        opaque(&self.source_context_id)?; generation(&self.source_context_generation,false)?; Ok(())
++    }
++    pub fn validate(&self, owner: &ProcessOwner, snapshot: &SourceSnapshot) -> io::Result<()> {
++        require(self.protocol_version == 2 && self.owner_id == owner.owner_id
++            && self.process_nonce == owner.process_nonce && self.endpoint_generation == owner.endpoint_generation
++            && self.source_context_id == snapshot.context_id && self.source_context_generation == snapshot.generation)
++    }
++}
++pub struct Acquired { pub value: Value, pub descriptor: File, pub snapshot_key: SourceSnapshotKey, pub consent_expires_at: u64 }
++
++#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++mod linux {
++    use super::*;
++    use hmac::{Hmac, Mac};
++    use sha2::{Digest, Sha256};
++    use std::{collections::HashSet, io::{Read, Write}, os::fd::{AsRawFd, FromRawFd},
++        os::unix::fs::MetadataExt, path::PathBuf, sync::Mutex};
++    use zeroize::Zeroizing;
++    type MetadataIdentity = (u64, u64, u32, u32, u64, u64, i64, i64, i64, i64);
++    fn identity(m: &std::fs::Metadata) -> MetadataIdentity {
++        (m.dev(),m.ino(),m.uid(),m.mode(),m.nlink(),m.len(),m.mtime(),m.mtime_nsec(),m.ctime(),m.ctime_nsec())
++    }
++    fn hex(value: &[u8]) -> String { value.iter().map(|v| format!("{v:02x}")).collect() }
++    fn unhex(value: &str) -> io::Result<[u8;32]> {
++        require(value.len() == 64 && value.bytes().all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v)))?;
++        let mut bytes = [0u8;32];
++        for (i, item) in bytes.iter_mut().enumerate() { *item = u8::from_str_radix(&value[i*2..i*2+2],16).map_err(|_|invalid())?; }
++        Ok(bytes)
++    }
++    pub struct Authorization {
++        key: Zeroizing<[u8;32]>, capability: File, capability_path: PathBuf,
++        capability_identity: MetadataIdentity, origin: String,
++        // Consume once before authenticated native read, including failed/late
++        // work. Full set refuses further admissions rather than evict/replay.
++        used: Mutex<HashSet<String>>,
++    }
++    fn wall_seconds() -> io::Result<u64> {
++        Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|invalid())?.as_secs())
++    }
++    impl Authorization {
++        pub fn prepare(context: &SourceContext, owner: &ProcessOwner, capability_path: &Path) -> io::Result<Self> {
++            let mut capability = SourceContext::configured_capability(capability_path)?;
++            let capability_identity = identity(&capability.metadata()?);
++            let mut raw = Zeroizing::new(Vec::new());
++            (&mut capability).take(65).read_to_end(&mut raw)?;
++            let key = Zeroizing::new(unhex(std::str::from_utf8(&raw).map_err(|_|invalid())?)?);
++            require(key.iter().any(|v| *v != 0))?;
++            let home = context.acquisition_home(owner)?;
++            let mut status: libc::statx = unsafe { std::mem::zeroed() };
++            require(unsafe { libc::statx(home.as_raw_fd(), c"".as_ptr(), libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
++                libc::STATX_BTIME | libc::STATX_INO | libc::STATX_UID, &mut status) } == 0)?;
++            require(status.stx_mask & (libc::STATX_BTIME | libc::STATX_INO | libc::STATX_UID) == (libc::STATX_BTIME | libc::STATX_INO | libc::STATX_UID) && status.stx_btime.tv_sec > 0)?;
++            let m = home.metadata()?;
++            require(status.stx_ino == m.ino() && status.stx_uid == m.uid())?;
++            let mut mac = Hmac::<Sha256>::new_from_slice(&key[..]).map_err(|_|invalid())?;
++            mac.update(b"omux-native-home-origin-v1\0");
++            mac.update(&m.dev().to_be_bytes()); mac.update(&m.ino().to_be_bytes()); mac.update(&m.uid().to_be_bytes());
++            mac.update(&status.stx_btime.tv_sec.to_be_bytes()); mac.update(&status.stx_btime.tv_nsec.to_be_bytes());
++            let origin = hex(&mac.finalize().into_bytes());
++            let result = Self { key, capability, capability_path: capability_path.to_path_buf(), capability_identity, origin,
++                used: Mutex::new(HashSet::new()) };
++            result.recheck()?;
++            Ok(result)
++        }
++        pub(crate) fn recheck(&self) -> io::Result<()> {
++            require(identity(&self.capability.metadata()?) == self.capability_identity
++                && identity(&SourceContext::configured_capability(&self.capability_path)?.metadata()?) == self.capability_identity)
++        }
++        fn sign(&self, bytes: &[u8]) -> io::Result<String> {
++            let mut mac = Hmac::<Sha256>::new_from_slice(&self.key[..]).map_err(|_|invalid())?;
++            mac.update(bytes); Ok(hex(&mac.finalize().into_bytes()))
++        }
++        pub fn origin(&self, owner: &ProcessOwner, snapshot: &SourceSnapshot, deadline: Instant) -> io::Result<Value> {
++            self.recheck()?; require(Instant::now() < deadline)?;
++            let mut canonical = Vec::new();
++            for field in ["omux-native-source-origin-v1", "2", &owner.owner_id, &owner.process_nonce,
++                &owner.endpoint_generation, &snapshot.context_id, &snapshot.generation, &self.origin, "available", "false"] {
++                canonical.extend_from_slice(field.as_bytes()); canonical.push(b'\n');
++            }
++            Ok(serde_json::json!({"protocolVersion":2,"ownerId":owner.owner_id,"processNonce":owner.process_nonce,
++                "endpointGeneration":owner.endpoint_generation,"sourceContextId":snapshot.context_id,
++                "sourceContextGeneration":snapshot.generation,"sourceOriginId":self.origin,"status":"available",
++                "credentialAcquisitionAuthorized":false,"originProof":self.sign(&canonical)?}))
++        }
++        pub fn acquire(&self, context: &SourceContext, owner: &ProcessOwner, snapshot: &SourceSnapshot,
++            request: AcquireRequest, deadline: Instant) -> io::Result<Acquired> {
++            self.recheck()?; request.validate(owner,snapshot)?;
++            require(request.source_origin_id == self.origin && Instant::now() < deadline)?;
++            let mut mac = Hmac::<Sha256>::new_from_slice(&self.key[..]).map_err(|_|invalid())?;
++            mac.update(&request.canonical("omux-native-source-acquire-v1"));
++            mac.verify_slice(&unhex(&request.proof)?).map_err(|_|invalid())?;
++            {
++                let mut used = self.used.try_lock().map_err(|_|invalid())?;
++                require(used.len() < 1024 && !used.contains(&request.operation_id))?;
++                used.insert(request.operation_id.clone());
++            }
++            // No metadata query reaches this credential read. The configured
++            // integration key authenticates the daemon's explicit consent tuple.
++            require(Instant::now() < deadline && wall_seconds()? < generation(&request.consent_expires_at,false)?)?;
++            let document = context.acquisition_document(owner, snapshot.key())?;
++            let parsed: Document = serde_json::from_slice(&document).map_err(|_|invalid())?;
++            let access = parsed.tokens.as_ref().and_then(|v| v.access_token.as_ref()).ok_or_else(invalid)?;
++            require(!access.0.is_empty() && access.0.len() <= 12 * 1024
++                && access.0.bytes().all(|v| (0x21..=0x7e).contains(&v)))?;
++            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|invalid())?.as_secs();
++            if let Some(expiry) = parsed.expires_at { require(expiry > 0 && expiry as u64 > now)?; }
++            let payload = Zeroizing::new(serde_json::to_vec(&Payload { tokens: AccessRef { access_token: &access.0 },
++                expires_at: parsed.expires_at }).map_err(|_|invalid())?);
++            require(payload.len() <= MAX_PAYLOAD)?;
++            let payload_hash = hex(&Sha256::digest(&payload));
++            let descriptor = sealed(&payload)?;
++            // A completed read/seal does not authorize a stale/deadline reply.
++            context.acquisition_recheck(owner, snapshot.key())?; self.recheck()?;
++            require(Instant::now() < deadline && wall_seconds()? < generation(&request.consent_expires_at,false)?)?;
++            let size = payload.len().to_string();
++            let mut canonical = request.canonical("omux-native-source-acquire-reply-v1");
++            for field in [PAYLOAD_FORMAT, &size, "external", "true", &payload_hash] {
++                canonical.extend_from_slice(field.as_bytes()); canonical.push(b'\n');
++            }
++            let mut value = serde_json::to_value(&request).map_err(|_|invalid())?;
++            let object = value.as_object_mut().ok_or_else(invalid)?;
++            object.insert("payloadFormat".into(), PAYLOAD_FORMAT.into());
++            object.insert("payloadBytes".into(), size.into());
++            object.insert("renewalOwner".into(), "external".into());
++            object.insert("credentialAcquisitionAuthorized".into(), true.into());
++            object.insert("payloadSha256".into(), payload_hash.into());
++            object.insert("replyProof".into(), self.sign(&canonical)?.into());
++            Ok(Acquired { value, descriptor, snapshot_key: snapshot.key(), consent_expires_at: generation(&request.consent_expires_at,false)? })
++        }
++    }
++    struct SecretString(Zeroizing<String>);
++    impl<'de> Deserialize<'de> for SecretString {
++        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self,D::Error> {
++            String::deserialize(d).map(|s| Self(Zeroizing::new(s)))
++        }
++    }
++    #[derive(Deserialize)]
++    struct Tokens { access_token: Option<SecretString> }
++    #[derive(Deserialize)]
++    struct Document { tokens: Option<Tokens>, expires_at: Option<i64> }
++    #[derive(Serialize)]
++    struct AccessRef<'a> { access_token: &'a str }
++    #[derive(Serialize)]
++    struct Payload<'a> { tokens: AccessRef<'a>, expires_at: Option<i64> }
++    #[cfg(test)]
++    mod tests {
++        use super::*;
++        use std::os::unix::{fs::PermissionsExt, net::UnixListener};
++        fn fixture() -> (tempfile::TempDir, SourceContext, ProcessOwner, PathBuf, UnixListener) {
++            let root = tempfile::tempdir().unwrap();
++            let home = root.path().join("home"); let runtime = root.path().join("runtime"); let parent = home.join("owner");
++            for path in [&home,&runtime,&parent] {
++                std::fs::create_dir(path).unwrap();
++                std::fs::set_permissions(path,std::fs::Permissions::from_mode(0o700)).unwrap();
++            }
++            let endpoint = parent.join("owner.sock"); let listener = UnixListener::bind(&endpoint).unwrap();
++            std::fs::set_permissions(&endpoint,std::fs::Permissions::from_mode(0o600)).unwrap();
++            let owner = ProcessOwner { owner_id:"a".repeat(64),process_nonce:"b".repeat(64),owner_endpoint:endpoint,endpoint_generation:"1".into() };
++            let auth = home.join("auth.json");
++            std::fs::write(&auth,br#"{"tokens":{"access_token":"synthetic-access","refresh_token":"synthetic-refresh-not-exported","account_id":"synthetic-account-not-exported"}}"#).unwrap();
++            std::fs::set_permissions(&auth,std::fs::Permissions::from_mode(0o600)).unwrap();
++            let capability = runtime.join("codex.capability"); std::fs::write(&capability,"1".repeat(64)).unwrap();
++            std::fs::set_permissions(&capability,std::fs::Permissions::from_mode(0o600)).unwrap();
++            let context = SourceContext::prepare_fixture(&home,&owner,&owner.owner_endpoint,&runtime).unwrap();
++            (root,context,owner,capability,listener)
++        }
++        fn request(auth: &Authorization, owner: &ProcessOwner, snapshot: &SourceSnapshot) -> AcquireRequest {
++            let mut request = AcquireRequest { protocol_version:2,owner_id:owner.owner_id.clone(),process_nonce:owner.process_nonce.clone(),
++                endpoint_generation:owner.endpoint_generation.clone(),source_origin_id:auth.origin.clone(),
++                source_context_id:snapshot.context_id.clone(),source_context_generation:snapshot.generation.clone(),
++                operation_id:"c".repeat(64),consent_id:"d".repeat(64),consent_generation:"1".into(),consent_expires_at:(wall_seconds().unwrap()+3600).to_string(),source_id:"e".repeat(64),
++                source_generation:"1".into(),forget_epoch:"0".into(),custody_seconds:"3600".into(),proof:String::new() };
++            request.proof = auth.sign(&request.canonical("omux-native-source-acquire-v1")).unwrap(); request
++        }
++        #[test]
++        fn origin_is_stable_access_payload_is_sealed_and_refresh_is_not_exported() {
++            let (_root,context,owner,capability,_listener) = fixture();
++            let auth = Authorization::prepare(&context,&owner,&capability).unwrap();
++            let second = Authorization::prepare(&context,&owner,&capability).unwrap();
++            assert_eq!(auth.origin,second.origin);
++            let snapshot = context.snapshot(&owner,None).unwrap();
++            let admitted_request = request(&auth,&owner,&snapshot);
++            let mut acquired = auth.acquire(&context,&owner,&snapshot,admitted_request,Instant::now()+std::time::Duration::from_secs(8)).unwrap();
++            let fd = acquired.descriptor.as_raw_fd();
++            assert_eq!(acquired.descriptor.metadata().unwrap().mode() & 0o7777,0o600); // Exact daemon sealed-payload profile.
++            let flags = unsafe { libc::fcntl(fd,libc::F_GETFL) }; assert_eq!(flags & libc::O_ACCMODE,libc::O_RDONLY);
++            let seals = unsafe { libc::fcntl(fd,libc::F_GET_SEALS) };
++            assert_eq!(seals & (libc::F_SEAL_WRITE|libc::F_SEAL_GROW|libc::F_SEAL_SHRINK|libc::F_SEAL_SEAL),
++                libc::F_SEAL_WRITE|libc::F_SEAL_GROW|libc::F_SEAL_SHRINK|libc::F_SEAL_SEAL);
++            let mut bytes = Zeroizing::new(Vec::new()); acquired.descriptor.read_to_end(&mut bytes).unwrap();
++            assert_eq!(&bytes[..],br#"{"tokens":{"access_token":"synthetic-access"},"expires_at":null}"#);
++            assert!(unsafe { libc::write(fd,b"x".as_ptr().cast(),1) } < 0);
++            assert_eq!(acquired.value["renewalOwner"],"external");
++            let repeated = request(&auth,&owner,&snapshot);
++            assert!(auth.acquire(&context,&owner,&snapshot,repeated,Instant::now()+std::time::Duration::from_secs(8)).is_err());
++            // Owned descriptor closes on refused/dropped delivery. No duplicate
++            // native credential descriptor is retained by Authorization.
++            drop(acquired); assert_eq!(unsafe { libc::fcntl(fd,libc::F_GETFD) },-1);
++        }
++        #[test]
++        fn exact_consent_proof_current_metadata_capability_and_original_deadline_are_fences() {
++            let (_root,context,owner,capability,_listener) = fixture();
++            let auth = Authorization::prepare(&context,&owner,&capability).unwrap();
++            let snapshot = context.snapshot(&owner,None).unwrap();
++            let mut bad = request(&auth,&owner,&snapshot); bad.consent_generation = "2".into();
++            assert!(auth.acquire(&context,&owner,&snapshot,bad,Instant::now()+std::time::Duration::from_secs(8)).is_err());
++            assert!(auth.used.lock().unwrap().is_empty());
++            let expired = request(&auth,&owner,&snapshot);
++            assert!(auth.acquire(&context,&owner,&snapshot,expired,Instant::now()).is_err());
++            assert!(auth.used.lock().unwrap().is_empty());
++            let home = owner.owner_endpoint.parent().unwrap().parent().unwrap();
++            let staged = home.join("staged"); std::fs::write(&staged,br#"{"tokens":{"access_token":"synthetic-next"}}"#).unwrap();
++            std::fs::set_permissions(&staged,std::fs::Permissions::from_mode(0o600)).unwrap();
++            std::fs::rename(&staged,home.join("auth.json")).unwrap();
++            let stale = request(&auth,&owner,&snapshot);
++            assert!(auth.acquire(&context,&owner,&snapshot,stale,Instant::now()+std::time::Duration::from_secs(8)).is_err());
++            let current = context.snapshot(&owner,Some(snapshot.key())).unwrap();
++            assert_eq!(current.generation,"2");
++            assert_eq!(Authorization::prepare(&context,&owner,&capability).unwrap().origin,auth.origin);
++            assert_ne!(current.context_id,snapshot.context_id);
++            // Revocation/replacement of configured capability refuses further
++            // read authority without preventing the read-only owner endpoint.
++            std::fs::remove_file(&capability).unwrap();
++            let origin = auth.origin(&owner,&current,Instant::now()+std::time::Duration::from_secs(8));
++            assert!(origin.is_err());
++        }
++    }
++    fn sealed(payload: &[u8]) -> io::Result<File> {
++        let fd = unsafe { libc::memfd_create(c"omux-access".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
++        if fd < 0 { return Err(invalid()); }
++        let mut file = unsafe { File::from_raw_fd(fd) };
++        file.write_all(payload)?;
++        require(unsafe { libc::fchmod(fd,0o600) } == 0 && unsafe { libc::fcntl(fd,libc::F_ADD_SEALS,
++            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL) } == 0)?;
++        // Reopen our still-owned sealed descriptor read-only; no user input or
++        // named credential path participates in this /proc descriptor binding.
++        let name = std::ffi::CString::new(format!("/proc/self/fd/{fd}")).map_err(|_|invalid())?;
++        let readonly = unsafe { libc::open(name.as_ptr(),libc::O_RDONLY | libc::O_CLOEXEC) };
++        if readonly < 0 { return Err(invalid()); }
++        let readonly = unsafe { File::from_raw_fd(readonly) };
++        require(identity(&file.metadata()?) == identity(&readonly.metadata()?))?;
++        Ok(readonly)
++    }
++}
++#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++pub use linux::Authorization;
++#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
++pub struct Authorization;
++#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
++impl Authorization {
++    pub(crate) fn recheck(&self) -> io::Result<()> { Err(invalid()) }
++    pub fn prepare(_: &SourceContext, _: &ProcessOwner, _: &Path) -> io::Result<Self> { Err(invalid()) }
++    pub fn origin(&self, _: &ProcessOwner, _: &SourceSnapshot, _: Instant) -> io::Result<Value> { Err(invalid()) }
++    pub fn acquire(&self, _: &SourceContext, _: &ProcessOwner, _: &SourceSnapshot, _: AcquireRequest, _: Instant) -> io::Result<Acquired> { Err(invalid()) }
++}
+diff --git a/codex-rs/app-server/src/owner_source_context.rs b/codex-rs/app-server/src/owner_source_context.rs
+--- a/codex-rs/app-server/src/owner_source_context.rs
++++ b/codex-rs/app-server/src/owner_source_context.rs
+@@ -132,7 +132,7 @@
+         hint: File,
+         hint_identity: Identity,
+     }
+-    #[derive(Clone)]
++    #[derive(Clone, PartialEq, Eq)]
+     pub struct SourceSnapshotKey { id: String, generation: u64, auth: Option<Identity> }
+     pub struct SourceSnapshot {
+         pub context_id: String,
+@@ -256,6 +256,33 @@
+             Ok(SourceSnapshot { context_id: context_id.clone(), generation: generation.to_string(), store_present: auth_identity.is_some(),
+                 key: SourceSnapshotKey { id: context_id, generation, auth: auth_identity }, _auth: auth.map(|(file, _)| file) })
+         }
++        pub(crate) fn configured_capability(path: &Path) -> io::Result<File> {
++            let parent = private_directory(path.parent().ok_or_else(invalid)?)?;
++            let file = open(parent.as_raw_fd(), path.file_name().ok_or_else(invalid)?, O_NOFOLLOW | O_CLOEXEC | 0x800)?;
++            let m = file.metadata()?;
++            require(m.is_file() && m.uid() == uid() && m.mode() & 0o777 == 0o600 && m.nlink() == 1 && m.len() == 64)?;
++            Ok(file)
++        }
++        pub(crate) fn acquisition_home(&self, owner: &ProcessOwner) -> io::Result<File> {
++            self.recheck_authority(owner)?; self.home.try_clone()
++        }
++        pub(crate) fn acquisition_recheck(&self, owner: &ProcessOwner, key: SourceSnapshotKey) -> io::Result<()> {
++            self.recheck_authority(owner)?;
++            require(auth_metadata(&self.home)?.map(|(_, identity)| identity) == key.auth)
++        }
++        pub(crate) fn acquisition_document(&self, owner: &ProcessOwner, key: SourceSnapshotKey) -> io::Result<zeroize::Zeroizing<Vec<u8>>> {
++            use std::io::Read;
++            self.acquisition_recheck(owner, key.clone())?;
++            let expected = key.auth.as_ref().ok_or_else(invalid)?;
++            require(expected.5 <= 128 * 1024)?;
++            let mut file = open(self.home.as_raw_fd(), std::ffi::OsStr::new("auth.json"), O_NOFOLLOW | O_CLOEXEC | 0x800)?;
++            require(identity(&file.metadata()?) == *expected)?;
++            let mut bytes = zeroize::Zeroizing::new(Vec::new());
++            (&mut file).take(128 * 1024 + 1).read_to_end(&mut bytes)?;
++            require(bytes.len() as u64 == expected.5 && identity(&file.metadata()?) == *expected)?;
++            self.acquisition_recheck(owner, key)?;
++            Ok(bytes)
++        }
+         fn recheck_authority(&self, owner: &ProcessOwner) -> io::Result<()> {
+             require(owner == &self.owner)?;
+             require(inode(&owned_home(&self.home_path)?.metadata()?) == self.home_identity
+@@ -437,7 +464,7 @@
+     pub store_present: bool, pub store_identity: Option<(u64, u64)>,
+ }
+ #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+-#[derive(Clone)]
++#[derive(Clone, PartialEq, Eq)]
+ pub struct SourceSnapshotKey;
+ #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+ pub struct SourceSnapshot { pub context_id: String, pub generation: String, pub store_present: bool }
+diff --git a/codex-rs/core/src/native_peer.rs b/codex-rs/core/src/native_peer.rs
+--- a/codex-rs/core/src/native_peer.rs
++++ b/codex-rs/core/src/native_peer.rs
+@@ -316,6 +316,39 @@
+                 }
+                 Err(error) => return Err(error),
+             }
++        }
++    }
++    #[cfg(target_os = "linux")]
++    fn send_descriptor(&mut self, bytes: &[u8], descriptor: &std::fs::File, mut guard: impl FnMut() -> io::Result<()>) -> io::Result<()> {
++        if !self.packet || bytes.is_empty() || bytes.len() > MAX_PACKET { return Err(io::Error::other("native descriptor packet refused")); }
++        #[repr(C)]
++        union Control { alignment: libc::cmsghdr, bytes: [u8;64] }
++        loop {
++            wait(self.socket.as_raw_fd(),libc::POLLOUT,self.deadline)?;
++            let mut control = Control { bytes: [0;64] };
++            let mut vector = libc::iovec { iov_base: bytes.as_ptr().cast_mut().cast(), iov_len: bytes.len() };
++            let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
++            message.msg_iov = &mut vector; message.msg_iovlen = 1;
++            message.msg_control = (&mut control as *mut Control).cast();
++            message.msg_controllen = unsafe { libc::CMSG_SPACE(std::mem::size_of::<i32>() as _) } as _;
++            let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
++            if header.is_null() { return Err(io::Error::other("native descriptor control refused")); }
++            unsafe {
++                (*header).cmsg_level = libc::SOL_SOCKET; (*header).cmsg_type = libc::SCM_RIGHTS;
++                (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<i32>() as _) as _;
++                std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<i32>(),descriptor.as_raw_fd());
++            }
++            if Instant::now() >= self.deadline { return Err(io::Error::new(io::ErrorKind::TimedOut,"native exchange timed out")); }
++            guard()?;
++            if Instant::now() >= self.deadline { return Err(io::Error::new(io::ErrorKind::TimedOut,"native exchange timed out")); }
++            let count = unsafe { libc::sendmsg(self.socket.as_raw_fd(),&message,libc::MSG_NOSIGNAL) };
++            if count < 0 {
++                let error = io::Error::last_os_error();
++                if matches!(error.kind(),io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) { continue; }
++                return Err(error);
++            }
++            if count as usize != bytes.len() { return Err(io::Error::other("native descriptor packet truncated")); }
++            return Ok(());
+         }
+     }
+     fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
+@@ -429,12 +462,25 @@
+     unavailable: (),
+ }
+ impl VerifiedPacket {
++    pub fn send_packet_descriptor(&mut self, bytes: &[u8], descriptor: &std::fs::File) -> io::Result<()> {
++        #[cfg(target_os = "linux")]
++        { self.connection.send_descriptor(bytes,descriptor,|| Ok(())) }
++        #[cfg(not(target_os = "linux"))]
++        { let _ = (bytes,descriptor); Err(io::Error::new(io::ErrorKind::Unsupported,"native descriptor profile unavailable")) }
++    }
+     /// Original exchange cutoff; callers must not restart this clock.
+     pub fn deadline(&self) -> Instant {
+         #[cfg(unix)]
+         { self.connection.deadline }
+         #[cfg(not(unix))]
+         { unreachable!("unsupported platforms cannot construct verified packets") }
++    }
++    pub fn send_packet_descriptor_guarded(&mut self, bytes: &[u8], descriptor: &std::fs::File,
++        guard: impl FnMut() -> io::Result<()>) -> io::Result<()> {
++        #[cfg(target_os = "linux")]
++        { self.connection.send_descriptor(bytes,descriptor,guard) }
++        #[cfg(not(target_os = "linux"))]
++        { let _ = (bytes,descriptor,guard); Err(io::Error::new(io::ErrorKind::Unsupported,"native descriptor profile unavailable")) }
+     }
+     pub fn witness(&self) -> PeerWitness {
+         #[cfg(unix)]
+@@ -592,6 +638,37 @@
+     }
+ 
+     #[test]
++    fn descriptor_guard_refusal_sends_no_packet_or_right() -> io::Result<()> {
++        let root = tempfile::tempdir()?;
++        let endpoint = root.path().join("guard.sock"); let listener = PacketListener::bind(&endpoint)?;
++        let mut client = VerifiedPacket::connect(&endpoint)?; let server = listener.try_accept()?;
++        let descriptor = tempfile::tempfile()?;
++        assert!(client.send_packet_descriptor_guarded(b"descriptor",&descriptor,|| Err(io::Error::other("fixture refusal"))).is_err());
++        let mut bytes = [0u8;64];
++        let count = unsafe { libc::recv(server.connection.socket.as_raw_fd(),bytes.as_mut_ptr().cast(),bytes.len(),libc::MSG_DONTWAIT) };
++        assert!(count < 0 && io::Error::last_os_error().kind() == io::ErrorKind::WouldBlock);
++        Ok(())
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn descriptor_send_remains_refused_by_default_receive_profile() -> io::Result<()> {
++        use std::io::Write;
++        let root = tempfile::tempdir()?;
++        let endpoint = root.path().join("descriptor.sock");
++        let listener = PacketListener::bind(&endpoint)?;
++        let mut client = VerifiedPacket::connect(&endpoint)?;
++        let mut server = listener.try_accept()?;
++        let mut descriptor = tempfile::tempfile()?;
++        descriptor.write_all(b"synthetic descriptor fixture")?;
++        client.send_packet_descriptor(b"descriptor",&descriptor)?;
++        let mut bytes = [0u8;64];
++        assert!(server.recv_packet(&mut bytes).is_err());
++        assert!(descriptor.metadata().is_ok()); // Receiver closes only delivered duplicate.
++        Ok(())
++    }
++
++    #[test]
+     fn stream_bridge_verifies_each_segment_and_keeps_absolute_deadline() -> io::Result<()> {
+         let directory = tempfile::tempdir()?;
+         let path = directory.path().join("adapter.sock");

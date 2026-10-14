@@ -4,7 +4,7 @@ import hashlib
 from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
-from site_coordinator_qualification import version_command, validate_versions, validate_ancestor, version_diagnostic, BAZEL_NATIVE, JDK, NIX_BAZEL_VERSION, NIX_BAZEL_VERSION_SHA256
+from site_coordinator_qualification import version_command, validate_versions, validate_ancestor, version_diagnostic, BAZEL_NATIVE, JDK, NIX_BAZEL_VERSION, NIX_BAZEL_VERSION_SHA256, declared_site_version, SITE_VERSION_SHA256
 
 
 class QualificationTest(unittest.TestCase):
@@ -52,6 +52,26 @@ class QualificationTest(unittest.TestCase):
                 version_command('java')
         with self.assertRaises(ValueError):
             version_command('build')
+
+    def test_declared_version_requires_exact_pinned_bytes_without_shared_fallback(self):
+        selected = Path('/owned/declared-site/bazelversion')
+        raw = b'9.0.1\n'
+        facts = {'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw), 'mode': '0o644'}
+        self.assertEqual(facts['sha256'], SITE_VERSION_SHA256)
+        with patch('site_coordinator_qualification.Path.resolve', return_value=selected), \
+                patch('site_coordinator_qualification.file_bytes', return_value=(raw, facts)) as reader:
+            self.assertEqual(declared_site_version('../declared/bazelversion'), (raw, facts))
+            reader.assert_called_once_with(selected, 64)
+        for changed, metadata in ((b'9.0.1', facts), (b'9.0.1\n\n', facts),
+                                  (b'8.4.2\n', facts), (raw, dict(facts, sha256='0' * 64))):
+            with patch('site_coordinator_qualification.Path.resolve', return_value=selected), \
+                    patch('site_coordinator_qualification.file_bytes', return_value=(changed, metadata)), \
+                    self.assertRaises(ValueError):
+                declared_site_version(selected)
+        with patch('site_coordinator_qualification.Path.resolve', side_effect=FileNotFoundError), \
+                patch('site_coordinator_qualification.file_bytes') as reader, self.assertRaises(FileNotFoundError):
+            declared_site_version('/missing/declared/version')
+        reader.assert_not_called()
 
     def test_versions_require_actual_binary_output(self):
         validate_versions(b'bazel 9.0.1\n', b'openjdk version "21.0.10"\nOpenJDK Runtime Environment (build 21.0.10+7)')

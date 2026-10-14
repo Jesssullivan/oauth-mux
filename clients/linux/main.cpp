@@ -1,4 +1,6 @@
 #include "tray.h"
+#include "device_code_dialog.h"
+#include "siwc_browser.h"
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QFileInfo>
@@ -8,8 +10,15 @@
 #include <cstdio>
 #include <cstring>
 #include <utility>
+#include <sys/resource.h>
 
 int main(int argc, char **argv) {
+    const bool deviceDialog = argc == 2 && std::strcmp(argv[1], "--native-device-login-stdin") == 0;
+    const bool siwcBrowser = argc == 2 && std::strcmp(argv[1], "--siwc-open-authorization-stdin") == 0;
+    if (deviceDialog || siwcBrowser) {
+        struct rlimit limit{0, 0};
+        if (::setrlimit(RLIMIT_CORE, &limit) != 0) return 1;
+    }
     bool selfCheck = false;
     for (int index = 1; index < argc; ++index)
         if (std::strcmp(argv[index], "--self-check") == 0 || std::strcmp(argv[index], "--smoke") == 0)
@@ -33,9 +42,15 @@ int main(int argc, char **argv) {
     QCommandLineParser parser;
     parser.setApplicationDescription("Account and route controls for the Omux user service");
     parser.addHelpOption();
+    parser.addOption({"native-device-login-stdin", "Show a one-time native sign-in code from a private pipe."});
+    parser.addOption({"siwc-open-authorization-stdin", "Open one daemon-issued SIWC authorization from a private pipe without displaying or logging it."});
     parser.addOption({"socket", "Connect to this private Omux control socket.", "path"});
     parser.addOption({{"self-check", "smoke"}, "Construct the real controls offline, process an event cycle, and exit."});
     parser.process(app);
+    if (parser.isSet("native-device-login-stdin"))
+        return deviceDialog ? runNativeDeviceDialog(app) : 1;
+    if (parser.isSet("siwc-open-authorization-stdin"))
+        return siwcBrowser ? runSiwcBrowserPipe(app) : 1;
     try {
         OmuxTray window(parser.isSet("socket") ? parser.value("socket") : OmuxClient::defaultSocketPath(), !selfCheck, parser.isSet("socket"));
         window.show();

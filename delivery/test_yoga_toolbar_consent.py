@@ -311,7 +311,7 @@ class CustodyTest(unittest.TestCase):
 
 class RecorderTest(unittest.TestCase):
     def test_nonhealth_frames_are_redacted_and_never_forwarded(self):
-        for method in ("browser.connect", "browser.importGrant", "browser.disconnect", "unknown"):
+        for method in ("browser.connect", "browser.connectOutcome", "browser.importGrant", "browser.disconnect", "unknown"):
             project = Mock()
             append = Mock()
             implementation = {"unique_fields": dict, "invalid_constant": lambda _: None,
@@ -349,6 +349,123 @@ class RecorderTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 recorder.health_only(b"\0\0\0\0" + payload, "a" * 32, implementation, "journal")
             append.assert_called_once_with("journal", {"id": "omitted", "method": "unexpected_request", "sourceId": None})
+
+
+class NativeOutcomeRecorderTest(unittest.TestCase):
+    identity = "a" * 32
+
+    def message(self, method="browser.connect", identifier="chromium-lost-connect"):
+        params = {"sourceId": native_implementation.SOURCE, "adapter": "github", "origin": "https://github.com",
+                  "provenance": {"browser": "chromium", "extensionId": self.identity, "channel": "development"},
+                  "operationId": "chromium-original-operation", "expectedRevision": "9007199254740993"}
+        if method == "browser.disconnect":
+            params["expectedGeneration"] = "18446744073709551615"
+        return {"version": 1, "id": identifier, "method": method, "params": params}
+
+    def frame(self, value):
+        encoded = json.dumps(value, separators=(",", ":")).encode()
+        return len(encoded).to_bytes(4, "little") + encoded
+
+    def project(self, message):
+        return native_implementation.project(self.frame(message), self.identity)
+
+    def accepted(self, request):
+        return {"version": 1, "id": request["id"], "result": {"accepted": True,
+            "source_id": native_implementation.SOURCE, "operation_id": request["params"]["operationId"],
+            "generation": "1", "revision": "9007199254740994"}}
+
+    def test_v4_connect_query_removal_keep_exact_integer_strings_and_redacted_keys(self):
+        connect = self.message()
+        self.assertEqual(self.project(connect), {"id": connect["id"], "method": "browser.connect",
+            "sourceId": native_implementation.SOURCE, "operationId": "chromium-original-operation",
+            "expectedRevision": "9007199254740993"})
+        query = self.message("browser.connectOutcome", "chromium-outcome-before")
+        query["params"].pop("expectedRevision")
+        self.assertEqual(set(self.project(query)), {"id", "method", "sourceId", "operationId"})
+        query["params"]["expectedRevision"] = "18446744073709551615"
+        self.assertEqual(self.project(query)["expectedRevision"], "18446744073709551615")
+        removal = self.message("browser.disconnect", "01234567-89ab-4def-8123-0123456789ab")
+        self.assertEqual(self.project(removal)["expectedGeneration"], "18446744073709551615")
+
+    def test_bounded_private_journal_retains_only_opaque_authority_metadata(self):
+        message = self.message("browser.disconnect", "01234567-89ab-4def-8123-0123456789ab")
+        message["params"]["operationId"] = "11234567-89ab-4def-8123-0123456789ab"
+        message["params"]["expectedRevision"] = "18446744073709551615"
+        projected = self.project(message)
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "journal"
+            journal.write_bytes(b""); journal.chmod(0o600)
+            native_implementation.append(journal, projected)
+            self.assertEqual(json.loads(journal.read_bytes()), projected)
+            self.assertLessEqual(len(journal.read_bytes()), 512)
+            journal.write_bytes(b"{}\n" * native_implementation.MAX_RECORDS)
+            with self.assertRaises(ValueError):
+                native_implementation.append(journal, projected)
+
+    def test_v4_missing_intent_generation_and_correlation_identity_refuse(self):
+        for key in ("operationId", "expectedRevision"):
+            message = self.message(); message["params"].pop(key)
+            with self.assertRaises(ValueError):
+                self.project(message)
+        message = self.message("browser.disconnect", "chromium-stale-removal")
+        message["params"].pop("expectedGeneration")
+        with self.assertRaises(ValueError):
+            self.project(message)
+        message = self.message(); message["params"]["operationId"] = message["id"]
+        with self.assertRaises(ValueError):
+            self.project(message)
+
+    def test_noncanonical_numeric_authority_and_zero_generation_refuse(self):
+        for value in (True, 1, 1.0, None, "01", "-1", "1e3", "18446744073709551616"):
+            message = self.message(); message["params"]["expectedRevision"] = value
+            with self.assertRaises(ValueError):
+                self.project(message)
+        message = self.message("browser.disconnect", "chromium-stale-removal")
+        message["params"]["expectedGeneration"] = "0"
+        with self.assertRaises(ValueError):
+            self.project(message)
+
+    def test_foreign_context_release_principal_and_credential_fields_refuse(self):
+        for key, value in (("sourceId", "foreign-context"), ("adapter", "codex"),
+                           ("origin", "https://github.com/"), ("capsule", {}),
+                           ("expectedGeneration", "1")):
+            message = self.message(); message["params"][key] = value
+            with self.assertRaises(ValueError):
+                self.project(message)
+        for key, value in (("browser", "firefox"), ("extensionId", "b" * 32), ("channel", "release")):
+            message = self.message(); message["params"]["provenance"][key] = value
+            with self.assertRaises(ValueError):
+                self.project(message)
+
+    def test_reply_fault_only_suppresses_accepted_original_not_retry_or_refusal(self):
+        request = self.message(); accepted = self.accepted(request)
+        self.assertTrue(native_implementation.suppress_reply(self.frame(request), self.frame(accepted)))
+        refusal = {"version": 1, "id": request["id"], "error": {"code": "RevisionConflict", "message": "refused"}}
+        self.assertFalse(native_implementation.suppress_reply(self.frame(request), self.frame(refusal)))
+        retry = self.message(identifier="chromium-exact-retry")
+        self.assertFalse(native_implementation.suppress_reply(self.frame(retry), self.frame(self.accepted(retry))))
+        health = {"method": "browser.health", "id": "chromium-service-health"}
+        self.assertFalse(native_implementation.suppress_reply(self.frame(health), self.frame({})))
+
+    def test_malformed_or_unbound_accepted_reply_cannot_masquerade_as_committed_loss(self):
+        request = self.message()
+        for key, value in (("source_id", "foreign-context"), ("operation_id", "different-operation"),
+                           ("accepted", 1), ("revision", "9007199254740995"),
+                           ("revision", 9007199254740994), ("generation", "0"), ("extra", "omitted")):
+            response = self.accepted(request); response["result"][key] = value
+            with self.assertRaises(ValueError):
+                native_implementation.suppress_reply(self.frame(request), self.frame(response))
+        response = self.accepted(request); response["id"] = "different-correlation"
+        with self.assertRaises(ValueError):
+            native_implementation.suppress_reply(self.frame(request), self.frame(response))
+
+    def test_duplicate_fields_and_nonfinite_json_cannot_enter_journal(self):
+        payload = json.dumps(self.message()).encode()
+        duplicate = payload.replace(b'"version": 1', b'"version": 1, "version": 1')
+        nonfinite = payload.replace(b'"version": 1', b'"version": NaN')
+        for value in (duplicate, nonfinite):
+            with self.assertRaises(ValueError):
+                native_implementation.project(len(value).to_bytes(4, "little") + value, self.identity)
 
 
 if __name__ == "__main__":

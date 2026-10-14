@@ -110,5 +110,61 @@ class InterpreterClosureTests(unittest.TestCase):
             select(self.native, self.roots, self.registration(), self.inventory, {"moc": executable})
 
 
+class MetadataQueryClosureTests(unittest.TestCase):
+    setUp = InterpreterClosureTests.setUp
+    registration = InterpreterClosureTests.registration
+    def query_fixture(self):
+        names = ("bazel", "coreutils", "git", "bazel_jdk")
+        for character, name in zip("hjkl", names):
+            root = "/nix/store/" + character*32 + "-" + name
+            self.roots.append(root)
+            self.native["packages"][name] = {"out": root}
+            self.refs[root] = [self.roots[3]]
+            self.inventory["files"].append("closure/" + root.rsplit("/", 1)[1] + "/payload")
+        bazel = self.native["packages"]["bazel"]["out"]
+        jdk = self.native["packages"]["bazel_jdk"]["out"]
+        # Retain a real transitive cycle, not just the direct executable seeds.
+        self.refs[bazel].append(jdk)
+        self.refs[jdk].append(bazel)
+        for package, binary in (("bazel", "bazel"), ("bash", "bash"), ("coreutils", "env"),
+                                ("python", "python3"), ("git", "git")):
+            self.inventory["files"].append("closure/" + self.native["packages"][package]["out"].rsplit("/", 1)[1] + "/bin/" + binary)
+
+    def test_query_group_preserves_all_transitive_files_and_excludes_unreachable_compiler_node(self):
+        self.query_fixture()
+        result = select(self.native, self.roots, self.registration(), self.inventory)
+        group = result["groups"]["codex_metadata_query"]
+        expected = set(self.roots)-{self.roots[1], self.roots[4], self.roots[5]}
+        self.assertEqual(set(group["roots"]), expected)
+        self.assertEqual(set(group["files"]), {file for file in self.inventory["files"]
+            if "/nix/store/" + file.split("/")[1] in expected})
+        self.assertEqual(set(registrations(group["registration"], group["roots"])), expected)
+        self.assertEqual(result["query_tools"]["roots"], group["roots"])
+        self.assertEqual(result["query_tools"]["tools"]["bazel"], self.native["packages"]["bazel"]["out"]+"/bin/bazel")
+        self.assertNotIn(self.roots[4], group["roots"])
+
+    def test_partial_package_map_or_uninventoried_executable_refuses(self):
+        self.query_fixture()
+        git = self.native["packages"].pop("git")
+        with self.assertRaises(ValueError): select(self.native, self.roots, self.registration(), self.inventory)
+        self.native["packages"]["git"] = git
+        self.inventory["files"].remove("closure/" + git["out"].rsplit("/", 1)[1] + "/bin/git")
+        with self.assertRaises(ValueError): select(self.native, self.roots, self.registration(), self.inventory)
+
+    def test_git_only_manifest_does_not_implicitly_enable_query_capability(self):
+        self.query_fixture()
+        self.native["packages"].pop("bazel")
+        result = select(self.native, self.roots, self.registration(), self.inventory)
+        self.assertNotIn("codex_metadata_query", result["groups"])
+        self.assertNotIn("query_tools", result)
+
+    def test_missing_transitive_query_dependency_refuses(self):
+        self.query_fixture()
+        jdk = self.native["packages"]["bazel_jdk"]["out"]
+        self.inventory["files"] = [file for file in self.inventory["files"]
+            if not file.startswith("closure/" + jdk.rsplit("/", 1)[1] + "/")]
+        with self.assertRaises(ValueError): select(self.native, self.roots, self.registration(), self.inventory)
+
+
 if __name__ == "__main__":
     unittest.main()

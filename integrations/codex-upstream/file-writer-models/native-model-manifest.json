@@ -1,0 +1,68 @@
+{
+  "binary_target": "//codex-rs/login:login-file-writer-storage-tests-bin",
+  "cargo_feature": "omux-native-file-writer-storage-models",
+  "compiled": false,
+  "issuer_qualified": false,
+  "kind": "omux-native-file-writer-model-target-native-delta-v1",
+  "native_support": false,
+  "parent_kind": "omux-native-source-file-writer-boundary-v1",
+  "patch": {
+    "bytes": 5524,
+    "sha256": "0ccc8918280e3ee21d89e2804122f679a5b4c107b63cc2d477a25e114a3c40a0"
+  },
+  "paths": [
+    {
+      "after": {
+        "bytes": 4362,
+        "sha256": "6add5952945fa4e03c9610f47c4985bac605055bce5d65e06503871ce17fa049"
+      },
+      "before": {
+        "bytes": 436,
+        "sha256": "8b3be99f128d9b2cf25d79c87acdc1aa8d1d8658b45e0b45a0502e710fc04573"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/login/BUILD.bazel"
+    },
+    {
+      "after": {
+        "bytes": 1944,
+        "sha256": "e7965bcdc01bcb2bc8f8b075d8fea477df275e8e9d9db6e62c060e8d241ba548"
+      },
+      "before": {
+        "bytes": 1727,
+        "sha256": "eac796ff363ed2173f1fe8d0280a5d001182d57f10cfce4d6bebe8f92639568f"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/login/Cargo.toml"
+    },
+    {
+      "after": {
+        "bytes": 17034,
+        "sha256": "9f5f619a2094cd9d424bc26b91a458e4152faf38900f4c28b3a50100be1fcbbd"
+      },
+      "before": {
+        "bytes": 16972,
+        "sha256": "ac6027a76b97bd7b3636075f74ebc3e6cd3b7fc867a8eb271e5ddb902ccb8889"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/login/src/auth/default_client.rs"
+    },
+    {
+      "after": {
+        "bytes": 6278,
+        "sha256": "fd6ddeab6b7ea3e54eceb7d7780bdccb0c88283938dd119165be35be1301f639"
+      },
+      "before": {
+        "bytes": 6216,
+        "sha256": "db4490daaeb89bf781d05ceeeb53f2291e4729caea2b62a635d61c98e305223e"
+      },
+      "logical_mode": "100644",
+      "path": "codex-rs/login/src/auth/revoke.rs"
+    }
+  ],
+  "provider_evaluation": false,
+  "scheduler_enabled": false,
+  "schema_version": 1,
+  "status": "SOURCE-PROPOSAL-UNCOMPILED",
+  "target": "//codex-rs/login:login-file-writer-storage-tests"
+}

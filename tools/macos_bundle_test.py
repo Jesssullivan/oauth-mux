@@ -58,7 +58,7 @@ class BundleContractTest(unittest.TestCase):
         self.assertEqual(info["CFBundleShortVersionString"], numeric)
         self.assertEqual(info["CFBundleExecutable"], "Omux")
         self.assertEqual(info["LSMinimumSystemVersion"], "14.0")
-        for source, name in zip(self.binaries, ("Omux", "omux", "omuxd")):
+        for source, name in zip((*self.binaries, self.binaries[1]), ("Omux", "omux", "omuxd", "omux-native-host")):
             installed = contents / "MacOS" / name
             self.assertEqual(installed.read_bytes(), source.read_bytes())
             self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o755)
@@ -160,9 +160,14 @@ class RelocationPlanningTest(unittest.TestCase):
         self.files[self.a] = fixture_macho((self.b,), library=True)
         self.files[self.b] = fixture_macho(("/usr/lib/libSystem.B.dylib",), library=True)
         plan = self.plan()
-        self.assertEqual(len(plan.entries), 5)
+        self.assertEqual(len(plan.entries), 6)
         self.assertEqual(plan.system_dependencies, ("/usr/lib/libSystem.B.dylib",))
         roots = [item for item in plan.entries if "/MacOS/" in item.destination]
+        self.assertEqual(len(roots), 4)
+        host = next(item for item in roots if item.destination.endswith("/omux-native-host"))
+        cli = next(item for item in roots if item.destination.endswith("/omux"))
+        self.assertEqual((host.source, host.changes, host.remove_rpaths),
+                         (cli.source, cli.changes, cli.remove_rpaths))
         libraries = [item for item in plan.entries if "/Frameworks/" in item.destination]
         self.assertEqual(len(libraries), 2)
         self.assertTrue(all(item.changes[0][1].startswith("@loader_path/../Frameworks/") for item in roots))
@@ -175,7 +180,7 @@ class RelocationPlanningTest(unittest.TestCase):
         self.files[self.a] = fixture_macho(("@rpath/libb.dylib",), library=True)
         self.files[self.b] = fixture_macho(library=True)
         plan = self.plan()
-        self.assertEqual(len(plan.entries), 5)
+        self.assertEqual(len(plan.entries), 6)
         self.assertTrue(all(item.remove_rpaths == tuple(sorted(root_rpaths)) for item in plan.entries if "/MacOS/" in item.destination))
 
     def test_loader_relative_dependencies_are_resolved_before_relocation(self):
@@ -183,19 +188,19 @@ class RelocationPlanningTest(unittest.TestCase):
         self.files[self.roots["Omux"]] = fixture_macho((self.a,))
         self.files[self.a] = fixture_macho(("@loader_path/libnearby.dylib",), ("@loader_path",), library=True)
         self.files[nearby] = fixture_macho(library=True)
-        self.assertEqual(len(self.plan().entries), 5)
+        self.assertEqual(len(self.plan().entries), 6)
 
     def test_dependency_cycles_are_finite(self):
         self.files[self.roots["Omux"]] = fixture_macho((self.a,))
         self.files[self.a] = fixture_macho((self.b,), library=True)
         self.files[self.b] = fixture_macho((self.a,), library=True)
-        self.assertEqual(len(self.plan().entries), 5)
+        self.assertEqual(len(self.plan().entries), 6)
 
     def test_system_frameworks_are_retained_without_sdk_redistribution(self):
         framework = "/System/Library/Frameworks/SwiftUI.framework/Versions/A/SwiftUI"
         self.files[self.roots["Omux"]] = fixture_macho((framework,))
         plan = self.plan()
-        self.assertEqual(len(plan.entries), 3)
+        self.assertEqual(len(plan.entries), 4)
         self.assertEqual(plan.system_dependencies, (framework,))
 
     def test_swift_runtime_fallback_requires_the_declared_sdk_stub(self):
@@ -237,7 +242,7 @@ class RelocationPlanningTest(unittest.TestCase):
             with self.subTest(minimum=minimum):
                 self.files[self.a] = fixture_macho(library=True, minimum=minimum)
                 plan = self.plan()
-                self.assertEqual(len(plan.entries), 4)
+                self.assertEqual(len(plan.entries), 5)
                 self.assertTrue(any(entry.source == self.a for entry in plan.entries))
 
     def test_missing_and_unknown_relative_dependencies_are_rejected(self):
@@ -266,7 +271,7 @@ class RelocationPlanningTest(unittest.TestCase):
             self.plan()
         self.files[self.a] = fixture_universal(
             fixture_macho(library=True), fixture_macho(library=True, architecture="x86_64"))
-        self.assertEqual(len(self.plan().entries), 4)
+        self.assertEqual(len(self.plan().entries), 5)
 
     def test_universal_slices_with_different_rpaths_fail_closed(self):
         self.files[self.roots["Omux"]] = fixture_universal(

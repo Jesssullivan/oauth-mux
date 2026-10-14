@@ -6,6 +6,10 @@ const control = @import("control.zig");
 const domain = @import("domain.zig");
 const storage = @import("storage.zig");
 const envelope = @import("envelope.zig");
+const oauth_enrollment = @import("oauth_enrollment.zig");
+const oauth_issue = @import("oauth_issue_authority.zig");
+const oauth_callback = @import("oauth_callback.zig");
+const siwc_renewal = @import("siwc_renewal.zig");
 const instance = @import("instance.zig");
 const onboarding = @import("onboarding.zig");
 const setup_evidence = @import("setup_evidence.zig");
@@ -28,25 +32,101 @@ const catalog = @import("catalog.zig");
 const git = @import("integrations/git.zig");
 const codex = @import("integrations/codex.zig");
 const paths = @import("paths.zig");
+const file_metadata = @import("platform/file_metadata.zig");
 const setup = @import("integrations/setup.zig");
+const runtime_deployment = @import("integrations/runtime_deployment.zig");
+const runtime_package_installation = @import("integrations/runtime_installation.zig");
+const runtime_selection_writer = @import("integrations/runtime_selection_writer.zig");
+const runtime_selection_producer = @import("integrations/runtime_selection_producer.zig");
 const measured_runtime = @import("integrations/measured_runtime_selection.zig");
 const product = @import("product.zig");
 const discovery = @import("discovery.zig");
 const observer = @import("observer.zig");
 const native_probe = @import("integrations/native_probe.zig");
 const native_inventory = @import("integrations/native_inventory.zig");
+const native_source_context = @import("integrations/native_source_context.zig");
+const native_source_consent = @import("native_source_consent.zig");
+const native_source_acquisition = @import("native_source_acquisition.zig");
 const request_authority = @import("request_authority.zig");
+const siwc_route = @import("siwc_route.zig");
 const mutation_authority = @import("mutation_authority.zig");
 const snapshot_admission = @import("snapshot_admission.zig");
 const native_owner = @import("native_owner.zig");
 const native_work = @import("native_owner_work.zig");
+const oauth_oidc = @import("oauth_oidc.zig");
+const siwc_pair = @import("siwc_pair.zig");
+const owned_renewal_accounting = @import("owned_renewal_accounting.zig");
+const siwc_catalog = @import("siwc_catalog.zig");
+const siwc_catalog_authority = @import("siwc_catalog_authority.zig");
 const peer = @import("platform/peer.zig");
 const reliability = @import("reliability.zig");
 const sql_api = @import("c");
 
 pub const Channel = control.Channel;
 const Policy = struct { sticky_routes: bool = true, warm_alternatives: bool = true };
-const SourceDescription = struct { source_id: []const u8, provider: []const u8, label: []const u8 = "", path: []const u8 = "" };
+const PublicAccountView = struct {
+    id: []const u8,
+    label: []const u8,
+    account_type: []const u8,
+    lifecycle: domain.AccountLifecycle,
+    identity: struct { provider: []const u8, verified: bool },
+    source_ids: []const []const u8,
+};
+
+fn publicAccountView(account: domain.Account) PublicAccountView {
+    return .{
+        .id = account.id,
+        .label = account.label,
+        .account_type = account.account_type,
+        .lifecycle = account.lifecycle,
+        .identity = .{ .provider = account.identity.provider, .verified = account.identity.verified },
+        .source_ids = account.source_ids,
+    };
+}
+
+// Durable, secret-free owner of an issued native copy. A surviving intent is
+// uncertainty after restart, never permission to recreate or replay its lease.
+const NativeSourceRotationIntent = struct {
+    operation: native_owner.OperationId,
+    context: native_source_consent.Context,
+    job_generation: u64,
+    admitted_at: i64,
+    expires_at: i64,
+    // Durable uncertainty is not renewable authority. Restart or a lost reply
+    // requires disconnect/reconnect with explicit native source consent.
+    recovery: enum { interrupted_or_reply_lost_reconnect_required } = .interrupted_or_reply_lost_reconnect_required,
+};
+const NativeSourceAuthority = struct {
+    // This record is daemon-owned persisted metadata. A discovery hint
+    // or a client-selected context cannot construct this consent record.
+    consent: native_source_consent.Consent,
+    origin: native_source_consent.Handle,
+    // Older custody did not retain this tuple. Never infer it from a newly
+    // advertised context or reconstruct an acquisition lease on restart.
+    context: ?native_source_consent.Context = null,
+    rotation: ?NativeSourceRotationIntent = null,
+    // Keeps the automatic per-source retry cadence through known refusal and
+    // restart. A backward wall clock refuses a fresh operation, not its lease.
+    rotation_attempted_at: ?i64 = null,
+};
+const QualifiedNativeRuntime = struct {
+    record_sha256: [32]u8,
+    evidence: []const u8,
+    channel: setup.RuntimeChannel,
+    target: setup.RuntimeTarget,
+    adapter_epoch: u64 = 0,
+    registry: ?setup.RegistryWitness = null,
+};
+const SourceDescription = struct {
+    source_id: []const u8,
+    provider: []const u8,
+    label: []const u8 = "",
+    path: []const u8 = "",
+    native_authority: ?NativeSourceAuthority = null,
+    // A private locator copied from an authenticated native publication. It
+    // is never accepted as a control source/profile path or projected to UI.
+    native_endpoint: []const u8 = "",
+};
 const OutcomeIntent = struct {
     key: snapshot_admission.Key,
     owner_id: []const u8,
@@ -183,6 +263,10 @@ const Persisted = struct {
     schema_version: u32 = 1,
     lifecycle_measurements: ?*const reliability.LifecycleRecorder = null,
     browser_attempt_authority: ?browser_attempt.Snapshot = null,
+    fresh_oauth_authority: ?oauth_enrollment.Snapshot = null,
+    fresh_oauth_host_id: ?[32]u8 = null,
+    owned_siwc_pairs: ?siwc_pair.Snapshot = null,
+    owned_renewal_accounting: ?owned_renewal_accounting.Snapshot = null,
     state: domain.Snapshot = .{},
     policy: Policy = .{},
     installed_integrations: []const []const u8 = &.{},
@@ -199,6 +283,23 @@ const Persisted = struct {
     native_registry: ?setup.RegistryWitness = null,
     // Optional historical metadata. Absence never selects or activates bytes.
     measured_codex_runtime: ?measured_runtime.Committed = null,
+    qualified_native_runtime: ?QualifiedNativeRuntime = null,
+    pub fn jsonStringify(self: Persisted, writer: anytype) !void {
+        try writer.beginObject();
+        inline for (@typeInfo(Persisted).@"struct".field_names) |name| {
+            if (comptime std.mem.eql(u8, name, "owned_renewal_accounting")) {
+                // Absence spends no new legacy envelope bytes or promise.
+                if (self.owned_renewal_accounting) |value| {
+                    try writer.objectField(name);
+                    try writer.write(value);
+                }
+            } else {
+                try writer.objectField(name);
+                try writer.write(@field(self, name));
+            }
+        }
+        try writer.endObject();
+    }
 };
 const Invocation = struct {
     allocator: std.mem.Allocator,
@@ -210,6 +311,243 @@ const Invocation = struct {
     finished: bool = false,
     condition: std.Io.Condition = .init,
     peer_context: ?peer.Context = null,
+    // Private in-process installation call; ordinary control parsing has no
+    // constructor or wire representation for this opaque producer authority.
+    qualified_candidate: ?*const runtime_selection_producer.ValidatedSelection = null,
+    qualified_oauth_profile: ?*oauth_issue.EnrollmentProfile = null,
+    owned_oss_callback_port: ?u16 = null,
+    catalog_model_server: ?*transport.testing.CatalogServer = null,
+    oauth_authorization: ?struct { transaction_id: [32]u8, expected_revision: u64 } = null,
+};
+const FreshOAuthPending = struct {
+    attempt: oauth_enrollment.Attempt,
+    profile: *oauth_issue.EnrollmentProfile,
+    receiver: ?*oauth_callback.Receiver = null,
+    ticket: ?*oauth_issue.IssuedTicket = null,
+    fence: ?*oauth_issue.DispatchFence = null,
+    transport_id: ?u64 = null,
+    jwks_id: ?u64 = null,
+    response: ?*transport.OAuthResponse = null,
+    authorization_delivered: bool = false,
+    fn workUntil(self: *const FreshOAuthPending) std.Io.Clock.Timestamp {
+        return if (self.ticket) |ticket| ticket.originalUntil() else self.attempt.until;
+    }
+    fn deinit(self: *FreshOAuthPending) void {
+        if (self.receiver) |receiver| receiver.deinit();
+        if (self.fence) |fence| {
+            _ = fence.invalidate();
+            fence.deinit();
+        }
+        if (self.ticket) |ticket| ticket.deinit();
+        if (self.response) |response| response.deinit();
+        self.profile.deinit();
+        self.attempt.deinit();
+        self.* = undefined;
+    }
+};
+const FreshOAuthVerifyTask = struct {
+    allocator: std.mem.Allocator,
+    ticket: *oauth_issue.IssuedTicket,
+    response: *transport.OAuthResponse,
+    jwks: *transport.JwksLease,
+    proof: ?*oauth_oidc.VerifiedProfile = null,
+    failure: ?anyerror = null,
+    job: native_work.Job,
+    fn run(context: *anyopaque, cancelled: bool) void {
+        const self: *FreshOAuthVerifyTask = @ptrCast(@alignCast(context));
+        if (cancelled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.proof = oauth_oidc.verifyOwnedResponse(self.allocator, self.ticket, self.response, self.jwks) catch |err| failed: {
+            self.failure = err;
+            break :failed null;
+        };
+    }
+    fn deinit(self: *FreshOAuthVerifyTask) void {
+        if (self.proof) |proof| proof.deinit();
+        self.jwks.deinit();
+        self.response.deinit();
+        self.ticket.deinit();
+        self.allocator.destroy(self);
+    }
+};
+const max_owned_renewals = 4;
+const OwnedRenewalPending = struct {
+    binding: oauth_issue.RenewalBinding,
+    ticket: *oauth_issue.IssuedTicket,
+    fence: *oauth_issue.DispatchFence,
+    transport_id: ?u64 = null,
+    jwks_id: ?u64 = null,
+    response: ?*transport.OAuthResponse = null,
+    verifying: bool = false,
+    fn deinit(self: *OwnedRenewalPending) void {
+        _ = self.fence.invalidate();
+        self.fence.deinit();
+        self.ticket.deinit();
+        if (self.response) |response| response.deinit();
+        self.* = undefined;
+    }
+};
+/// Test-only wait for the SAME original Unix-second grant bound. Subtracting
+/// floored seconds and then sleeping whole seconds adds the current fraction.
+const OwnedRenewalFixtureExpiry = struct {
+    fn remaining(expires_at: i64, now: std.Io.Timestamp) !i96 {
+        if (!builtin.is_test) return error.TestOnly;
+        if (expires_at <= 0 or now.nanoseconds < 0) return error.InvalidFixtureWindow;
+        const original_ns = @as(i96, expires_at) * 1_000_000_000;
+        if (now.nanoseconds >= original_ns) return 0;
+        if (expires_at - now.toSeconds() > 3) return error.InvalidFixtureWindow;
+        return original_ns - now.nanoseconds;
+    }
+    fn wait(io: std.Io, expires_at: i64) !void {
+        const left = try remaining(expires_at, std.Io.Clock.real.now(io));
+        if (left == 0) return;
+        try io.sleep(.fromNanoseconds(left), .awake);
+        // Never rearm the fixture window if wall time changes or an IO clock
+        // returns early. Failure cannot masquerade as reaching original expiry.
+        if (try remaining(expires_at, std.Io.Clock.real.now(io)) != 0) return error.InvalidFixtureWindow;
+    }
+};
+const OwnedRenewalVerifyTask = struct {
+    allocator: std.mem.Allocator,
+    ticket: *oauth_issue.IssuedTicket,
+    response: *transport.OAuthResponse,
+    keys: *transport.JwksLease,
+    fixture_hold_window: bool = false,
+    fixture_verified_before_hold: bool = false,
+    proof: ?*siwc_renewal.VerifiedRotation = null,
+    failure: ?anyerror = null,
+    job: native_work.Job,
+    fn run(raw: *anyopaque, cancelled: bool) void {
+        const self: *OwnedRenewalVerifyTask = @ptrCast(@alignCast(raw));
+        if (cancelled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.proof = siwc_renewal.verifyOwnedRotation(self.allocator, self.ticket, self.response, self.keys) catch |err| failed: {
+            self.failure = err;
+            break :failed null;
+        };
+        if (builtin.is_test and self.fixture_hold_window and self.proof != null) {
+            self.fixture_verified_before_hold = true;
+            const binding = self.ticket.renewalBinding() catch |err| {
+                self.failure = err;
+                return;
+            };
+            const limit = binding.operation.grant_window.limitingExpiry() orelse {
+                self.failure = error.InvalidFixtureWindow;
+                return;
+            };
+            OwnedRenewalFixtureExpiry.wait(self.ticket.clockIo(), limit) catch |err| {
+                self.failure = err;
+                return;
+            };
+        }
+    }
+    fn deinit(self: *OwnedRenewalVerifyTask) void {
+        if (self.proof) |proof| proof.deinit();
+        self.keys.deinit();
+        self.response.deinit();
+        self.ticket.deinit();
+        self.allocator.destroy(self);
+    }
+};
+const OwnedRenewalModelRoute = struct { account_id: [64]u8, routes: oauth_issue.ModelRoutes };
+const OwnedRenewalFixtureServers = struct {
+    allocator: std.mem.Allocator,
+    account_id: [64]u8,
+    token: transport.testing.Server,
+    keys: transport.testing.Server,
+    fn deinit(self: *OwnedRenewalFixtureServers) void {
+        self.token.deinit();
+        self.keys.deinit();
+        self.allocator.destroy(self);
+    }
+};
+const NativeRuntimeCommitTask = struct {
+    engine: *Engine,
+    invocation: *Invocation,
+    candidate: ?*const runtime_selection_producer.ValidatedSelection,
+    owned_candidate: ?*runtime_selection_producer.ValidatedSelection = null,
+    deployment: ?runtime_deployment.RegisteredDeployment = null,
+    inputs: ?*runtime_deployment.OwnedInputs = null,
+    installation: ?runtime_package_installation.OwnedInstallation = null,
+    parent: std.c.fd_t = -1,
+    basename: ?[:0]const u8 = null,
+    install_response: ?[]u8 = null,
+    context: runtime_selection_producer.ActorContext,
+    arena: *std.heap.ArenaAllocator,
+    registry: ?setup.RegistryWitness,
+    epoch: u64,
+    job: native_work.Job,
+    prepared: ?*runtime_selection_writer.Prepared = null,
+    failure: ?anyerror = null,
+    handoff_ready: bool = false,
+    fn run(raw: *anyopaque, canceled: bool) void {
+        const self: *NativeRuntimeCommitTask = @ptrCast(@alignCast(raw));
+        if (canceled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.prepare() catch |err| {
+            self.failure = err;
+            return;
+        };
+        self.handoff_ready = true;
+    }
+    fn prepare(self: *NativeRuntimeCommitTask) !void {
+        const io = self.engine.io;
+        const a = self.engine.allocator;
+        if (self.deployment) |selected| {
+            self.inputs = try runtime_deployment.load(io, a, selected, self.context.deadline);
+            self.installation = try runtime_package_installation.installQualifiedPackage(io, a, self.context, self.inputs.?, self.parent, self.basename.?);
+            try self.installation.?.recheck(io, self.context.deadline, self.parent, self.basename.?);
+            self.owned_candidate = try runtime_selection_producer.acquire(io, a, self.context, self.inputs.?.inputsForInstallation(self.installation.?.directory));
+            self.candidate = self.owned_candidate;
+        }
+        const candidate = self.candidate orelse return error.InvalidRuntimeSelection;
+        self.prepared = try runtime_selection_writer.prepare(io, a, self.context, candidate);
+        try self.prepared.?.recheck(io, self.context);
+        if (self.inputs) |inputs| try inputs.recheck(io);
+        if (self.installation) |*installed| try installed.recheck(io, self.context.deadline, self.parent, self.basename.?);
+    }
+    fn deinit(self: *NativeRuntimeCommitTask) void {
+        const a = self.engine.allocator;
+        if (self.prepared) |prepared| prepared.deinit(a);
+        if (self.owned_candidate) |selected| selected.deinit();
+        if (self.installation) |*installed| installed.deinit();
+        if (self.inputs) |inputs| inputs.deinit();
+        if (self.deployment) |selected| _ = std.c.close(selected.descriptor);
+        if (self.parent >= 0) _ = std.c.close(self.parent);
+        if (self.install_response) |response| self.invocation.allocator.free(response);
+        std.crypto.secureZero(u8, &self.context.options.key);
+        std.crypto.secureZero(u8, &self.context.options.capability);
+        self.arena.deinit();
+        a.destroy(self.arena);
+        a.destroy(self);
+    }
+};
+const OwnedSourceImage = struct {
+    selected: *setup.VerifiedRuntimeSelection,
+    expected: setup.RuntimeSelectionExpectation,
+    fn open(io: std.Io, a: std.mem.Allocator, root: []const u8, retained: QualifiedNativeRuntime, options: setup.Options) !OwnedSourceImage {
+        const directory = try paths.openPrivateRoot(a, root, false);
+        errdefer _ = std.c.close(directory);
+        const expected: setup.RuntimeSelectionExpectation = .{ .record_sha256 = retained.record_sha256, .channel = retained.channel, .target = retained.target, .directory = directory };
+        const selected = try setup.verifyRetainedRuntimeSelection(io, a, options, expected, retained.evidence);
+        errdefer selected.deinit(a);
+        if (selected.launchProfile() != .linux_nix_direct_main_v1) return error.NativeImageUnavailable;
+        return .{ .selected = selected, .expected = expected };
+    }
+    fn view(self: *const OwnedSourceImage, options: setup.Options) native_probe.SourceImage {
+        return .{ .selection = self.selected, .options = options, .expected = self.expected };
+    }
+    fn deinit(self: *OwnedSourceImage, a: std.mem.Allocator) void {
+        self.selected.deinit(a);
+        _ = std.c.close(self.expected.directory);
+        self.* = undefined;
+    }
 };
 // An invocation cannot return while its continuation owns this stack waiter.
 // Protocol arguments, socket context and replies are heap-owned independently
@@ -219,7 +557,7 @@ const NativeTask = struct {
     invocation: *Invocation,
     request: control.Request,
     job: native_work.Job,
-    stage: enum { identify, registration, announcement_identify, announcement, detachment, discovery },
+    stage: enum { identify, registration, announcement_identify, announcement, detachment, discovery, source_prepare, source_acquire },
     operation: native_owner.OperationId,
     native_operation: ?native_owner.OperationId = null,
     removal_operation: ?native_owner.OperationId = null,
@@ -237,6 +575,18 @@ const NativeTask = struct {
     identity: ?native_probe.OwnerIdentity = null,
     acknowledgement: ?native_probe.OwnerAck = null,
     discovered: std.ArrayList(native_probe.OwnerLoadedThreads) = .empty,
+    source_contexts: std.ArrayList(native_probe.SourceContextDeclaration) = .empty,
+    source_context_runtime: ?[]const u8 = null,
+    source_selection: ?native_source_acquisition.ControlSelection = null,
+    source_runtime_root: ?[]const u8 = null,
+    source_runtime_record: ?QualifiedNativeRuntime = null,
+    source_image: ?OwnedSourceImage = null,
+    source_origin: ?native_source_consent.Handle = null,
+    source_authority: ?NativeSourceAuthority = null,
+    source_admission: ?native_source_consent.Admission = null,
+    source_started_at: ?std.Io.Timestamp = null,
+    source_copy_now: i64 = 0,
+    source_copy: ?native_probe.OwnerConnection.AccessCopy = null,
     discovery_context: ?*std.heap.ArenaAllocator = null,
     discovery_options: ?setup.Options = null,
     discovery_until: ?std.Io.Clock.Timestamp = null,
@@ -263,10 +613,113 @@ const NativeTask = struct {
             self.failure = err;
         };
     }
+    fn retainDiscovered(self: *NativeTask, loaded: native_probe.OwnerLoadedThreads) !void {
+        var retained = false;
+        defer if (!retained) loaded.deinit(self.engine.allocator);
+        for (self.discovered.items) |prior| if (std.mem.eql(u8, &prior.owner_id, &loaded.owner_id)) {
+            if (!std.mem.eql(u8, &prior.native_nonce, &loaded.native_nonce) or prior.endpoint_generation != loaded.endpoint_generation or
+                !peer.sameOriginal(prior.witness, loaded.witness) or !eql(prior.socket_path, loaded.socket_path)) return error.NativeOwnerAmbiguous;
+            return;
+        };
+        try self.discovered.append(self.engine.allocator, loaded);
+        retained = true;
+    }
+    fn requireDiscoveryFits(self: *const NativeTask) !void {
+        var arena: std.heap.ArenaAllocator = .init(self.engine.allocator);
+        defer arena.deinit();
+        try requireNativeDiscoveryFits(self.request.id, try nativeDiscoveryResult(arena.allocator(), self, null, false));
+    }
+    fn discoverSourceContexts(self: *NativeTask, budget: *native_inventory.Budget) !void {
+        if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return;
+        const runtime = self.source_context_runtime orelse return;
+        const io = self.engine.io;
+        const allocator = self.engine.allocator;
+        var hints = (try native_source_context.collect(io, allocator, runtime, budget)) orelse return;
+        defer hints.deinit();
+        for (hints.hints) |*hint| {
+            try budget.check(io);
+            try hints.verify(io, budget);
+            // The endpoint-derived home is used only for held socket metadata.
+            // No credential locator, source permission or auth-file read exists.
+            var endpoints = try native_inventory.collect(io, allocator, hint.endpointHome(), budget);
+            defer endpoints.deinit();
+            var selected: ?*const native_inventory.Candidate = null;
+            for (endpoints.candidates) |*candidate| if (eql(candidate.endpoint_path, hint.endpoint_path)) {
+                if (selected != null) return error.NativeOwnerAmbiguous;
+                selected = candidate;
+            };
+            const candidate = selected orelse return error.NativeSourceContextChanged;
+            const loaded = try native_probe.loadedAutomaticOwnerThreadsWithDeadline(io, allocator, candidate, product.version, budget.until);
+            var transferred = false;
+            defer if (!transferred) loaded.deinit(allocator);
+            if (!std.mem.eql(u8, &loaded.owner_id, &hint.owner_id) or !std.mem.eql(u8, &loaded.native_nonce, &hint.native_nonce) or loaded.endpoint_generation != hint.endpoint_generation) return error.NativeOwnerIdentityMismatch;
+            const declaration = try native_probe.inspectAutomaticSourceContextWithDeadline(io, allocator, candidate, loaded.witness, .{
+                .owner_id = hint.owner_id,
+                .native_nonce = hint.native_nonce,
+                .endpoint_generation = hint.endpoint_generation,
+                // Maintained v8's immutable hint locates this owner endpoint.
+                // Only its freshly authenticated reply names current context.
+                .context = null,
+            }, budget.until);
+            try endpoints.verify(allocator);
+            try hints.verify(io, budget);
+            try budget.check(io);
+            try self.source_contexts.append(allocator, declaration);
+            transferred = true; // retainDiscovered consumes on both success/refusal.
+            try self.retainDiscovered(loaded);
+            try self.requireDiscoveryFits();
+        }
+        try hints.verify(io, budget);
+        try budget.check(io);
+    }
+    fn prepareSource(self: *NativeTask) !void {
+        const selection = self.source_selection orelse return error.InvalidParams;
+        const io = self.engine.io;
+        const a = self.engine.allocator;
+        var declaration: ?native_probe.SourceContextDeclaration = null;
+        for (self.source_contexts.items) |current| {
+            if (!std.meta.eql(current.owner_id, selection.owner_id) or !std.meta.eql(current.native_nonce, selection.nonce) or
+                current.endpoint_generation != selection.endpoint_generation) continue;
+            if (declaration != null) return error.NativeSourceAmbiguous;
+            if (current.status != .available or current.store_present != true) return error.NativeSourceUnavailable;
+            const context = current.context orelse return error.NativeSourceUnavailable;
+            if (!std.meta.eql(context.id, selection.context.id) or context.generation != selection.context.generation) return error.NativeSourceContextChanged;
+            declaration = current;
+        }
+        const current = declaration orelse return error.NativeSourceUnavailable;
+        var endpoint: ?[]const u8 = null;
+        for (self.discovered.items) |loaded| {
+            if (!std.meta.eql(loaded.owner_id, current.owner_id)) continue;
+            if (endpoint != null or !std.meta.eql(loaded.native_nonce, current.native_nonce) or
+                loaded.endpoint_generation != current.endpoint_generation or !peer.sameOriginal(loaded.witness, current.witness)) return error.NativeSourceAmbiguous;
+            endpoint = loaded.socket_path;
+        }
+        const owned_endpoint = try a.dupe(u8, endpoint orelse return error.NativeSourceUnavailable);
+        a.free(self.endpoint);
+        self.endpoint = owned_endpoint;
+        self.expected = current.witness;
+        self.source_image = try OwnedSourceImage.open(io, a, self.source_runtime_root orelse return error.NativeImageUnavailable, self.source_runtime_record orelse return error.NativeImageUnavailable, self.discovery_options.?);
+        var connection = try native_probe.OwnerConnection.open(io, a, self.endpoint, self.expected, self.invocation.until);
+        defer connection.deinit();
+        var key = try native_source_acquisition.capabilityKey(self.discovery_options.?.capability);
+        defer std.crypto.secureZero(u8, &key);
+        self.source_origin = try connection.sourceOrigin(self.operation, .{ .owner_id = selection.owner_id, .native_nonce = selection.nonce, .endpoint_generation = selection.endpoint_generation, .context = .{ .id = selection.context.id, .generation = selection.context.generation } }, key, self.source_image.?.view(self.discovery_options.?));
+        try native_source_acquisition.deadline(io, self.invocation.until);
+    }
     fn perform(self: *NativeTask) !void {
         const io = self.engine.io;
         const allocator = self.engine.allocator;
-        if (self.stage == .discovery) {
+        if (self.stage == .source_acquire) {
+            const admission = self.source_admission orelse return error.NativeSourceConsentRequired;
+            const scope = self.source_authority orelse return error.NativeSourceConsentRequired;
+            const selection = self.source_selection orelse return error.InvalidParams;
+            var key = try native_source_acquisition.capabilityKey(self.discovery_options.?.capability);
+            defer std.crypto.secureZero(u8, &key);
+            self.connection = try native_probe.OwnerConnection.open(io, allocator, self.endpoint, self.expected, self.invocation.until);
+            self.source_copy = try self.connection.?.acquireSource(.{ .admission = admission, .origin = scope.origin, .operation = self.operation, .custody_seconds = selection.custody_seconds, .consent_expires_at = scope.consent.expires_at }, key, self.source_copy_now, self.source_image.?.view(self.discovery_options.?));
+            return;
+        }
+        if (self.stage == .discovery or self.stage == .source_prepare) {
             var budget = try native_inventory.Budget.init(io, self.invocation.until);
             self.discovery_until = budget.until;
             if (self.endpoint.len != 0) {
@@ -285,27 +738,30 @@ const NativeTask = struct {
                 options.deadline = budget.until;
                 const selected_home = try setup.selectedCodexHome(io, allocator, options);
                 defer allocator.free(selected_home);
-                var inventory = try native_inventory.collect(io, allocator, selected_home, &budget);
-                defer inventory.deinit();
-                self.scanned_entries = inventory.scanned_entries;
-                self.ignored_stale_entries = inventory.ignored_stale_entries;
-                for (inventory.candidates) |*candidate| {
-                    try budget.check(io);
-                    const loaded = try native_probe.loadedAutomaticOwnerThreadsWithDeadline(io, allocator, candidate, product.version, budget.until);
-                    self.discovered.append(allocator, loaded) catch |err| {
-                        loaded.deinit(allocator);
-                        return err;
-                    };
-                    // Refuse the entire query before further probes once the
-                    // exact public aggregate exceeds its response boundary.
-                    var arena: std.heap.ArenaAllocator = .init(allocator);
-                    defer arena.deinit();
-                    try requireNativeDiscoveryFits(self.request.id, try nativeDiscoveryResult(arena.allocator(), self, null, false));
+                var selected_inventory: ?native_inventory.Inventory = native_inventory.collect(io, allocator, selected_home, &budget) catch |err| switch (err) {
+                    error.NativeContextMissing => if (!options.codex_home_explicit and options.config_path == null) null else return err,
+                    else => return err,
+                };
+                defer if (selected_inventory) |*value| value.deinit();
+                if (selected_inventory) |*value| {
+                    self.ignored_stale_entries = value.ignored_stale_entries;
+                    for (value.candidates) |*candidate| {
+                        try budget.check(io);
+                        try self.retainDiscovered(try native_probe.loadedAutomaticOwnerThreadsWithDeadline(io, allocator, candidate, product.version, budget.until));
+                        try self.requireDiscoveryFits();
+                    }
+                    try value.verify(allocator);
                 }
+                try self.discoverSourceContexts(&budget);
+                // An unpublished default home alone remains an error; a fresh
+                // authenticated per-user hint can discover a different home.
+                if (selected_inventory == null and self.discovered.items.len == 0) return error.NativeContextMissing;
+                self.scanned_entries = budget.scanned_entries;
+                if (selected_inventory) |*value| try value.verify(allocator);
                 try budget.check(io);
-                try inventory.verify(allocator);
             }
             try budget.check(io);
+            if (self.stage == .source_prepare) try self.prepareSource();
             return;
         }
         if (self.stage == .announcement_identify and self.selected_owner) {
@@ -345,7 +801,7 @@ const NativeTask = struct {
             .registration => self.acknowledgement = try self.connection.?.register(.{ .reference = self.reference.?, .thread_id = self.thread_id, .native_nonce = self.nonce, .operation_id = self.operation, .broker_socket = self.broker_socket, .capability_path = self.capability_path }, self.expected.?),
             .announcement => self.acknowledgement = try self.connection.?.announce(self.thread_id, self.operation, .{ .broker_socket = self.broker_socket, .capability_path = self.capability_path }),
             .detachment => self.acknowledgement = try self.connection.?.detach(.{ .reference = self.reference.?, .thread_id = self.thread_id, .native_nonce = self.nonce, .operation_id = self.native_operation orelse self.operation }, self.expected.?),
-            .discovery => unreachable,
+            .discovery, .source_prepare, .source_acquire => unreachable,
         }
     }
     fn deinit(self: *NativeTask) void {
@@ -355,6 +811,10 @@ const NativeTask = struct {
         if (self.connection) |*value| value.deinit();
         for (self.discovered.items) |value| value.deinit(allocator);
         self.discovered.deinit(allocator);
+        self.source_contexts.deinit(allocator);
+        if (self.source_copy) |*copy| copy.deinit();
+        if (self.source_image) |*image| image.deinit(allocator);
+        if (self.source_runtime_record) |record| allocator.free(record.evidence);
         if (self.discovery_options) |*options| {
             std.crypto.secureZero(u8, &options.key);
             std.crypto.secureZero(u8, &options.capability);
@@ -371,6 +831,25 @@ const NativeTask = struct {
         allocator.destroy(self);
     }
 };
+const NativeImportContext = struct {
+    arena: *std.heap.ArenaAllocator,
+    endpoint: []const u8,
+    options: setup.Options,
+    image: OwnedSourceImage,
+    origin: native_source_consent.Handle,
+    until: std.Io.Clock.Timestamp,
+    registry: ?setup.RegistryWitness,
+    epoch: u64,
+    fn deinit(self: *NativeImportContext, a: std.mem.Allocator) void {
+        self.image.deinit(a);
+        std.crypto.secureZero(u8, &self.options.key);
+        std.crypto.secureZero(u8, &self.options.capability);
+        self.arena.deinit();
+        a.destroy(self.arena);
+        a.destroy(self);
+    }
+};
+
 const PendingImport = struct {
     network_id: u64,
     source_id: []u8,
@@ -389,7 +868,18 @@ const PendingImport = struct {
     token: []u8,
     label: []u8,
     expires_at: ?i64,
+    native_admission: ?native_source_consent.Admission = null,
+    native_started_at: ?std.Io.Timestamp = null,
+    native_selection_digest: ?[32]u8 = null,
+    native_context: ?*NativeImportContext = null,
+    native_operation: ?native_owner.OperationId = null,
+    // Set only by the actor after authenticated same-origin successor discovery
+    // and durable admission. Ordinary imports retain exact saved-context checks.
+    native_expected_authority: ?NativeSourceAuthority = null,
+    native_expected_endpoint: ?[]u8 = null,
     fn deinit(self: *PendingImport, allocator: std.mem.Allocator) void {
+        if (self.native_context) |context| context.deinit(allocator);
+        if (self.native_expected_endpoint) |endpoint| allocator.free(endpoint);
         std.crypto.secureZero(u8, self.token);
         allocator.free(self.token);
         allocator.free(self.source_id);
@@ -402,10 +892,268 @@ const PendingImport = struct {
         allocator.free(self.label);
     }
 };
+const NativeImportOwnership = struct {
+    admission: native_source_consent.Admission,
+    started_at: std.Io.Timestamp,
+    selection_digest: [32]u8,
+    operation: native_owner.OperationId,
+    context: *NativeImportContext,
+    fresh: NativeImportFresh,
+};
 // Network completions are process-local. Source and job generations are durable
 // fences; restart retains their unresolved outcome credits without adopting or
 // resubmitting the missing completion.
 const ImportSourceAuthority = struct { source_id: []u8, generation: u64 = 1 };
+// Produced only by the supervised native final-check worker after the real
+// peer, selected context, origin proof and qualified executable image checks.
+// The actor never accepts this value from control parameters or persistence.
+const NativeImportFresh = struct {
+    declaration: native_probe.SourceContextDeclaration,
+    origin: native_source_consent.Handle,
+    selection_digest: [32]u8,
+};
+const NativeAdoptionFence = struct {
+    pending: PendingImport,
+    fresh: NativeImportFresh,
+    // Only the actor sets this after expected-old CAS and before staging the
+    // new context plus grant. The writer joins the exact staged afterimage.
+    rotation_revision: ?u64 = null,
+};
+const native_source_description_budget: usize = 8192;
+
+// One read-only check at a time, using the original endpoint and peer/context.
+// No credential descriptor, import, consent extension or accepted work replay.
+const NativeSourceMaintenanceTask = struct {
+    engine: *Engine,
+    arena: *std.heap.ArenaAllocator,
+    source_id: [64]u8,
+    authority: NativeSourceAuthority,
+    generation: u64,
+    forget_epoch: u64,
+    epoch: u64,
+    registry: ?setup.RegistryWitness,
+    selected: ?QualifiedNativeRuntime,
+    runtime_root: ?[]const u8,
+    options: ?setup.Options,
+    endpoint: []const u8,
+    until: std.Io.Clock.Timestamp,
+    operation: native_owner.OperationId,
+    job: native_work.Job,
+    failure: ?anyerror = null,
+    image_verified: bool = false,
+    negative_verified: bool = false,
+    observed_context: ?native_source_consent.Context = null,
+    fn run(context: *anyopaque, canceled: bool) void {
+        const self: *NativeSourceMaintenanceTask = @ptrCast(@alignCast(context));
+        if (canceled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.perform() catch |err| {
+            self.failure = err;
+        };
+    }
+    fn perform(self: *NativeSourceMaintenanceTask) !void {
+        const io = self.engine.io;
+        const a = self.arena.allocator();
+        const context = self.authority.context orelse return error.NativeSourceFreshCheckRequired;
+        try native_source_acquisition.deadline(io, self.until);
+        var connection = try native_probe.OwnerConnection.open(io, a, self.endpoint, self.authority.consent.owner.witness, self.until);
+        defer connection.deinit();
+        var image: ?OwnedSourceImage = null;
+        defer if (image) |*opened| opened.deinit(self.engine.allocator);
+        if (self.options) |options| {
+            image = try OwnedSourceImage.open(io, self.engine.allocator, self.runtime_root orelse return error.NativeImageUnavailable, self.selected orelse return error.NativeImageUnavailable, options);
+            try image.?.view(options).verify(&connection);
+            self.image_verified = true;
+        }
+        const original_selector: native_probe.SourceContextSelector = .{ .owner_id = self.authority.consent.owner.id, .native_nonce = self.authority.consent.owner.nonce, .endpoint_generation = self.authority.consent.owner.endpoint_generation, .context = if (image != null) null else .{ .id = context.id, .generation = context.generation } };
+        const current = connection.sourceContext(self.operation, original_selector) catch |err| {
+            switch (err) {
+                error.OutOfMemory, error.PeerDeparted, error.PeerIncarnationChanged, error.NativeOwnerPeerMismatch => return err,
+                else => {},
+            }
+            try self.recheckNegativeImage(image, self.options);
+            return err;
+        };
+        if (current.status != .available or current.store_present != true or current.credential_acquisition_authorized) {
+            try self.recheckNegativeImage(image, self.options);
+            return error.NativeSourceUnavailable;
+        }
+        // Metadata alone cannot qualify the executable or stable origin. The
+        // existing installed-image and origin protocol must also verify.
+        const options = self.options orelse return error.NativeImageUnavailable;
+        if (!self.image_verified or image == null) return error.NativeImageUnavailable;
+        var key = try native_source_acquisition.capabilityKey(options.capability);
+        defer std.crypto.secureZero(u8, &key);
+        const observed = current.context orelse return error.NativeSourceUnavailable;
+        const candidate: native_source_consent.Context = .{ .id = observed.id, .generation = observed.generation };
+        try checkNativeContextSuccessor(context, candidate);
+        var selector = original_selector;
+        selector.context = observed;
+        const origin = connection.sourceOrigin(self.operation, selector, key, image.?.view(options)) catch |err| {
+            switch (err) {
+                error.OutOfMemory, error.PeerDeparted, error.PeerIncarnationChanged, error.NativeOwnerPeerMismatch, error.PeerImageMismatch => return err,
+                else => {},
+            }
+            try self.recheckNegativeImage(image, options);
+            return err;
+        };
+        if (!std.crypto.timing_safe.eql([32]u8, origin, self.authority.origin)) {
+            try self.recheckNegativeImage(image, options);
+            return error.NativeSourceOriginChanged;
+        }
+        try image.?.view(options).verify(&connection);
+        try native_source_acquisition.deadline(io, self.until);
+        self.observed_context = candidate;
+    }
+    fn recheckNegativeImage(self: *NativeSourceMaintenanceTask, image: ?OwnedSourceImage, options: ?setup.Options) !void {
+        const retained = image orelse return;
+        const captured = options orelse return;
+        // sourceContext/sourceOrigin mark an unsuccessful protocol connection
+        // failed. Never reset that fence. Reopen the same saved endpoint with
+        // the exact original peer witness solely for the existing image check,
+        // under the original cutoff; no new consent or protocol request.
+        try native_source_acquisition.deadline(self.engine.io, self.until);
+        var after = try native_probe.OwnerConnection.open(self.engine.io, self.arena.allocator(), self.endpoint, self.authority.consent.owner.witness, self.until);
+        defer after.deinit();
+        try retained.view(captured).verify(&after);
+        try native_source_acquisition.deadline(self.engine.io, self.until);
+        self.negative_verified = true;
+    }
+    fn deinit(self: *NativeSourceMaintenanceTask) void {
+        if (self.options) |*options| {
+            std.crypto.secureZero(u8, &options.key);
+            std.crypto.secureZero(u8, &options.capability);
+        }
+        self.arena.deinit();
+        self.engine.allocator.destroy(self.arena);
+        self.engine.allocator.destroy(self);
+    }
+};
+// Use the durably admitted operation's wall expiry, not the longer saved
+// consent. The existing authenticated field fences the native pre-read/reply
+// effects as well as local acceptance; closing a client is not remote cancellation.
+fn nativeRotationRequest(pending: PendingImport, custody_seconds: u32) !native_source_acquisition.Request {
+    const admission = pending.native_admission orelse return error.NativeSourceConsentRequired;
+    const expected = pending.native_expected_authority orelse return error.NativeSourceFreshCheckRequired;
+    const intent = expected.rotation orelse return error.NativeSourceFreshCheckRequired;
+    const request: native_source_acquisition.Request = .{ .admission = admission, .origin = expected.origin, .operation = pending.native_operation orelse return error.NativeSourceFreshCheckRequired, .custody_seconds = custody_seconds, .consent_expires_at = intent.expires_at };
+    try request.validate();
+    return request;
+}
+const NativeSourceRotationTask = struct {
+    engine: *Engine,
+    arena: *std.heap.ArenaAllocator,
+    pending: PendingImport,
+    options: setup.Options,
+    runtime_root: []const u8,
+    selected: QualifiedNativeRuntime,
+    endpoint: []const u8,
+    until: std.Io.Clock.Timestamp,
+    observed_at: i64,
+    custody_seconds: u32,
+    image: ?OwnedSourceImage = null,
+    copy: ?native_probe.OwnerConnection.AccessCopy = null,
+    request_attempted: bool = false,
+    pending_transferred: bool = false,
+    arena_transferred: bool = false,
+    job: native_work.Job,
+    failure: ?anyerror = null,
+    fn run(context: *anyopaque, canceled: bool) void {
+        const self: *NativeSourceRotationTask = @ptrCast(@alignCast(context));
+        if (canceled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.perform() catch |err| {
+            self.failure = err;
+        };
+    }
+    fn perform(self: *NativeSourceRotationTask) !void {
+        const io = self.engine.io;
+        try native_source_acquisition.deadline(io, self.until);
+        const admission = self.pending.native_admission orelse return error.NativeSourceConsentRequired;
+        const request = try nativeRotationRequest(self.pending, self.custody_seconds);
+        self.image = try OwnedSourceImage.open(io, self.engine.allocator, self.runtime_root, self.selected, self.options);
+        var connection = try native_probe.OwnerConnection.open(io, self.arena.allocator(), self.endpoint, admission.owner.witness, self.until);
+        defer connection.deinit();
+        var key = try native_source_acquisition.capabilityKey(self.options.capability);
+        defer std.crypto.secureZero(u8, &key);
+        // Conservative issued boundary: acquireSource performs initial checks
+        // before descriptor IO, but a failed call cannot prove remote nonissue.
+        self.request_attempted = true;
+        self.copy = try connection.acquireSource(request, key, self.observed_at, self.image.?.view(self.options));
+    }
+    fn deinit(self: *NativeSourceRotationTask) void {
+        if (self.copy) |*copy| copy.deinit();
+        if (!self.pending_transferred) self.pending.deinit(self.engine.allocator);
+        if (self.image) |*image| image.deinit(self.engine.allocator);
+        if (!self.arena_transferred) {
+            self.arena.deinit();
+            self.engine.allocator.destroy(self.arena);
+        }
+        std.crypto.secureZero(u8, &self.options.key);
+        std.crypto.secureZero(u8, &self.options.capability);
+        self.engine.allocator.destroy(self);
+    }
+};
+
+const NativeSourceMaintenanceResult = struct {
+    source_id: [64]u8,
+    state: enum { unverified, owner_context_observed, detached },
+    observed_at: i64,
+    reason: ?anyerror = null,
+};
+const NativeSourceMaintenanceView = struct {
+    source_id: []const u8,
+    state: []const u8,
+    observed_at: i64,
+    reason: ?[]const u8,
+    freshness: []const u8 = "historical_observation",
+    acquisition_authority_granted: bool = false,
+};
+
+const NativeImportTask = struct {
+    engine: *Engine,
+    pending: PendingImport,
+    completion: transport.Completion,
+    job: native_work.Job,
+    fresh: ?NativeImportFresh = null,
+    failure: ?anyerror = null,
+    fn run(opaque_context: *anyopaque, canceled: bool) void {
+        const self: *NativeImportTask = @ptrCast(@alignCast(opaque_context));
+        if (canceled) {
+            self.failure = error.ServiceStopping;
+            return;
+        }
+        self.perform() catch |err| {
+            self.failure = err;
+        };
+    }
+    fn perform(self: *NativeImportTask) !void {
+        const retained = self.pending.native_context orelse return error.NativeSourceFreshCheckRequired;
+        const admission = self.pending.native_admission orelse return error.NativeSourceConsentRequired;
+        const io = self.engine.io;
+        try native_source_acquisition.deadline(io, retained.until);
+        var connection = try native_probe.OwnerConnection.open(io, self.engine.allocator, retained.endpoint, admission.owner.witness, retained.until);
+        defer connection.deinit();
+        const selector: native_probe.SourceContextSelector = .{ .owner_id = admission.owner.id, .native_nonce = admission.owner.nonce, .endpoint_generation = admission.owner.endpoint_generation, .context = .{ .id = admission.context.id, .generation = admission.context.generation } };
+        var key = try native_source_acquisition.capabilityKey(retained.options.capability);
+        defer std.crypto.secureZero(u8, &key);
+        const origin = try connection.sourceOrigin(self.pending.native_operation.?, selector, key, retained.image.view(retained.options));
+        if (!std.crypto.timing_safe.eql([32]u8, origin, retained.origin)) return error.NativeSourceOriginChanged;
+        const current = try connection.sourceContext(self.pending.native_operation.?, selector);
+        try retained.image.view(retained.options).verify(&connection);
+        try native_source_acquisition.deadline(io, retained.until);
+        self.fresh = .{ .declaration = current, .origin = origin, .selection_digest = self.pending.native_selection_digest orelse return error.NativeImageUnavailable };
+    }
+    fn deinit(self: *NativeImportTask) void {
+        self.completion.deinit(self.engine.allocator);
+        self.pending.deinit(self.engine.allocator);
+        self.engine.allocator.destroy(self);
+    }
+};
 const ObservationCredit = struct { network_id: u64, key: snapshot_admission.Key };
 const NativeLease = struct {
     handle: [64]u8,
@@ -418,6 +1166,8 @@ const NativeLease = struct {
     expires_at: i64,
     account_id: []u8,
     attempt: u8 = 1,
+    request_profile: siwc_route.Profile = .native,
+    siwc_activation: ?siwc_route.Stamp = null,
     fn create(allocator: std.mem.Allocator, handle: [64]u8, application: []const u8, request_id: []const u8, binding_id: []const u8, account_id: []const u8, demand_json: []const u8, attempt: u8, expires_at: i64, native_ref: ?native_owner.NativeRef) !NativeLease {
         const owned_application = try allocator.dupe(u8, application);
         errdefer allocator.free(owned_application);
@@ -440,6 +1190,30 @@ const NativeLease = struct {
     }
 };
 
+const CatalogPending = struct {
+    invocation: *Invocation,
+    request: control.Request,
+    ticket: *siwc_catalog_authority.Ticket,
+    transport_id: u64,
+    fn deinit(self: *CatalogPending) void {
+        self.request.deinit();
+        self.ticket.deinit();
+    }
+};
+const CatalogCache = struct {
+    handle: [64]u8,
+    context: siwc_pair.CatalogContext,
+    expires_at: i64,
+    adapter_epoch: u64,
+};
+fn catalogOpaque(bytes: []const u8) ![64]u8 {
+    if (bytes.len != 64) return error.InvalidSiwcParams;
+    for (bytes) |byte| if (!std.ascii.isDigit(byte) and (byte < 'a' or byte > 'f')) return error.InvalidSiwcParams;
+    return bytes[0..64].*;
+}
+
+const StartupCustodyNamespace = storage.OpeningExpectation;
+
 pub const Engine = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -454,7 +1228,15 @@ pub const Engine = struct {
     root_key: envelope.Key = @splat(0),
     root_id: ?[:0]u8 = null,
     poisoned: bool = false,
+    // Retained unavailable-startup loop flag; Locked wire compatibility remains.
+    vault_locked: bool = false,
+    // Set only at the wrapping-key IO boundary, never by a generic error name.
+    startup_vault_failure: ?vault.VaultError = null,
+    startup_custody_namespace: ?StartupCustodyNamespace = null,
+    fixture_startup_vault_locked: bool = false,
     test_key: ?envelope.Key = null,
+    test_vault: ?vault.Backend = null,
+    fixture_custody_stage_failure: enum { none, database_open, state_allocation, supervisor_ready } = .none,
     state: domain.State,
     db: ?storage.Store = null,
     network: ?*transport.Client = null,
@@ -474,15 +1256,60 @@ pub const Engine = struct {
     mutations: mutation_authority.Ledger,
     admission: snapshot_admission.Ledger,
     native_owners: native_owner.Ledger,
+    fresh_oauth: ?oauth_enrollment.Ledger = null,
+    fresh_oauth_host_id: ?[32]u8 = null,
+    owned_siwc_pairs: siwc_pair.Registry = .{},
+    owned_renewal_accounting: ?owned_renewal_accounting.Snapshot = null,
+    renewal_accounting_capacity_unavailable: bool = false,
+    catalog_pending: std.ArrayList(CatalogPending) = .empty,
+    catalog_cache: std.ArrayList(CatalogCache) = .empty,
+    fresh_oauth_verifications: std.ArrayList(*FreshOAuthVerifyTask) = .empty,
+    fresh_oauth_pending: std.ArrayList(FreshOAuthPending) = .empty,
+    owned_renewal_pending: std.ArrayList(OwnedRenewalPending) = .empty,
+    owned_renewal_tasks: std.ArrayList(*OwnedRenewalVerifyTask) = .empty,
+    owned_renewal_cursor: usize = 0,
+    owned_renewal_failure: ?anyerror = null,
+    owned_renewal_cancel_failure: ?anyerror = null,
+    fixture_owned_renewal_routes: std.ArrayList(OwnedRenewalModelRoute) = .empty,
+    fixture_owned_renewal_hold_stage: ?storage.CommitStage = null,
+    fixture_owned_renewal_commit_failure: ?storage.CommitStage = null,
+    fixture_owned_renewal_accounting_tamper: bool = false,
+    fixture_owned_renewal_hold_kind: enum { issue, successor } = .successor,
+    fixture_owned_renewal_hold_window: bool = false,
+    fixture_owned_renewal_dispatch_hold: bool = false,
+    fixture_owned_renewal_worker_hold: bool = false,
+    fixture_owned_renewal_verified_before_expiry: bool = false,
+    fixture_siwc_grant_prune_until: ?std.Io.Clock.Timestamp = null,
+    fixture_owned_renewal_servers: std.ArrayList(*OwnedRenewalFixtureServers) = .empty,
+    active_owned_renewal_fixture: ?*OwnedRenewalFixtureServers = null,
+
+    active_oauth_profile: ?*oauth_issue.EnrollmentProfile = null,
+    active_oss_callback_port: ?u16 = null,
+    fresh_oauth_cancel_failure: ?anyerror = null,
+    fresh_oauth_failure: ?anyerror = null,
     active_peer: ?*const peer.Context = null,
     native_registry: ?setup.RegistryWitness = null,
     measured_codex_runtime: ?measured_runtime.Committed = null,
+    qualified_native_runtime: ?QualifiedNativeRuntime = null,
+    runtime_installation: ?*NativeRuntimeCommitTask = null,
     codex_runtime_root: ?[]u8 = null,
+    // Supplied once by the daemon's declared deployment configuration. These
+    // locators select inputs; only the protected reader and genuine constructor
+    // can turn their contents into runtime selection authority.
+    native_deployment_selection: ?NativeDeploymentSelection = null,
     runtime_measurement: ?*RuntimeMeasureTask = null,
     runtime_measurement_requested: bool = false,
     runtime_measurement_failure: ?anyerror = null,
     native_workers: ?*native_work.Supervisor = null,
     native_tasks: std.ArrayList(*NativeTask) = .empty,
+    native_import_tasks: std.ArrayList(*NativeImportTask) = .empty,
+    native_source_maintenance: ?*NativeSourceMaintenanceTask = null,
+    native_source_rotation: ?*NativeSourceRotationTask = null,
+    native_source_rotation_due: ?std.Io.Clock.Timestamp = null,
+    native_source_maintenance_due: ?std.Io.Clock.Timestamp = null,
+    native_source_maintenance_cursor: usize = 0,
+    native_source_maintenance_result: ?NativeSourceMaintenanceResult = null,
+    fixture_native_maintenance_enabled: bool = false,
     active_credit: ?snapshot_admission.Key = null,
     committed_nonledger_bytes: usize = 0,
     committed_counts: snapshot_admission.Counts = .{},
@@ -490,6 +1317,7 @@ pub const Engine = struct {
     fixture_identity_submissions: usize = 0,
     fixture_observation_submissions: usize = 0,
     fixture_force_poll: bool = false,
+    fixture_hold_enrollment_start: bool = false,
     fixture_lifecycle_fault: enum { none, preparation, sqlite_commit, native_preparation_allocation } = .none,
     fixture_native_allocation_failed: bool = false,
     outcome_intents: std.ArrayList(OutcomeIntent) = .empty,
@@ -520,6 +1348,15 @@ pub const Engine = struct {
         return create(io, allocator, state_dir, null, selection);
     }
 
+    pub const NativeDeploymentSelection = struct {
+        registered_package_root: []const u8,
+        installation_root: []const u8,
+    };
+
+    pub fn openForInstanceWithDeployment(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, selection: instance.Selection, deployment: NativeDeploymentSelection) !*Engine {
+        return createConfiguredDeployment(io, allocator, state_dir, null, selection, null, false, null, deployment);
+    }
+
     /// Synthetic tests supply keys; production cannot bypass vault custody.
     pub fn openWithKey(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: envelope.Key) !*Engine {
         if (!builtin.is_test) return error.TestOnly;
@@ -527,15 +1364,21 @@ pub const Engine = struct {
     }
 
     fn create(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection) !*Engine {
-        return createConfigured(io, allocator, state_dir, key, selection, null);
+        return createConfigured(io, allocator, state_dir, key, selection, null, false, null);
     }
 
     pub fn openWithMeasuredRootForTest(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: envelope.Key, root: []const u8) !*Engine {
         if (!builtin.is_test) return error.TestOnly;
-        return createConfigured(io, allocator, state_dir, key, .default, root);
+        return createConfigured(io, allocator, state_dir, key, .default, root, false, null);
     }
 
-    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8) !*Engine {
+    fn createConfigured(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool, test_backend: ?vault.Backend) !*Engine {
+        return createConfiguredDeployment(io, allocator, state_dir, key, selection, test_root, locked_fixture, test_backend, null);
+    }
+
+    fn createConfiguredDeployment(io: std.Io, allocator: std.mem.Allocator, state_dir: []const u8, key: ?envelope.Key, selection: instance.Selection, test_root: ?[]const u8, locked_fixture: bool, test_backend: ?vault.Backend, deployment: ?NativeDeploymentSelection) !*Engine {
+        if (locked_fixture and !builtin.is_test) return error.TestOnly;
+        if (test_backend != null and !builtin.is_test) return error.TestOnly;
         try paths.validateAbsolute(state_dir);
         const self = try allocator.create(Engine);
         errdefer allocator.destroy(self);
@@ -551,6 +1394,15 @@ pub const Engine = struct {
             else => .other,
         }, .evidence = if (builtin.is_test) .synthetic else .diagnostic }), .test_key = key };
         errdefer self.release();
+        if (deployment) |configured| {
+            if (configured.registered_package_root.len > setup_collector.max_path_bytes or configured.installation_root.len > setup_collector.max_path_bytes) return error.InvalidInstallationSelection;
+            try paths.validateAbsolute(configured.registered_package_root);
+            try paths.validateAbsolute(configured.installation_root);
+            const package = try allocator.dupe(u8, configured.registered_package_root);
+            errdefer allocator.free(package);
+            const installation = try allocator.dupe(u8, configured.installation_root);
+            self.native_deployment_selection = .{ .registered_package_root = package, .installation_root = installation };
+        }
         if (test_root) |root| {
             if (!builtin.is_test) return error.TestOnly;
             if (root.len > setup_collector.max_path_bytes) return error.InvalidInstallationSelection;
@@ -587,6 +1439,8 @@ pub const Engine = struct {
             self.installation_service_status = observed.service_status;
             self.installation_probe_at = if (collection_timed_out) null else self.now();
         }
+        self.fixture_startup_vault_locked = locked_fixture;
+        self.test_vault = test_backend;
         self.thread = try std.Thread.spawn(.{}, actor, .{self});
         self.mutex.lockUncancelable(io);
         while (!self.startup_complete) self.condition.waitUncancelable(io, &self.mutex);
@@ -616,7 +1470,12 @@ pub const Engine = struct {
 
     fn release(self: *Engine) void {
         self.state.deinit();
+        if (self.qualified_native_runtime) |retained| self.allocator.free(retained.evidence);
         if (self.codex_runtime_root) |root| self.allocator.free(root);
+        if (self.native_deployment_selection) |deployment| {
+            self.allocator.free(deployment.registered_package_root);
+            self.allocator.free(deployment.installation_root);
+        }
         if (self.installation_selection) |selected| {
             self.allocator.free(selected.prefix);
             self.allocator.free(selected.receipt_path);
@@ -626,6 +1485,22 @@ pub const Engine = struct {
         }
         if (self.lifecycle_measurements) |measurements| self.allocator.destroy(measurements);
         if (self.browser_attempts) |*attempts| attempts.deinit();
+        for (self.fresh_oauth_pending.items) |*pending| pending.deinit();
+        self.fresh_oauth_pending.deinit(self.allocator);
+        for (self.owned_renewal_pending.items) |*pending| pending.deinit();
+        self.owned_renewal_pending.deinit(self.allocator);
+        std.debug.assert(self.owned_renewal_tasks.items.len == 0);
+        self.owned_renewal_tasks.deinit(self.allocator);
+        self.fixture_owned_renewal_routes.deinit(self.allocator);
+        for (self.fixture_owned_renewal_servers.items) |servers| servers.deinit();
+        self.fixture_owned_renewal_servers.deinit(self.allocator);
+        std.debug.assert(self.fresh_oauth_verifications.items.len == 0);
+        self.fresh_oauth_verifications.deinit(self.allocator);
+        std.debug.assert(self.catalog_pending.items.len == 0);
+        self.catalog_pending.deinit(self.allocator);
+        self.catalog_cache.deinit(self.allocator);
+        self.owned_siwc_pairs.deinit(self.allocator);
+        if (self.fresh_oauth) |*enrollments| enrollments.deinit(self.allocator);
         self.observers.deinit();
         for (self.installed.items) |item| self.allocator.free(item);
         self.installed.deinit(self.allocator);
@@ -634,6 +1509,7 @@ pub const Engine = struct {
             self.allocator.free(item.provider);
             self.allocator.free(item.label);
             self.allocator.free(item.path);
+            self.allocator.free(item.native_endpoint);
         }
         self.descriptions.deinit(self.allocator);
         for (self.pending_imports.items) |*item| item.deinit(self.allocator);
@@ -647,6 +1523,7 @@ pub const Engine = struct {
         self.admission.deinit();
         self.native_owners.deinit();
         self.native_tasks.deinit(self.allocator);
+        self.native_import_tasks.deinit(self.allocator);
         self.observation_credits.deinit(self.allocator);
         for (self.outcome_intents.items) |intent| freeIntent(self.allocator, intent);
         self.outcome_intents.deinit(self.allocator);
@@ -670,6 +1547,103 @@ pub const Engine = struct {
 
     pub fn dispatchUntilWithPeer(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel, until: std.Io.Clock.Timestamp, context: *const peer.Context) ![]u8 {
         return self.dispatchOwnedPeer(allocator, payload, channel, until, context);
+    }
+
+    // Called by the trusted installation transaction after genuine producer
+    // qualification. No public RPC can supply this opaque argument. The caller
+    // retains the selection until the supervised preparation actually ends.
+    pub fn commitQualifiedNativeRuntime(self: *Engine, selected: *const runtime_selection_producer.ValidatedSelection, until: std.Io.Clock.Timestamp) !void {
+        if (until.clock != .awake or until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
+        var invocation: Invocation = .{ .allocator = self.allocator, .payload = "", .channel = .control, .until = until, .qualified_candidate = selected };
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        self.allocator.free(invocation.response.?);
+    }
+
+    /// Trusted same-daemon producer call. No wire field/control client can
+    /// construct this opaque profile. Caller retains it through queue completion.
+    pub fn prepareFreshOAuthWithProfile(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, profile: ?*oauth_issue.EnrollmentProfile, until: std.Io.Clock.Timestamp) ![]u8 {
+        const qualified = profile orelse return error.RegistrationProfileUnavailable;
+        try qualified.requireAvailable();
+        var request = try control.parse(allocator, payload);
+        defer request.deinit();
+        if (!eql(request.method, "oauth.enrollment.prepare.v1")) return error.WrongPurpose;
+        if (until.clock != .awake or until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.EnrollmentExpired;
+        var invocation: Invocation = .{ .allocator = allocator, .payload = payload, .channel = .control, .until = until, .qualified_oauth_profile = qualified };
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        return invocation.response.?;
+    }
+    /// Actual daemon producer for the documented public OSS initial route.
+    /// No client/endpoint/audience/host label or token is accepted from wire.
+    /// The local UI calls this only for the exact explicit consent operation;
+    /// port selection remains bounded to the documented loopback URI grammar.
+    pub fn prepareFreshOssEnrollment(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, port: u16, until: std.Io.Clock.Timestamp) ![]u8 {
+        if (port == 0) return error.InvalidOAuthRedirect;
+        var request = try control.parse(allocator, payload);
+        defer request.deinit();
+        if (!eql(request.method, "oauth.enrollment.prepare.v1") or !eql(try control.string(request.params, "purpose"), oauth_enrollment.oss_purpose) or !eql(try control.string(request.params, "provider"), "openai_siwc")) return error.WrongPurpose;
+        if (until.clock != .awake or until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.EnrollmentExpired;
+        var invocation: Invocation = .{ .allocator = allocator, .payload = payload, .channel = .control, .until = until, .owned_oss_callback_port = port };
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        return invocation.response.?;
+    }
+    /// Private UI delivery after consent commit. The URL contains random state
+    /// and nonce, never the verifier/code/token, and never enters mutation cache
+    /// or persisted snapshots. No method opens a browser or provider endpoint.
+    pub fn preparedFreshOAuthAuthorization(self: *Engine, allocator: std.mem.Allocator, transaction_id: [32]u8, revision: u64, until: std.Io.Clock.Timestamp) !envelope.Secret {
+        var invocation: Invocation = .{ .allocator = allocator, .payload = "", .channel = .control, .until = until, .oauth_authorization = .{ .transaction_id = transaction_id, .expected_revision = revision } };
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        return .{ .allocator = allocator, .bytes = invocation.response.? };
+    }
+
+    // Test-only queue injection preserves the same actual private peer and
+    // stack-reference lifetime. It creates no Store/pair/curl authority.
+    pub fn dispatchCatalogForTest(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, until: std.Io.Clock.Timestamp, context: *const peer.Context, server: *transport.testing.CatalogServer) ![]u8 {
+        if (!builtin.is_test) return error.TestOnly;
+        try context.alive();
+        var invocation: Invocation = .{ .allocator = allocator, .payload = payload, .channel = .adapter, .until = until, .peer_context = try context.duplicate(), .catalog_model_server = server };
+        defer invocation.peer_context.?.deinit();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        if (self.queue_count == self.queue.len) return error.ServiceBusy;
+        self.queue[(self.queue_head + self.queue_count) % self.queue.len] = &invocation;
+        self.queue_count += 1;
+        self.condition.signal(self.io);
+        while (!invocation.finished) invocation.condition.waitUncancelable(self.io, &self.mutex);
+        if (invocation.failure) |err| return err;
+        return invocation.response.?;
     }
 
     fn dispatchOwnedPeer(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel, until: std.Io.Clock.Timestamp, context: ?*const peer.Context) ![]u8 {
@@ -733,9 +1707,21 @@ pub const Engine = struct {
     }
 
     fn actor(self: *Engine) void {
-        self.bootstrap() catch |err| {
+        self.initializeCustody() catch |err| {
+            // Vault loading precedes database/network creation. Preserve a
+            // bounded local control plane for an ordinary platform unlock;
+            // never turn an unavailable wrapping key into fresh custody.
+            if (self.startup_vault_failure != null and self.db == null and self.network == null and self.native_workers == null) {
+                self.vault_locked = true;
+                self.poisoned = true;
+                std.crypto.secureZero(u8, &self.root_key);
+                if (!self.lockedActor()) return;
+                self.normalActor();
+                return;
+            }
             if (self.network) |client| client.deinit();
             if (self.db) |*db| db.close();
+            std.crypto.secureZero(u8, &self.root_key);
             self.mutex.lockUncancelable(self.io);
             self.startup_error = err;
             self.startup_complete = true;
@@ -743,17 +1729,12 @@ pub const Engine = struct {
             self.mutex.unlock(self.io);
             return;
         };
-        self.native_workers = native_work.Supervisor.create(self.io, self.allocator, .{ .context = self, .signal = nativeWake }) catch |err| {
-            self.network.?.deinit();
-            self.db.?.close();
-            self.mutex.lockUncancelable(self.io);
-            self.startup_error = err;
-            self.startup_complete = true;
-            self.condition.broadcast(self.io);
-            self.mutex.unlock(self.io);
-            return;
-        };
+        self.normalActor();
+    }
+
+    fn normalActor(self: *Engine) void {
         defer {
+            self.cancelCatalog();
             self.native_workers.?.deinit();
             self.network.?.deinit();
             self.db.?.close();
@@ -772,7 +1753,7 @@ pub const Engine = struct {
                 };
             }
             self.mutex.lockUncancelable(self.io);
-            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.runtime_measurement != null) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
+            while (self.queue_count == 0 and !self.native_workers.?.hasCompleted() and (!self.stopping or self.native_tasks.items.len != 0 or self.native_import_tasks.items.len != 0 or self.native_source_maintenance != null or self.native_source_rotation != null or self.runtime_measurement != null or self.runtime_installation != null or self.fresh_oauth_verifications.items.len != 0 or self.owned_renewal_tasks.items.len != 0) and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() > 0) {
                 self.condition.waitTimeout(self.io, &self.mutex, .{ .deadline = maintenance_due }) catch |err| switch (err) {
                     error.Timeout => {},
                     // Finish every queued stack reference before exiting. A
@@ -788,24 +1769,38 @@ pub const Engine = struct {
                 self.completeNativeWork();
                 continue;
             }
-            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.runtime_measurement == null) {
+            if (self.queue_count == 0 and self.stopping and self.native_tasks.items.len == 0 and self.native_import_tasks.items.len == 0 and self.native_source_maintenance == null and self.native_source_rotation == null and self.runtime_measurement == null and self.runtime_installation == null and self.fresh_oauth_verifications.items.len == 0 and self.owned_renewal_tasks.items.len == 0) {
                 self.mutex.unlock(self.io);
+                self.cancelFreshOAuth(null);
+                self.cancelOwnedRenewals(null, null);
                 return;
             }
             if (self.queue_count == 0 and self.stopping) {
                 maintenance_due = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(100) });
                 self.mutex.unlock(self.io);
+                self.cancelFreshOAuth(null);
+                self.cancelOwnedRenewals(null, null);
                 continue;
             }
             if (!self.stopping and maintenance_due.durationFromNow(self.io).raw.toNanoseconds() <= 0) {
                 self.mutex.unlock(self.io);
+                self.pollCatalog();
                 // This awake-clock schedule is independent of dispatch and
                 // queue emptiness. Continued inspection cannot starve already
                 // issued identity reads or credential expiry maintenance.
+                if (!self.poisoned) self.pollOwnedRenewals() catch {
+                    self.fence();
+                };
+                if (!self.poisoned) self.pollFreshOAuth() catch {
+                    self.fence();
+                };
                 if (!self.poisoned) self.pollNetwork() catch {
                     self.fence();
                 };
                 if (!self.poisoned) self.expireLeases() catch {
+                    self.fence();
+                };
+                if (!self.poisoned) self.pollNativeSources() catch {
                     self.fence();
                 };
                 if (!self.poisoned and !builtin.is_test) self.pollSources() catch {
@@ -826,6 +1821,45 @@ pub const Engine = struct {
             // periodic work belongs to the actor's independent clock schedule.
             self.active_until = item.until;
             self.active_peer = if (item.peer_context) |*verified| verified else null;
+            self.active_oauth_profile = item.qualified_oauth_profile;
+            self.active_oss_callback_port = item.owned_oss_callback_port;
+            if (item.oauth_authorization) |selection| {
+                const response = self.freshOAuthAuthorization(item.allocator, selection.transaction_id, selection.expected_revision, item.until);
+                self.active_oauth_profile = null;
+                self.active_oss_callback_port = null;
+                self.active_until = null;
+                self.active_peer = null;
+                self.finishInvocation(item, response);
+                continue;
+            }
+            if (self.stopping) {
+                self.cancelFreshOAuth(null);
+                self.cancelOwnedRenewals(null, null);
+            }
+            if (item.qualified_candidate != null) {
+                self.startNativeRuntimeCommit(item) catch |err| self.finishInvocation(item, err);
+                self.active_until = null;
+                self.active_peer = null;
+                self.active_oauth_profile = null;
+                self.active_oss_callback_port = null;
+                continue;
+            }
+            const catalog_deferred = if (!self.poisoned and !self.stopping and item.until.durationFromNow(self.io).raw.toMilliseconds() > 0) self.startCatalogInvocation(item) catch |err| blk: {
+                var parsed = control.parse(item.allocator, item.payload) catch {
+                    self.finishInvocation(item, control.failure(item.allocator, .null, -32600, @errorName(err)));
+                    break :blk true;
+                };
+                defer parsed.deinit();
+                self.finishInvocation(item, control.failure(item.allocator, parsed.id, -32000, @errorName(err)));
+                break :blk true;
+            } else false;
+            if (catalog_deferred) {
+                self.active_peer = null;
+                self.active_until = null;
+                self.active_oauth_profile = null;
+                self.active_oss_callback_port = null;
+                continue;
+            }
             const deferred = if (!self.poisoned and !self.stopping and item.until.durationFromNow(self.io).raw.toMilliseconds() > 0) self.startNativeInvocation(item) catch |err| blk: {
                 self.restoreCommitted() catch {
                     self.poisoned = true;
@@ -841,11 +1875,23 @@ pub const Engine = struct {
             if (deferred) {
                 self.active_peer = null;
                 self.active_until = null;
+                self.active_oauth_profile = null;
+                self.active_oss_callback_port = null;
                 continue;
             }
             const response = if (self.stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else self.execute(item.allocator, item.payload, item.channel);
             self.active_peer = null;
             self.active_until = null;
+            self.active_oauth_profile = null;
+            self.active_oss_callback_port = null;
+            if (response) |success| {
+                const queued = self.startConfiguredRuntimeInstall(item, success) catch |err| {
+                    item.allocator.free(success);
+                    self.finishInvocation(item, err);
+                    continue;
+                };
+                if (queued) continue;
+            } else |_| {}
             self.finishInvocation(item, response);
         }
     }
@@ -856,6 +1902,85 @@ pub const Engine = struct {
         self.condition.broadcast(self.io);
         self.mutex.unlock(self.io);
     }
+    fn lockedActor(self: *Engine) bool {
+        self.mutex.lockUncancelable(self.io);
+        self.startup_complete = true;
+        self.condition.broadcast(self.io);
+        while (true) {
+            while (self.queue_count == 0 and !self.stopping) self.condition.waitUncancelable(self.io, &self.mutex);
+            if (self.queue_count == 0 and self.stopping) {
+                self.mutex.unlock(self.io);
+                return false;
+            }
+            const item = self.queue[self.queue_head].?;
+            self.queue[self.queue_head] = null;
+            self.queue_head = (self.queue_head + 1) % self.queue.len;
+            self.queue_count -= 1;
+            const stopping = self.stopping;
+            self.mutex.unlock(self.io);
+            // No maintenance, source reads, provider work, native workers,
+            // mutation ledger admission or database access exists here.
+            self.active_until = item.until;
+            const response = if (stopping) error.ServiceStopping else if (item.until.durationFromNow(self.io).raw.toMilliseconds() <= 0) error.Timeout else if (item.qualified_candidate != null) self.startup_vault_failure orelse error.Locked else self.lockedRequest(item.allocator, item.payload, item.channel);
+            self.active_until = null;
+            self.finishInvocation(item, response);
+            if (!self.vault_locked) return true;
+            self.mutex.lockUncancelable(self.io);
+        }
+    }
+
+    fn vaultRecoveryAction(failure: vault.VaultError) []const u8 {
+        return switch (failure) {
+            error.Locked => "unlock_platform_vault_then_reopen_custody",
+            error.Missing, error.InvalidKey => "restore_original_vault_key_then_reopen_custody",
+            error.Denied, error.Cancelled, error.Unavailable, error.Conflict, error.BackendFailure, error.InvalidRoot => "restore_platform_vault_access_then_reopen_custody",
+        };
+    }
+
+    fn vaultUnavailableCode(self: *const Engine) []const u8 {
+        return if ((self.startup_vault_failure orelse error.Locked) == error.Locked) "VaultLocked" else "VaultUnavailable";
+    }
+
+    fn lockedRequest(self: *Engine, allocator: std.mem.Allocator, payload: []const u8, channel: Channel) ![]u8 {
+        const failure = self.startup_vault_failure orelse error.Locked;
+        const refusal = self.vaultUnavailableCode();
+        if (channel == .browser) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = @as(?[]const u8, null), .@"error" = .{ .code = refusal, .message = if (failure == error.Locked) "Unlock the platform vault, then explicitly reopen custody through local controls." else "Restore access to the original platform vault key, then explicitly reopen custody through local controls." } }, .{});
+        var request = control.parse(allocator, payload) catch return control.failure(allocator, .null, -32600, "InvalidRequest");
+        defer request.deinit();
+        if (channel != .control) return control.failure(allocator, request.id, -32000, refusal);
+        if (eql(request.method, "oauth.enrollment.pending.v1")) return self.freshOAuthPendingMetadata(allocator, request) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "oauth.enrollment.descriptor.v1")) return self.freshOAuthDescriptor(allocator, request) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "oauth.enrollment.status.v1")) return self.freshOAuthStatus(allocator, request) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "system.handshake")) return control.success(allocator, request.id, .{
+            .protocol_version = control.protocol_version,
+            .service = "omuxd",
+            .channel = "control",
+            .custody_available = false,
+            .capabilities = .{ .owned_siwc_enrollment_v1 = builtin.os.tag == .linux or builtin.os.tag == .macos, .credential_free_control = true, .custody_reopen = true, .native_launch = false, .live_handoff_proven = false },
+        });
+        if (eql(request.method, "custody.reopen")) {
+            if (request.params != .null and (request.params != .object or request.params.object.count() != 0)) return control.failure(allocator, request.id, -32602, "InvalidParams");
+            self.initializeCustody() catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+            self.vault_locked = false;
+            self.startup_vault_failure = null;
+            self.poisoned = false;
+            return control.success(allocator, request.id, .{ .reopened = true, .custody_available = true, .metadata_loaded = true, .account_count = self.state.accounts.items.len, .provider_request_initiated = false, .live_handoff_proven = false });
+        }
+        if (eql(request.method, "system.health")) return control.success(allocator, request.id, .{
+            .protocol_version = control.protocol_version,
+            .status = if (failure == error.Locked) "vault_locked" else "vault_unavailable",
+            .custody_error = @errorName(failure),
+            .custody_origin = if (self.startup_custody_namespace) |retained| (if (retained.database == null) "fresh" else "existing") else "unverified",
+            .custody_available = false,
+            .metadata_loaded = false,
+            .account_count = @as(?usize, null),
+            .provider_access = false,
+            .live_handoff_proven = false,
+            .recovery_action = vaultRecoveryAction(failure),
+        });
+        if (eql(request.method, "setup.readiness") or eql(request.method, "setup.evidence") or eql(request.method, "setup.plan")) return self.handleRequest(allocator, request, channel);
+        return control.failure(allocator, request.id, -32000, refusal);
+    }
     fn finishInvocation(self: *Engine, item: *Invocation, response: anyerror![]u8) void {
         self.mutex.lockUncancelable(self.io);
         if (response) |value| item.response = value else |err| item.failure = err;
@@ -864,17 +1989,241 @@ pub const Engine = struct {
         self.mutex.unlock(self.io);
     }
 
+    fn catalogRecord(self: *Engine, ticket: *const siwc_catalog_authority.Ticket) ?siwc_pair.Record {
+        for (self.owned_siwc_pairs.records.items) |record| if (std.meta.eql(record.transaction_id, ticket.context().transaction_id)) return record;
+        return null;
+    }
+
+    fn catalogCurrent(self: *Engine, ticket: *const siwc_catalog_authority.Ticket) bool {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null or self.db.?.poisoned) return false;
+        ticket.checkActive() catch return false;
+        const record = self.catalogRecord(ticket) orelse return false;
+        if (!ticket.matchesActorState(&self.state, record)) return false;
+        const captured = ticket.context();
+        if (ticket.leaseContext()) |lease| {
+            const owner = self.native_owners.lookupOwnerForRef(lease.reference) orelse return false;
+            const attachment = self.native_owners.lookupAttachment(lease.reference) orelse return false;
+            if (owner.phase != .open or attachment.phase != .attached or lease.reference.adapter_epoch != self.adapter_epochs[0] or self.native_owners.applicationRemoval("codex", lease.reference.adapter_epoch) != null) return false;
+            const stamp: siwc_route.Stamp = .{ .activation = captured.activation_commitment, .family_generation = captured.family_generation, .writer_generation = captured.writer_generation, .source_generation = captured.source_generation, .consent_generation = captured.consent_generation };
+            for (self.native_leases.items) |native| if (std.meta.eql(native.handle, lease.handle)) {
+                return native.siwc_activation != null and siwc_route.sameStamp(native.siwc_activation.?, stamp) and native.status == .issued and native.request_profile == .siwc_responses and native.expires_at > self.now() and eql(native.account_id, &captured.account_id) and native.native_ref != null and native.native_ref.?.same(lease.reference);
+            };
+            return false;
+        }
+        return true;
+    }
+
+    // Relevant staged mutations invalidate before the writer call. This check
+    // never opens SQLite, resets a cutoff or cancels reads for label/counter edits.
+    fn invalidateCatalogContexts(self: *Engine) void {
+        for (self.catalog_pending.items) |pending| if (!self.catalogCurrent(pending.ticket)) {
+            _ = pending.ticket.invalidate();
+        };
+    }
+
+    fn cancelCatalog(self: *Engine) void {
+        while (self.catalog_pending.pop()) |value| {
+            var pending = value;
+            _ = pending.ticket.invalidate();
+            self.finishInvocation(pending.invocation, error.ServiceStopping);
+            pending.deinit();
+        }
+    }
+
+    fn catalogRequestCheck(self: *Engine, pending: *const CatalogPending) !void {
+        if (!self.catalogCurrent(pending.ticket)) return error.SiwcCatalogAuthorityChanged;
+        const application = try self.authenticate(pending.request.params);
+        if (!eql(application, "codex")) return error.WrongPurpose;
+        const context = self.active_peer orelse return error.NativePeerRequired;
+        try context.alive();
+        if (pending.ticket.leaseContext()) |lease| {
+            const reference = (try self.protectedNativeRef(pending.request.params, true)) orelse return error.NativeOwnerRequired;
+            const native = try self.nativeLease(pending.request.params);
+            if (!reference.same(lease.reference) or !std.meta.eql(native.handle, lease.handle) or native.status != .issued or native.request_profile != .siwc_responses) return error.SiwcCatalogLeaseChanged;
+        }
+        try pending.ticket.recheckStore(&self.db.?);
+    }
+
+    fn startCatalogInvocation(self: *Engine, invocation: *Invocation) !bool {
+        var request = control.parse(self.allocator, invocation.payload) catch |err| {
+            // Failed parsing admits no identity or catalog work. Finish this
+            // exact invocation without reparsing through the reply allocator.
+            self.finishInvocation(invocation, control.failure(invocation.allocator, .null, -32600, @errorName(err)));
+            return true;
+        };
+        var transferred = false;
+        defer if (!transferred) request.deinit();
+        if (!eql(request.method, "adapter.siwcCatalog")) return false;
+        if (invocation.channel != .adapter) return error.WrongChannel;
+        if (self.poisoned or self.vault_locked or self.db == null or self.network == null or self.stopping) return error.CustodyUnavailable;
+        if (self.catalog_pending.items.len >= 16) return error.SiwcCatalogBusy;
+        const application = try self.authenticate(request.params);
+        if (!eql(application, "codex") or !eql(try control.string(request.params, "request_profile"), siwc_pair.request_profile)) return error.SiwcProfileMismatch;
+        const verified_peer = self.active_peer orelse return error.NativePeerRequired;
+        try verified_peer.alive();
+        try siwc_route.onlyFields(request.params, &.{ "application", "capability", "request_profile", "catalog_binding", "lease_handle", "native_ref" });
+        const has_lease = control.get(request.params, "lease_handle") != null;
+        const has_reference = control.get(request.params, "native_ref") != null;
+        if (has_lease != has_reference) return error.InvalidSiwcParams;
+        var scope: siwc_catalog_authority.Scope = .bootstrap;
+        var selected_account: ?[64]u8 = null;
+        var selected_access: ?[64]u8 = null;
+        var generation: u64 = 0;
+        if (has_lease) {
+            const reference = (try self.protectedNativeRef(request.params, true)) orelse return error.NativeOwnerRequired;
+            const native = try self.nativeLease(request.params);
+            if (native.status != .issued or native.request_profile != .siwc_responses or native.expires_at <= self.now()) return error.LeaseNotMaterializable;
+            scope = .{ .lease = .{ .handle = native.handle, .reference = reference } };
+            for (self.state.leases.items) |lease| if (eql(lease.id, &native.handle)) {
+                selected_account = try catalogOpaque(lease.account_id);
+                selected_access = try catalogOpaque(lease.grant_id);
+                generation = lease.grant_generation;
+                break;
+            };
+            if (selected_account == null) return error.UnknownLease;
+        }
+        const preferred = if (try control.optionalString(request.params, "catalog_binding")) |handle| try catalogOpaque(handle) else null;
+        if (!has_lease) if (preferred) |handle| {
+            for (self.catalog_cache.items) |cached| if (std.meta.eql(handle, cached.handle) and cached.adapter_epoch == self.adapter_epochs[0] and cached.expires_at > self.now()) {
+                selected_account = cached.context.account_id;
+                selected_access = cached.context.access_grant_id;
+                generation = cached.context.access_generation;
+                break;
+            };
+        };
+        var ticket: ?*siwc_catalog_authority.Ticket = null;
+        if (selected_account) |account| {
+            ticket = siwc_catalog_authority.prepare(&self.db.?, &account, &selected_access.?, generation, invocation.until, scope) catch |err| switch (err) {
+                error.SiwcPairUnavailable, error.SiwcPairQuarantined, error.SiwcPairAuthorityChanged, error.SiwcPairExpired, error.SiwcCatalogAuthorityChanged => if (has_lease) return err else null,
+                else => return err,
+            };
+        }
+        if (ticket == null and !has_lease) for (self.owned_siwc_pairs.records.items) |record| {
+            const candidate = siwc_catalog_authority.prepare(&self.db.?, record.account_id, record.access_grant_id, record.access_generation, invocation.until, .bootstrap) catch |err| switch (err) {
+                error.SiwcPairUnavailable, error.SiwcPairQuarantined, error.SiwcPairAuthorityChanged, error.SiwcPairExpired, error.SiwcCatalogAuthorityChanged => continue,
+                else => return err,
+            };
+            ticket = candidate;
+            break;
+        };
+        const retained = ticket orelse return error.SiwcPairUnavailable;
+        errdefer retained.deinit();
+        var pending: CatalogPending = .{ .invocation = invocation, .request = request, .ticket = retained, .transport_id = 0 };
+        try self.catalogRequestCheck(&pending);
+        // Reserve all actor/cache bookkeeping before accepted network work.
+        try self.catalog_pending.ensureUnusedCapacity(self.allocator, 1);
+        try self.catalog_cache.ensureTotalCapacity(self.allocator, 32);
+        if (builtin.is_test) if (invocation.catalog_model_server) |server| {
+            try siwc_catalog_authority.testing.attachRoute(retained, server.port());
+            try server.start(retained);
+        };
+        try self.catalogRequestCheck(&pending);
+        pending.transport_id = try self.network.?.startCatalog(retained);
+        self.catalog_pending.appendAssumeCapacity(pending);
+        transferred = true;
+        return true;
+    }
+
+    fn catalogReply(self: *Engine, pending: *const CatalogPending, completion: *const transport.CatalogCompletion) ![]u8 {
+        try self.catalogRequestCheck(pending);
+        var observation: ?siwc_catalog.Catalog = null;
+        defer if (observation) |*value| value.deinit();
+        switch (completion.result) {
+            .failure => {}, // No response authority: truthful Unknown only.
+            .response => |response| {
+                observation = response.evidence(self.allocator, pending.ticket) catch |err| switch (err) {
+                    error.InvalidSiwcCatalog, error.SiwcCatalogUnavailable => null,
+                    else => return err,
+                };
+            },
+        }
+        try self.catalogRequestCheck(pending);
+        const handle = try self.identifier();
+        const context = pending.ticket.context();
+        const lease = pending.ticket.leaseContext();
+        const expires = pending.ticket.expiresAt();
+        const reply = try control.success(pending.invocation.allocator, pending.request.id, .{
+            .request_profile = siwc_pair.request_profile,
+            .audience = siwc_pair.resource_uri,
+            .catalog_binding = handle[0..],
+            .expires_at = expires,
+            .account_id = context.account_id[0..],
+            .lease_handle = if (lease != null) @as(?[]const u8, &lease.?.handle) else null,
+            .route_generation = if (lease) |bound| @as(?u64, bound.route_generation) else null,
+            .observation_status = if (observation != null) "known" else "unknown",
+            .models = if (observation) |*value| value.models() else &.{},
+        });
+        errdefer pending.invocation.allocator.free(reply);
+        // Allocation/serialization may consume time or reveal retirement. Check
+        // original peer/current tuple/Store again before any public publication.
+        try self.catalogRequestCheck(pending);
+        if (self.catalog_cache.items.len == 32) _ = self.catalog_cache.orderedRemove(0);
+        self.catalog_cache.appendAssumeCapacity(.{ .handle = handle, .context = context, .expires_at = expires, .adapter_epoch = self.adapter_epochs[0] });
+        return reply;
+    }
+
+    fn pollCatalog(self: *Engine) void {
+        self.invalidateCatalogContexts();
+        var position: usize = 0;
+        while (position < self.catalog_pending.items.len) {
+            if (self.catalogCurrent(self.catalog_pending.items[position].ticket)) {
+                position += 1;
+                continue;
+            }
+            var pending = self.catalog_pending.orderedRemove(position);
+            _ = pending.ticket.invalidate();
+            self.finishInvocation(pending.invocation, error.SiwcCatalogAuthorityChanged);
+            pending.deinit();
+        }
+        while (self.network.?.pollCatalog()) |value| {
+            var completion = value;
+            defer completion.deinit(self.allocator);
+            var found: ?usize = null;
+            for (self.catalog_pending.items, 0..) |pending, index| if (pending.transport_id == completion.id) {
+                found = index;
+                break;
+            };
+            const index = found orelse continue; // Retired work only gets wiped.
+            var pending = self.catalog_pending.orderedRemove(index);
+            defer pending.deinit();
+            const previous_peer = self.active_peer;
+            const previous_until = self.active_until;
+            self.active_peer = if (pending.invocation.peer_context) |*verified| verified else null;
+            self.active_until = pending.invocation.until;
+            defer {
+                self.active_peer = previous_peer;
+                self.active_until = previous_until;
+            }
+            const reply = self.catalogReply(&pending, &completion) catch |err| {
+                self.finishInvocation(pending.invocation, control.failure(pending.invocation.allocator, pending.request.id, -32000, @errorName(err)));
+                continue;
+            };
+            self.finishInvocation(pending.invocation, reply);
+        }
+    }
+
     fn startNativeInvocation(self: *Engine, invocation: *Invocation) !bool {
         if (invocation.channel == .browser) return false;
-        var request = try control.parse(self.allocator, invocation.payload);
+        var request = control.parse(self.allocator, invocation.payload) catch |err| {
+            // Parsing has not admitted any native work or changed custody.
+            // Finish this exact invocation even if its caller cannot allocate
+            // an error reply; never restore or retry with another allocator.
+            self.finishInvocation(invocation, control.failure(invocation.allocator, .null, -32600, @errorName(err)));
+            return true;
+        };
         var transferred = false;
         defer if (!transferred) request.deinit();
         const registration = eql(request.method, "adapter.owner.register");
         const announcement = eql(request.method, "integrations.attach");
         const detachment = eql(request.method, "integrations.detach");
         const discovering = eql(request.method, "integrations.discover");
+        const connecting_native_source = eql(request.method, "source.connect") and control.get(request.params, "selected_native_context") != null;
+        const source_selection: ?native_source_acquisition.ControlSelection = if (connecting_native_source)
+            try native_source_acquisition.controlSelection(request.params)
+        else
+            null;
         const removal = eql(request.method, "integrations.remove") and eql((try control.optionalString(request.params, "adapter")) orelse "codex", "codex");
-        if (!registration and !announcement and !detachment and !removal and !discovering) return false;
+        if (!registration and !announcement and !detachment and !removal and !discovering and !connecting_native_source) return false;
         if (registration) {
             if (invocation.channel != .adapter or !eql(try self.authenticate(request.params), "codex")) return error.WrongPurpose;
             const context = self.active_peer orelse return error.NativePeerRequired;
@@ -909,14 +2258,15 @@ pub const Engine = struct {
         if (!cached_registration and (self.native_tasks.items.len >= native_work.capacity or self.native_tasks.items.len + callback_slots + extra > native_work.capacity)) return error.NativeWorkCapacity;
         for (self.native_tasks.items) |task| if (std.mem.eql(u8, &task.operation, &operation) and !(registration and task.stage == .announcement and task.reference != null)) return error.OperationIndeterminate;
         if (removal) return self.startNativeRemoval(invocation, &request, &transferred, operation);
-        const endpoint: []const u8 = if (registration) try control.string(request.params, "owner_endpoint") else if (try control.optionalString(request.params, "owner_endpoint")) |value| value else (try control.optionalString(request.params, "native_socket")) orelse if (discovering) "" else return error.NativeEndpointRequired;
+        const endpoint: []const u8 = if (connecting_native_source) "" else if (registration) try control.string(request.params, "owner_endpoint") else if (try control.optionalString(request.params, "owner_endpoint")) |value| value else (try control.optionalString(request.params, "native_socket")) orelse if (discovering) "" else return error.NativeEndpointRequired;
         if (endpoint.len != 0) try paths.validateAbsolute(endpoint);
         if (endpoint.len > 107) return error.SocketPathTooLong;
-        const thread_id = if (discovering) "discovery" else try control.string(request.params, "thread_id");
+        const thread_id = if (connecting_native_source) "source" else if (discovering) "discovery" else try control.string(request.params, "thread_id");
         if (thread_id.len > native_owner.maximum_thread_bytes) return error.InvalidNativeOwnerThread;
-        const task = try self.newNativeTask(invocation, request, operation, endpoint, thread_id, if (discovering) .discovery else if (registration) .identify else if (announcement) .announcement_identify else .detachment);
+        const task = try self.newNativeTask(invocation, request, operation, endpoint, thread_id, if (connecting_native_source) .source_prepare else if (discovering) .discovery else if (registration) .identify else if (announcement) .announcement_identify else .detachment);
         transferred = true;
         errdefer task.deinit();
+        task.source_selection = source_selection;
         if (announcement or detachment) {
             const selected = control.get(request.params, "owner_id") != null or control.get(request.params, "process_nonce") != null or control.get(request.params, "endpoint_generation") != null or control.get(request.params, "thread_instance_generation") != null;
             if (selected) {
@@ -935,7 +2285,7 @@ pub const Engine = struct {
             task.thread_generation = try parseGeneration(control.get(request.params, "thread_instance_generation") orelse return error.InvalidParams);
             if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
             if (try self.registrationReplay(task)) return true;
-        } else if (!discovering) {
+        } else if (!discovering and !connecting_native_source) {
             if (announcement) {
                 if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
                 if (!task.selected_owner and try self.admitNativeControl(task)) return true;
@@ -976,7 +2326,7 @@ pub const Engine = struct {
         const capability_path = try std.fmt.allocPrint(self.allocator, "{s}/integrations/codex.capability", .{self.state_dir});
         errdefer self.allocator.free(capability_path);
         task.* = .{ .engine = self, .invocation = invocation, .request = request, .operation = operation, .endpoint = owned_endpoint, .thread_id = owned_thread, .broker_socket = broker_socket, .capability_path = capability_path, .stage = stage, .job = .{ .lane = if (stage == .announcement) .announcement else .continuation, .context = task, .run = NativeTask.run } };
-        if (stage == .discovery or stage == .announcement_identify) {
+        if (stage == .discovery or stage == .announcement_identify or stage == .source_prepare) {
             const context = try self.allocator.create(std.heap.ArenaAllocator);
             errdefer self.allocator.destroy(context);
             context.* = .init(self.allocator);
@@ -988,9 +2338,24 @@ pub const Engine = struct {
             captured.config_path = if (options.config_path) |value| try owned.dupe(u8, value) else null;
             captured.xdg_config_home = if (options.xdg_config_home) |value| try owned.dupe(u8, value) else null;
             captured.broker_socket = broker_socket;
+            if ((stage == .discovery or stage == .source_prepare) and builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
+                if (std.c.getenv("XDG_RUNTIME_DIR")) |value| {
+                    const runtime = std.mem.span(value);
+                    if (runtime.len > native_source_context.maximum_runtime_bytes) return error.InvalidNativeSourceContext;
+                    task.source_context_runtime = try owned.dupe(u8, runtime);
+                }
+            }
             task.discovery_context = context;
             task.discovery_options = captured;
             task.selected_registry = self.native_registry;
+            if (stage == .source_prepare) {
+                const retained = self.qualified_native_runtime orelse return error.NativeImageUnavailable;
+                if (retained.adapter_epoch != self.adapter_epochs[0] or retained.registry == null or
+                    !std.meta.eql(retained.registry, self.native_registry)) return error.NativeCustodyGenerationMismatch;
+                const deployment = self.native_deployment_selection orelse return error.NativeImageUnavailable;
+                task.source_runtime_root = try owned.dupe(u8, deployment.installation_root);
+                task.source_runtime_record = try copyQualifiedNativeRuntime(self.allocator, retained);
+            }
         }
         return task;
     }
@@ -1130,6 +2495,52 @@ pub const Engine = struct {
 
     fn completeNativeWork(self: *Engine) void {
         const job = self.native_workers.?.takeCompleted() orelse return;
+        for (self.fresh_oauth_verifications.items, 0..) |task, index| if (job == &task.job) {
+            _ = self.fresh_oauth_verifications.orderedRemove(index);
+            defer task.deinit();
+            self.completeFreshOAuthVerification(task) catch |err| {
+                self.fresh_oauth_failure = err;
+                self.fence();
+            };
+            return;
+        };
+        for (self.owned_renewal_tasks.items, 0..) |task, index| if (job == &task.job) {
+            _ = self.owned_renewal_tasks.orderedRemove(index);
+            defer task.deinit();
+            self.completeOwnedRenewalVerification(task) catch |err| {
+                self.owned_renewal_failure = err;
+                self.fence();
+            };
+            return;
+        };
+        if (self.native_source_maintenance) |task| if (job == &task.job) {
+            self.native_source_maintenance = null;
+            defer task.deinit();
+            self.completeNativeSourceMaintenance(task) catch {
+                self.fence();
+            };
+            return;
+        };
+        if (self.native_source_rotation) |task| if (job == &task.job) {
+            self.native_source_rotation = null;
+            defer task.deinit();
+            self.completeNativeSourceRotation(task) catch {
+                self.fence();
+            };
+            return;
+        };
+        for (self.native_import_tasks.items, 0..) |task, index| if (job == &task.job) {
+            _ = self.native_import_tasks.orderedRemove(index);
+            self.completeNativeImport(task) catch |err| {
+                self.poisoned = true;
+                std.log.err("native import terminal persistence failed: {s}", .{@errorName(err)});
+            };
+            return;
+        };
+        if (self.runtime_installation) |installation| if (job == &installation.job) {
+            self.completeNativeRuntimeCommit(installation);
+            return;
+        };
         if (self.runtime_measurement) |measurement| if (job == &measurement.job) {
             self.completeRuntimeMeasurement(measurement);
             return;
@@ -1142,7 +2553,20 @@ pub const Engine = struct {
             self.active_peer = null;
             self.active_credit = null;
         }
-        if (task.failure == null and (task.stage == .identify or task.stage == .announcement_identify) and !self.stopping and !self.poisoned) {
+        if (task.failure == null and task.stage == .source_prepare and !self.stopping and !self.poisoned) {
+            const replayed = self.prepareNativeSourceAcquisition(task) catch |err| blk: {
+                task.failure = err;
+                break :blk false;
+            };
+            if (replayed) {
+                for (self.native_tasks.items, 0..) |candidate, index| if (candidate == task) {
+                    _ = self.native_tasks.orderedRemove(index);
+                    break;
+                };
+                return;
+            }
+            if (task.failure == null) return;
+        } else if (task.failure == null and (task.stage == .identify or task.stage == .announcement_identify) and !self.stopping and !self.poisoned) {
             if (task.stage == .announcement_identify and task.selected_owner and !task.admitted) {
                 // The worker already verified the selected context and fresh
                 // exact identity. A removal fence may have appeared meanwhile.
@@ -1190,6 +2614,173 @@ pub const Engine = struct {
         task.deinit();
     }
 
+    fn prepareNativeSourceAcquisition(self: *Engine, task: *NativeTask) !bool {
+        const selection = task.source_selection orelse return error.NativeSourceConsentRequired;
+        const options = task.discovery_options orelse return error.NativeImageUnavailable;
+        const captured = task.source_runtime_record orelse return error.NativeImageUnavailable;
+        const installed = self.qualified_native_runtime orelse return error.NativeImageUnavailable;
+        const started = std.Io.Clock.awake.now(self.io);
+        const remaining = task.invocation.until.durationFromNow(self.io).raw.toNanoseconds();
+        if (remaining <= 0 or remaining > std.math.maxInt(u64)) return error.NativeTimeout;
+        if (!std.crypto.timing_safe.eql([32]u8, captured.record_sha256, installed.record_sha256) or
+            options.native_custody.?.adapter_epoch != self.adapter_epochs[0] or
+            !std.meta.eql(task.selected_registry, self.native_registry)) return error.RuntimeSelectionDrift;
+        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
+        var declaration: ?native_probe.SourceContextDeclaration = null;
+        for (task.source_contexts.items) |current| {
+            if (!std.meta.eql(current.owner_id, selection.owner_id) or !std.meta.eql(current.native_nonce, selection.nonce) or
+                current.endpoint_generation != selection.endpoint_generation) continue;
+            if (declaration != null) return error.NativeSourceAmbiguous;
+            declaration = current;
+        }
+        const current = declaration orelse return error.NativeSourceUnavailable;
+        const context = current.context orelse return error.NativeSourceUnavailable;
+        if (current.status != .available or current.store_present != true or current.credential_acquisition_authorized or
+            !std.meta.eql(context.id, selection.context.id) or context.generation != selection.context.generation or
+            !peer.sameOriginal(current.witness, task.expected.?)) return error.NativeSourceContextChanged;
+        const source_id = try self.identifier();
+        const consent_id = try self.identifier();
+        var source_handle: [32]u8 = undefined;
+        var consent_handle: [32]u8 = undefined;
+        _ = try std.fmt.hexToBytes(&source_handle, &source_id);
+        _ = try std.fmt.hexToBytes(&consent_handle, &consent_id);
+        const owner: native_source_consent.Owner = .{ .id = current.owner_id, .nonce = current.native_nonce, .endpoint_generation = current.endpoint_generation, .witness = current.witness };
+        const observed_at = self.now();
+        const authority: NativeSourceAuthority = .{ .origin = task.source_origin orelse return error.NativeSourceOriginChanged, .context = .{ .id = context.id, .generation = context.generation }, .consent = .{ .id = consent_handle, .generation = 1, .source_id = source_handle, .source_generation = 1, .owner = owner, .expires_at = try std.math.add(i64, observed_at, selection.consent_seconds), .purpose = .native_access_copy_for_identity_and_request, .allow_reenrollment = selection.allow_reenrollment, .forget_epoch = self.import_forget_epoch } };
+        const admission = try native_source_consent.admit(.{ .source_id = source_handle, .source_generation = 1, .status = .connected, .consent = authority.consent, .owner = owner, .context = .{ .id = context.id, .generation = context.generation }, .store_present = true, .forget_epoch = self.import_forget_epoch }, observed_at, 0, @intCast(remaining));
+        if (try self.admitNativeControl(task)) return true;
+        self.active_credit = task.credit;
+        _ = try self.connectImportSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex", .label = (try control.optionalString(task.request.params, "label")) orelse "", .authorized_at = observed_at });
+        _ = try self.importSourceGeneration(&source_id);
+        const description: SourceDescription = .{ .source_id = &source_id, .provider = "codex", .label = (try control.optionalString(task.request.params, "label")) orelse "", .path = "", .native_endpoint = task.endpoint, .native_authority = authority };
+        var bounded_description = description;
+        bounded_description.label = ""; // The input label is prepaid separately.
+        if (try snapshot_admission.countJson(bounded_description, storage.maximum_snapshot_bytes) > native_source_description_budget) return error.NativeSourceDescriptionTooLarge;
+        try self.addDescription(description);
+        try self.persist(&.{});
+        task.source_authority = authority;
+        task.source_admission = admission;
+        task.source_started_at = started;
+        task.source_copy_now = observed_at;
+        task.stage = .source_acquire;
+        try self.native_workers.?.enqueue(&task.job);
+        return false;
+    }
+
+    fn startNativeRuntimeCommit(self: *Engine, invocation: *Invocation) !void {
+        const task = try self.captureNativeRuntimeCommit(invocation);
+        errdefer task.deinit();
+        task.candidate = invocation.qualified_candidate;
+        try self.native_workers.?.enqueue(&task.job);
+        self.runtime_installation = task;
+    }
+
+    fn captureNativeRuntimeCommit(self: *Engine, invocation: *Invocation) !*NativeRuntimeCommitTask {
+        if (self.stopping) return error.ServiceStopping;
+        if (self.vault_locked or self.poisoned or self.db == null) return error.Locked;
+        if (!self.integrationInstalled("codex")) return error.AdapterNotInstalled;
+        const registry = self.native_registry orelse return error.NativeCustodyPending;
+        if (registry.phase != .installed) return error.NativeCustodyPending;
+        if (self.runtime_installation != null) return error.OperationIndeterminate;
+        try native_source_acquisition.deadline(self.io, invocation.until);
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
+        errdefer self.allocator.destroy(arena);
+        arena.* = .init(self.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        var options = try self.setupOptions(a, .codex, .null);
+        options.home = try a.dupe(u8, options.home);
+        options.codex_home = if (options.codex_home) |value| try a.dupe(u8, value) else null;
+        options.config_path = if (options.config_path) |value| try a.dupe(u8, value) else null;
+        options.xdg_config_home = if (options.xdg_config_home) |value| try a.dupe(u8, value) else null;
+        options.broker_socket = try a.dupe(u8, options.broker_socket);
+        options.deadline = invocation.until;
+        const task = try self.allocator.create(NativeRuntimeCommitTask);
+        errdefer self.allocator.destroy(task);
+        task.* = .{ .engine = self, .invocation = invocation, .candidate = null, .context = .{ .options = options, .selection = self.instance_selection, .deadline = invocation.until }, .arena = arena, .registry = self.native_registry, .epoch = self.adapter_epochs[0], .job = .{ .lane = .continuation, .context = task, .run = NativeRuntimeCommitTask.run } };
+        return task;
+    }
+
+    fn startConfiguredRuntimeInstall(self: *Engine, invocation: *Invocation, response: []u8) !bool {
+        const selected = self.native_deployment_selection orelse return false;
+        if (invocation.channel != .control) return false;
+        var request = try control.parse(invocation.allocator, invocation.payload);
+        defer request.deinit();
+        if (!eql(request.method, "integrations.install") or !eql(try control.string(request.params, "adapter"), "codex")) return false;
+        var completed = try std.json.parseFromSlice(std.json.Value, invocation.allocator, response, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
+        defer completed.deinit();
+        if (completed.value != .object or completed.value.object.get("result") == null or completed.value.object.get("error") != null) return false;
+        // setup.install has already persisted one-time integration ownership.
+        // Keep the original invocation alive through the supervised package
+        // transaction and actor commit; a deadline never abandons its worker.
+        const task = try self.captureNativeRuntimeCommit(invocation);
+        errdefer task.deinit();
+        const a = task.arena.allocator();
+        const root_path = try a.dupe(u8, selected.registered_package_root);
+        const root_fd = try runtime_deployment.openRegisteredRoot(self.io, a, root_path, invocation.until);
+        task.deployment = .{ .path = root_path, .descriptor = root_fd };
+        const parent_path = std.fs.path.dirname(selected.installation_root) orelse return error.InvalidInstallationDestination;
+        task.parent = try paths.openPrivateRoot(a, parent_path, false);
+        task.basename = try a.dupeSentinel(u8, std.fs.path.basename(selected.installation_root), 0);
+        try self.native_workers.?.enqueue(&task.job);
+        task.install_response = response;
+        self.runtime_installation = task;
+        return true;
+    }
+
+    fn completeNativeRuntimeCommit(self: *Engine, task: *NativeRuntimeCommitTask) void {
+        defer {
+            self.runtime_installation = null;
+            task.deinit();
+        }
+        self.active_until = task.invocation.until;
+        defer self.active_until = null;
+        const result = self.commitNativeRuntimePrepared(task) catch |err| {
+            self.finishInvocation(task.invocation, err);
+            return;
+        };
+        self.finishInvocation(task.invocation, result);
+    }
+
+    fn commitNativeRuntimePrepared(self: *Engine, task: *NativeRuntimeCommitTask) ![]u8 {
+        if (task.failure) |err| return err;
+        if (!task.handoff_ready) return error.RuntimeSelectionNotReady;
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.ServiceStopping;
+        try native_source_acquisition.deadline(self.io, task.invocation.until);
+        if (task.epoch != self.adapter_epochs[0] or !std.meta.eql(task.registry, self.native_registry) or
+            !std.crypto.timing_safe.eql(envelope.Key, task.context.options.key, self.root_key)) return error.NativeCustodyGenerationMismatch;
+        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
+        if (task.installation) |*installed| try installed.recheck(self.io, task.context.deadline, task.parent, task.basename orelse return error.InvalidInstallationDestination);
+        const prepared = task.prepared orelse return error.InvalidRuntimeSelection;
+        const expected = prepared.expectation();
+        if (expected.channel != (if (self.instance_selection == .dev) setup.RuntimeChannel.development else setup.RuntimeChannel.release)) return error.RuntimeSelectionDrift;
+        const response = if (task.install_response) |installed_response| try task.invocation.allocator.dupe(u8, installed_response) else try control.success(task.invocation.allocator, .null, .{ .record_committed = true });
+        errdefer task.invocation.allocator.free(response);
+        const candidate = try copyQualifiedNativeRuntime(self.allocator, .{ .record_sha256 = prepared.recordDigest(), .evidence = prepared.evidence(), .channel = expected.channel, .target = expected.target, .adapter_epoch = task.epoch, .registry = task.registry });
+        native_source_acquisition.deadline(self.io, task.invocation.until) catch |err| {
+            self.allocator.free(candidate.evidence);
+            return err;
+        };
+        // Worker terminal proves full-byte qualification completed. It cannot
+        // freeze mutable installation names across the handoff. Recheck their
+        // bounded identity witnesses after allocations, immediately at commit;
+        // full stream/hash work stays on the supervised worker.
+        finalRuntimeIdentityFence(self.io, task.context, task.prepared, task.inputs, if (task.installation) |*installed| installed else null, task.parent, task.basename) catch |err| {
+            self.allocator.free(candidate.evidence);
+            return err;
+        };
+        const previous = self.qualified_native_runtime;
+        self.qualified_native_runtime = candidate;
+        self.persistWithRuntimeFence(&.{}, task) catch |err| {
+            self.qualified_native_runtime = previous;
+            self.allocator.free(candidate.evidence);
+            try self.restoreCommitted();
+            return err;
+        };
+        if (previous) |old| self.allocator.free(old.evidence);
+        return response;
+    }
+
     fn failNativeTask(self: *Engine, task: *NativeTask, failure: anyerror) ![]u8 {
         if (task.stage == .discovery) return control.failure(task.invocation.allocator, task.request.id, -32000, @errorName(failure));
         errdefer self.poisoned = true;
@@ -1211,6 +2802,7 @@ pub const Engine = struct {
     }
 
     fn finishNativeTask(self: *Engine, task: *NativeTask) ![]u8 {
+        if (task.stage == .source_acquire) return self.finishNativeSourceCopy(task);
         if (task.stage == .discovery) {
             var arena: std.heap.ArenaAllocator = .init(self.allocator);
             defer arena.deinit();
@@ -1258,6 +2850,46 @@ pub const Engine = struct {
         }
         try self.persist(&.{});
         const decoded = try std.json.parseFromSlice(std.json.Value, arena.allocator(), cached, .{});
+        defer decoded.deinit();
+        return control.success(task.invocation.allocator, task.request.id, decoded.value);
+    }
+
+    fn finishNativeSourceCopy(self: *Engine, task: *NativeTask) ![]u8 {
+        if (self.stopping or self.poisoned or self.vault_locked) return error.ServiceStopping;
+        const copied = task.source_copy orelse return error.NativeSourceFreshCheckRequired;
+        const admission = task.source_admission orelse return error.NativeSourceConsentRequired;
+        const captured = task.source_runtime_record orelse return error.NativeImageUnavailable;
+        const source_id = std.fmt.bytesToHex(admission.source_id, .lower);
+        const fresh: NativeImportFresh = .{ .origin = copied.origin, .selection_digest = captured.record_sha256, .declaration = .{ .owner_id = copied.binding.owner.id, .native_nonce = copied.binding.owner.nonce, .endpoint_generation = copied.binding.owner.endpoint_generation, .witness = copied.binding.owner.witness, .status = .available, .context = .{ .id = copied.binding.context.id, .generation = copied.binding.context.generation }, .store_present = true, .credential_acquisition_authorized = false } };
+        const probe: PendingImport = .{ .network_id = 0, .source_id = @constCast(&source_id), .provider = @constCast("codex"), .credential_kind = .oauth_access, .source_generation = admission.source_generation, .credit_key = undefined, .forget_epoch = admission.forget_epoch, .job_id = @constCast(""), .token = @constCast(""), .label = @constCast(""), .expires_at = null, .native_admission = admission, .native_started_at = task.source_started_at, .native_selection_digest = captured.record_sha256 };
+        try self.nativeImportCheck(probe, fresh);
+        const elapsed = task.source_started_at.?.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+        if (elapsed < 0 or elapsed > std.math.maxInt(u64)) return error.NativeSourceDeadline;
+        try native_source_consent.checkMaterialized(admission, try self.nativeImportCurrent(probe, fresh), copied.binding, self.now(), @intCast(elapsed));
+        if (copied.candidate.provider != .codex or copied.candidate.credential_kind != .oauth_access or
+            copied.candidate.provider_account_id != null) return error.InvalidNativeSourcePayload;
+        const arena = task.discovery_context orelse return error.NativeSourceFreshCheckRequired;
+        const a = arena.allocator();
+        var options = task.discovery_options.?;
+        options.broker_socket = try a.dupe(u8, options.broker_socket);
+        const endpoint = try a.dupe(u8, task.endpoint);
+        const retained = try self.allocator.create(NativeImportContext);
+        var transferred = false;
+        defer if (!transferred) self.allocator.destroy(retained);
+        retained.* = .{ .arena = arena, .endpoint = endpoint, .options = options, .image = task.source_image.?, .origin = copied.origin, .until = task.invocation.until, .registry = task.selected_registry, .epoch = options.native_custody.?.adapter_epoch };
+        self.active_credit = task.credit;
+        const operation = try self.queueImportMode(&source_id, "codex", copied.candidate.access_token, (try control.optionalString(task.request.params, "label")) orelse "", copied.candidate.expires_at_limit, copied.candidate.custody_expires_at, null, .oauth_access, admission.allow_reenrollment, false, true, .{ .admission = admission, .started_at = task.source_started_at.?, .selection_digest = captured.record_sha256, .operation = task.operation, .context = retained, .fresh = fresh });
+        transferred = true;
+        task.discovery_context = null;
+        task.source_image = null;
+        var result_arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer result_arena.deinit();
+        const cached = try std.json.Stringify.valueAlloc(result_arena.allocator(), .{ .source_id = source_id[0..], .operation_id = operation, .status = "verifying_identity", .identity_admission = "verification_required", .renewal_owner = "external", .provider_identity_requested = true }, .{});
+        try self.mutations.complete(task.mutation_slot.?, cached);
+        if (task.credit) |key| try self.releaseOutcome(key);
+        task.credit = null;
+        try self.persist(&.{});
+        const decoded = try std.json.parseFromSlice(std.json.Value, result_arena.allocator(), cached, .{});
         defer decoded.deinit();
         return control.success(task.invocation.allocator, task.request.id, decoded.value);
     }
@@ -1543,29 +3175,127 @@ pub const Engine = struct {
         };
     }
 
-    fn bootstrap(self: *Engine) !void {
-        const database_path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/state.sqlite", .{self.state_dir}, 0);
-        defer self.allocator.free(database_path);
-        const existing = if (std.Io.Dir.cwd().statFile(self.io, database_path, .{ .follow_symlinks = false })) |stat| blk: {
-            if (stat.kind != .file) return error.UnsafeDatabase;
-            break :blk true;
-        } else |err| switch (err) {
-            error.FileNotFound => false,
+    /// Both ordinary startup and explicit locked retry stage all custody state.
+    /// The actor is the single writer; queue/mutex/thread identity never moves.
+    fn initializeCustody(self: *Engine) !void {
+        if (self.db != null or self.network != null or self.native_workers != null) return error.CustodyAlreadyLoaded;
+        errdefer std.crypto.secureZero(u8, &self.root_key);
+        if (self.active_until) |until| if (until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
+        self.metrics_mutex.lockUncancelable(self.io);
+        const metrics = self.metrics;
+        self.metrics_mutex.unlock(self.io);
+        var staged: Engine = .{
+            .allocator = self.allocator,
+            .io = self.io,
+            .state_dir = self.state_dir,
+            .instance_selection = self.instance_selection,
+            .state = domain.State.init(self.allocator),
+            .observers = observer.Coordinator.init(self.allocator),
+            .requests = request_authority.Ledger.init(self.allocator, 4096),
+            .mutations = try mutation_authority.Ledger.init(self.allocator, 4096),
+            .admission = snapshot_admission.Ledger.init(self.allocator),
+            .native_owners = native_owner.Ledger.init(self.allocator),
+            .metrics = metrics,
+            .test_key = self.test_key,
+            .test_vault = self.test_vault,
+            .startup_custody_namespace = self.startup_custody_namespace,
+            .fixture_startup_vault_locked = self.fixture_startup_vault_locked,
+            .fixture_custody_stage_failure = self.fixture_custody_stage_failure,
+            .active_until = self.active_until,
+        };
+        defer {
+            if (staged.network) |client| client.deinit();
+            if (staged.db) |*db| db.close();
+            staged.release();
+        }
+        if (self.codex_runtime_root) |root| staged.codex_runtime_root = try self.allocator.dupe(u8, root);
+        staged.bootstrap() catch |err| {
+            self.startup_custody_namespace = staged.startup_custody_namespace;
+            if (staged.startup_vault_failure) |failure| self.startup_vault_failure = failure;
+            return err;
+        };
+        // Bootstrap verified the storage-owned opening witness. Retain it now,
+        // before timeout, stopping, allocation or supervisor preparation can
+        // fail; a fresh first creation must thereafter retry load-only.
+        self.startup_custody_namespace = staged.startup_custody_namespace;
+        if (self.active_until) |until| if (until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.stopping) return error.ServiceStopping;
+        // Create the only supervisor with the final stable Engine callback.
+        const workers = try native_work.Supervisor.create(self.io, self.allocator, .{ .context = self, .signal = nativeWake });
+        errdefer workers.deinit();
+        try self.custodyDeadline();
+        if (builtin.is_test and self.fixture_custody_stage_failure == .supervisor_ready) return error.CustodyStageFailure;
+        inline for (.{ "root_key", "root_id", "state", "db", "network", "revision", "policy", "adapter_epochs", "installed", "descriptions", "import_sources", "import_forget_epoch", "requests", "mutations", "admission", "native_owners", "native_registry", "measured_codex_runtime", "qualified_native_runtime", "runtime_measurement_requested", "outcome_intents", "maintenance_growth_bytes", "committed_nonledger_bytes", "committed_counts", "lifecycle_measurements", "browser_attempts", "fresh_oauth", "fresh_oauth_host_id", "owned_siwc_pairs", "owned_renewal_accounting" }) |name| {
+            std.mem.swap(@TypeOf(@field(self.*, name)), &@field(self.*, name), &@field(staged, name));
+        }
+        self.native_workers = workers;
+    }
+
+    /// Retain this actor's checked namespace through failed key IO. A fresh
+    /// install may first-create only while its original absence still holds;
+    /// existing custody cannot become fresh after loss or inode substitution.
+    fn inspectCustodyNamespace(self: *Engine) !StartupCustodyNamespace {
+        const directory = try paths.openPrivateRoot(self.allocator, self.state_dir, false);
+        defer _ = std.c.close(directory);
+        const held = try file_metadata.statFd(directory);
+        const database: ?file_metadata.Metadata = file_metadata.statAt(directory, "state.sqlite", std.c.AT.SYMLINK_NOFOLLOW) catch |err| switch (err) {
+            error.FileNotFound => null,
             else => return err,
         };
-        if (!existing) for ([_][]const u8{ ".authority", ".authority.lock" }) |suffix| {
-            const authority_path = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ database_path, suffix });
-            defer self.allocator.free(authority_path);
-            if (std.Io.Dir.cwd().statFile(self.io, authority_path, .{ .follow_symlinks = false })) |_| return error.RecoveryDatabaseMissing else |err| switch (err) {
-                error.FileNotFound => {},
-                else => return err,
+        if (database) |metadata| {
+            if (metadata.mode & std.c.S.IFMT != std.c.S.IFREG or metadata.uid != std.c.getuid() or metadata.mode & 0o777 != 0o600 or metadata.nlink != 1) return error.UnsafeDatabase;
+        } else {
+            for ([_][:0]const u8{ "state.sqlite.authority", "state.sqlite.authority.lock", "state.sqlite-wal", "state.sqlite-shm", "state.sqlite-journal" }) |sibling| {
+                if (file_metadata.statAt(directory, sibling.ptr, std.c.AT.SYMLINK_NOFOLLOW)) |_| return error.RecoveryDatabaseMissing else |err| switch (err) {
+                    error.FileNotFound => {},
+                    else => return err,
+                }
             }
-        };
+        }
+        return .{ .directory = .{ .dev = held.dev, .ino = held.ino }, .database = if (database) |metadata| .{ .dev = metadata.dev, .ino = metadata.ino } else null };
+    }
+
+    fn bootstrap(self: *Engine) !void {
+        try self.custodyDeadline();
+        const database_path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/state.sqlite", .{self.state_dir}, 0);
+        defer self.allocator.free(database_path);
+        const current_namespace = try self.inspectCustodyNamespace();
+        if (self.startup_custody_namespace) |retained| {
+            if (!std.meta.eql(retained, current_namespace)) return if (retained.database != null and current_namespace.database == null) error.RecoveryDatabaseMissing else error.RecoveryDatabaseChanged;
+        } else self.startup_custody_namespace = current_namespace;
+        const existing = current_namespace.database != null;
         self.root_id = if (existing) try storage.Store.readRootId(self.allocator, database_path) else try self.allocator.dupeSentinel(u8, self.instance_selection.vaultRoot(), 0);
         if (!eql(self.root_id.?, self.instance_selection.vaultRoot())) return error.InstanceCustodyMismatch;
         if (!existing) try validatePersistedAdmission(self.allocator, "{}", 0);
-        self.root_key = self.test_key orelse if (existing) try vault.Vault.loadRoot(self.root_id.?) else try vault.Vault.loadOrCreateRoot(self.instance_selection.vaultRoot(), false);
-        self.db = try storage.Store.openRootWithSnapshotValidator(self.io, self.allocator, database_path, self.root_id.?, self.root_key, validatePersistedAdmission);
+        if (!std.meta.eql(current_namespace, try self.inspectCustodyNamespace())) return error.RecoveryDatabaseChanged;
+        if (builtin.is_test and self.fixture_startup_vault_locked) {
+            self.startup_vault_failure = error.Locked;
+            return error.Locked;
+        }
+        self.root_key = (if (self.test_vault) |backend| vault.loadOrCreateForTest(backend, self.root_id.?, existing) else if (self.test_key) |key| @as(vault.VaultError!vault.Key, key) else if (existing) vault.Vault.loadRoot(self.root_id.?) else vault.Vault.loadOrCreateRoot(self.instance_selection.vaultRoot(), false)) catch |err| {
+            // Only this boundary gives errors vault provenance. Store/JSON/IO
+            // errors with the same names cannot retain startup controls.
+            // Test builds expose only VaultError here; production additionally
+            // rejects test backend use with TestOnly, which remains fatal.
+            self.startup_vault_failure = if (builtin.is_test) err else switch (err) {
+                error.Missing, error.Locked, error.Denied, error.Cancelled, error.Unavailable, error.InvalidKey, error.Conflict, error.BackendFailure, error.InvalidRoot => @errorCast(err),
+                else => null,
+            };
+            return err;
+        };
+        try self.custodyDeadline();
+        if (!std.meta.eql(current_namespace, try self.inspectCustodyNamespace())) return error.RecoveryDatabaseChanged;
+        self.db = try storage.Store.openRootExpectedWithRecoveryValidator(self.io, self.allocator, database_path, self.root_id.?, self.root_key, validatePersistedAdmission, validateOwnedPairRecovery, current_namespace);
+        const opening = try self.db.?.openingWitness();
+        const owned_namespace: StartupCustodyNamespace = .{ .directory = opening.directory, .database = opening.database };
+        if (opening.created == existing or !std.meta.eql(current_namespace.directory, opening.directory) or (existing and !std.meta.eql(current_namespace, owned_namespace)) or !std.meta.eql(owned_namespace, try self.inspectCustodyNamespace())) return error.RecoveryDatabaseChanged;
+        // Only the writer's successful O_EXCL/open witness may transition a
+        // fresh namespace to existing custody. Later staging failures retry
+        // this exact database load-only, never an appeared/replaced inode.
+        self.startup_custody_namespace = owned_namespace;
+        if (builtin.is_test and self.fixture_custody_stage_failure == .database_open) return error.CustodyStageFailure;
         var saved = try self.db.?.readSnapshot();
         defer saved.deinit();
         const parsed = try std.json.parseFromSlice(Persisted, self.allocator, saved.json, .{});
@@ -1575,8 +3305,24 @@ pub const Engine = struct {
         }
         try validatePersistedAdmission(self.allocator, saved.json, saved.revision);
         if (parsed.value.browser_attempt_authority) |attempts| self.browser_attempts = try browser_attempt.Ledger.fromSnapshot(self.allocator, attempts);
+        if (parsed.value.fresh_oauth_authority) |saved_enrollments| {
+            self.fresh_oauth = try oauth_enrollment.Ledger.fromSnapshot(self.allocator, saved_enrollments);
+            self.fresh_oauth.?.recoverAfterRestart(self.allocator);
+        }
+        self.fresh_oauth_host_id = parsed.value.fresh_oauth_host_id;
+        if (parsed.value.owned_siwc_pairs) |pairs| self.owned_siwc_pairs = try siwc_pair.Registry.fromSnapshot(self.allocator, pairs);
+        self.owned_renewal_accounting = parsed.value.owned_renewal_accounting;
+        const restored_state = restored: {
+            if (builtin.is_test and self.fixture_custody_stage_failure == .state_allocation) {
+                var failing = std.testing.FailingAllocator.init(self.allocator, .{ .fail_index = 0 });
+                var unexpected = try domain.State.fromSnapshot(failing.allocator(), parsed.value.state);
+                unexpected.deinit();
+                return error.CustodyFixtureDidNotAllocate;
+            }
+            break :restored try domain.State.fromSnapshot(self.allocator, parsed.value.state);
+        };
         self.state.deinit();
-        self.state = try domain.State.fromSnapshot(self.allocator, parsed.value.state);
+        self.state = restored_state;
         self.revision = saved.revision;
         self.policy = parsed.value.policy;
         self.adapter_epochs = parsed.value.adapter_epochs;
@@ -1600,6 +3346,7 @@ pub const Engine = struct {
         self.native_owners.recoverAfterRestart();
         self.native_registry = parsed.value.native_registry;
         self.measured_codex_runtime = parsed.value.measured_codex_runtime;
+        if (parsed.value.qualified_native_runtime) |retained| self.qualified_native_runtime = try copyQualifiedNativeRuntime(self.allocator, retained);
         if (self.measured_codex_runtime) |selected| {
             if (selected.record.channel != (if (self.instance_selection == .dev) setup.RuntimeChannel.development else setup.RuntimeChannel.release)) return error.RuntimeSelectionDrift;
         }
@@ -1622,11 +3369,21 @@ pub const Engine = struct {
                 if (status.generation != grant.generation or status.state == .quarantined or status.state == .refreshing) grant.status = .quarantined;
             } else grant.status = .invalid;
         }
+        // No persisted operation can reconstruct a refresh ticket after
+        // restart. Store.open has already quarantined its RT; settle the
+        // matching pair metadata and access row before any request/network IO.
+        for (self.owned_siwc_pairs.records.items) |row| {
+            if (row.status == .refreshing) {
+                const renewal = row.renewal orelse return error.InvalidSiwcPair;
+                try self.quarantineOwnedRenewalRow(row.transaction_id, renewal.operation_id, .completion_unknown, .interrupted_or_stranded);
+            }
+        }
         // Missing local transport cannot resolve a durable admitted read.
         // Its job and indeterminate credit remain until an explicit generation
         // or cancellation fence rejects every possible old completion.
         self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
         _ = try self.snapshotUsage();
+        try self.custodyDeadline();
         try self.persist(&.{});
         self.network = try transport.Client.init(self.allocator);
         if (!builtin.is_test) {
@@ -1640,6 +3397,10 @@ pub const Engine = struct {
             try self.releaseOutcome(key);
             try self.persist(&.{});
         }
+    }
+
+    fn custodyDeadline(self: *Engine) !void {
+        if (self.active_until) |until| if (until.durationFromNow(self.io).raw.toMilliseconds() <= 0) return error.Timeout;
     }
 
     fn captureInstallationSelection(self: *Engine) !void {
@@ -1709,7 +3470,8 @@ pub const Engine = struct {
         try self.reserveOutcome(.{ .key = credit, .owner_id = id, .provider = request.method, .plan_bytes = 1 });
         try self.persist(&.{});
         if (self.installation_refresh != null or self.installation_selection == null) {
-            const result = try setup_verification.makeRefusal(id, self.installation_refresh_generation, self.now(), if (self.installation_refresh != null) .busy else .installation_selection_required);
+            const refusal_elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+            const result = try setup_verification.makeTimedRefusal(id, self.installation_refresh_generation, self.now(), if (self.installation_refresh != null) .busy else .installation_selection_required, if (refusal_elapsed >= 0 and refusal_elapsed <= std.math.maxInt(u64)) @intCast(refusal_elapsed) else null);
             const cached = try setup_verification.serialize(allocator, result);
             defer allocator.free(cached);
             try self.mutations.complete(slot, cached);
@@ -1808,7 +3570,7 @@ pub const Engine = struct {
         if (record.state != .started or record.kind != .external or !eql(record.method[0..record.method_len], "setup.refresh") or !std.crypto.timing_safe.eql([32]u8, record.fingerprint, reference.fingerprint) or !std.meta.eql(reference.credit, creditKey(.mutation, record.id[0..record.id_len], record.expected_revision))) return error.StaleSetupVerification;
         const elapsed = reference.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
         const result = if (task.collection_error) |err| switch (err) {
-            error.Timeout => try setup_verification.makeRefusal(record.id[0..record.id_len], task.generation, task.observed_at, .collection_timed_out),
+            error.Timeout => try setup_verification.makeTimedRefusal(record.id[0..record.id_len], task.generation, task.observed_at, .collection_timed_out, if (elapsed >= 0 and elapsed <= std.math.maxInt(u64)) @intCast(elapsed) else null),
             else => return err,
         } else try setup_verification.makeCompleted(record.id[0..record.id_len], task.generation, task.observed_at, onboarding.assess(self.setupSnapshot(task.result.probe, false)), if (elapsed >= 0 and elapsed <= std.math.maxInt(u64)) @intCast(elapsed) else null);
         const cached = try setup_verification.serialize(self.allocator, result);
@@ -1826,9 +3588,26 @@ pub const Engine = struct {
             snapshot.artifact = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
             snapshot.service = .{ .state = .pending, .freshness = .current, .evidence = .diagnostic };
         }
-        snapshot.vault = .{ .state = if (self.poisoned) .unknown else .ready, .freshness = .current, .evidence = .diagnostic };
+        snapshot.vault = .{ .state = if (self.vault_locked) switch (self.startup_vault_failure orelse error.Locked) {
+            error.Locked => .locked,
+            error.Missing, error.InvalidKey => .key_unavailable,
+            error.Denied, error.Cancelled => .access_denied,
+            error.Unavailable, error.Conflict, error.BackendFailure, error.InvalidRoot => .unavailable,
+        } else if (self.poisoned) .unknown else .ready, .freshness = if (self.vault_locked) .stale else .current, .evidence = .diagnostic };
+        // Unavailable startup has not loaded retained source/account metadata.
+        if (self.vault_locked) return snapshot;
+        // Configuration is an actor-owned fact, not native capability proof.
+        // No current installed adapter has a qualified ordinary-launch gate.
+        // Publish the actionable gap through the shared UI/CLI report without
+        // manufacturing native readiness from a catalog or fixture.
+        if (!self.poisoned) snapshot.native = .{
+            .state = if (self.installed.items.len == 0) .missing else .unverified,
+            .freshness = .current,
+            .evidence = .diagnostic,
+        };
+        const timestamp = self.now();
         var connected = false;
-        for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= self.now() and (source.authorized_until == null or source.authorized_until.? > self.now())) {
+        for (self.state.sources.items) |source| if (source.status == .connected and source.authorized_at <= timestamp and (source.authorized_until == null or source.authorized_until.? > timestamp)) {
             connected = true;
         };
         snapshot.source = .{ .state = if (connected) .ready else .missing, .freshness = .current, .evidence = .diagnostic };
@@ -1839,9 +3618,18 @@ pub const Engine = struct {
         snapshot.identity = .{ .state = if (verified) .ready else .pending, .freshness = .current, .evidence = .diagnostic };
         var usable = false;
         for (self.state.grants.items) |grant| {
-            if (grant.status != .ready or grant.credential_kind == .oauth_refresh or grant.credential_kind == .browser_bound or (grant.provider_expires_at != null and grant.provider_expires_at.? <= self.now()) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= self.now())) continue;
+            if (grant.status != .ready or grant.credential_kind == .oauth_refresh or grant.credential_kind == .browser_bound or (grant.provider_expires_at != null and grant.provider_expires_at.? <= timestamp) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= timestamp)) continue;
             const account = self.state.account(grant.account_id) orelse continue;
             if (!account.identity.verified or account.lifecycle != .active) continue;
+            // The grant's exact source lineage must still authorize requests.
+            // Detached sources keep independently valid non-browser grants.
+            var source_authorized = false;
+            for (self.state.sources.items) |source| if (eql(source.id, grant.source_id)) {
+                source_authorized = source.status != .disconnected and source.authorized_at <= timestamp and
+                    (source.authorized_until == null or source.authorized_until.? > timestamp);
+                break;
+            };
+            if (!source_authorized) continue;
             for (grant.purposes) |purpose| if (purpose == .request) {
                 usable = true;
             };
@@ -1867,6 +3655,8 @@ pub const Engine = struct {
     }
 
     fn fence(self: *Engine) void {
+        self.cancelFreshOAuth(null);
+        self.cancelOwnedRenewals(null, null);
         self.poisoned = true;
         // Maintenance can fail after preparing an in-memory update. Public
         // inspection retains committed metadata whenever storage can read it.
@@ -1874,7 +3664,33 @@ pub const Engine = struct {
     }
 
     fn persist(self: *Engine, changes: []const storage.GrantChange) !void {
+        return self.persistWithNativeFence(changes, null);
+    }
+
+    fn persistWithNativeFence(self: *Engine, changes: []const storage.GrantChange, native: ?NativeAdoptionFence) !void {
+        return self.persistWithFences(changes, native, null);
+    }
+
+    fn persistWithRuntimeFence(self: *Engine, changes: []const storage.GrantChange, runtime: *NativeRuntimeCommitTask) !void {
+        return self.persistWithFences(changes, null, runtime);
+    }
+
+    fn checkRuntimeWriterFence(self: *Engine, task: *NativeRuntimeCommitTask) !void {
+        if (self.runtime_installation != task or task.engine != self or !task.handoff_ready)
+            return error.RuntimeSelectionNotReady;
+        if (task.failure) |err| return err;
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.ServiceStopping;
+        if (!std.meta.eql(task.context.deadline, task.invocation.until)) return error.InvalidDeadline;
+        try native_source_acquisition.deadline(self.io, task.invocation.until);
+        if (task.epoch != self.adapter_epochs[0] or !std.meta.eql(task.registry, self.native_registry) or
+            !std.crypto.timing_safe.eql(envelope.Key, task.context.options.key, self.root_key)) return error.NativeCustodyGenerationMismatch;
+        if (self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return error.NativeRemovalPending;
+        try finalRuntimeIdentityFence(self.io, task.context, task.prepared, task.inputs, if (task.installation) |*installed| installed else null, task.parent, task.basename);
+    }
+
+    fn persistWithFences(self: *Engine, changes: []const storage.GrantChange, native: ?NativeAdoptionFence, runtime: ?*NativeRuntimeCommitTask) !void {
         if (self.staging_mutation) {
+            if (runtime != null) return error.RuntimeSelectionNotReady;
             try self.staged_changes.appendSlice(self.allocator, changes);
             return;
         }
@@ -1897,6 +3713,12 @@ pub const Engine = struct {
         const committed_growth_bytes = try self.nonledgerBytes();
         const serialized = try std.json.Stringify.valueAlloc(self.allocator, self.persisted(), .{});
         defer self.allocator.free(serialized);
+        // Serialization and capacity work may consume the remaining lifetime.
+        // Fence native credential adoption at the actual writer call as well
+        // as before the domain mutation. Expiry does not cancel started IO.
+        if (native) |native_fence| try self.nativeImportWriterCheck(native_fence);
+        if (runtime) |task| try self.checkRuntimeWriterFence(task);
+        self.invalidateCatalogContexts();
         self.revision = self.db.?.commit(self.revision, serialized, changes) catch |err| {
             // Ambiguous storage failure fences all further credential service.
             self.poisoned = true;
@@ -1911,6 +3733,10 @@ pub const Engine = struct {
             .schema_version = 2,
             .lifecycle_measurements = self.lifecycle_measurements,
             .browser_attempt_authority = if (self.browser_attempts) |*attempts| attempts.snapshot() else null,
+            .fresh_oauth_authority = if (self.fresh_oauth) |*enrollments| enrollments.snapshot() else null,
+            .fresh_oauth_host_id = self.fresh_oauth_host_id,
+            .owned_siwc_pairs = self.owned_siwc_pairs.snapshot(),
+            .owned_renewal_accounting = self.owned_renewal_accounting,
             .state = self.state.snapshot(),
             .policy = self.policy,
             .installed_integrations = self.installed.items,
@@ -1926,6 +3752,7 @@ pub const Engine = struct {
             .native_owner_authority = self.native_owners.snapshot(),
             .native_registry = self.native_registry,
             .measured_codex_runtime = self.measured_codex_runtime,
+            .qualified_native_runtime = self.qualified_native_runtime,
         };
     }
 
@@ -1993,12 +3820,25 @@ pub const Engine = struct {
             break :blk try measurements.clone(self.allocator);
         } else null;
         var ownership_transferred = false;
+        const restored_runtime: ?QualifiedNativeRuntime = if (parsed.value.qualified_native_runtime) |retained|
+            try copyQualifiedNativeRuntime(self.allocator, retained)
+        else
+            null;
+        errdefer if (!ownership_transferred) {
+            if (restored_runtime) |retained| self.allocator.free(retained.evidence);
+        };
         errdefer if (!ownership_transferred) {
             if (restored_measurements) |measurements| self.allocator.destroy(measurements);
         };
         var restored_browser_attempts: ?browser_attempt.Ledger = if (parsed.value.browser_attempt_authority) |attempts| try browser_attempt.Ledger.fromSnapshot(self.allocator, attempts) else null;
         errdefer if (!ownership_transferred) {
             if (restored_browser_attempts) |*attempts| attempts.deinit();
+        };
+        var restored_pairs = try siwc_pair.Registry.fromSnapshot(self.allocator, parsed.value.owned_siwc_pairs orelse .{});
+        errdefer if (!ownership_transferred) restored_pairs.deinit(self.allocator);
+        var restored_enrollments: ?oauth_enrollment.Ledger = if (parsed.value.fresh_oauth_authority) |saved_enrollments| try oauth_enrollment.Ledger.fromSnapshot(self.allocator, saved_enrollments) else null;
+        errdefer if (!ownership_transferred) {
+            if (restored_enrollments) |*enrollments| enrollments.deinit(self.allocator);
         };
         var replacement = try domain.State.fromSnapshot(self.allocator, parsed.value.state);
         errdefer if (!ownership_transferred) replacement.deinit();
@@ -2050,6 +3890,12 @@ pub const Engine = struct {
             errdefer freeIntent(self.allocator, copied);
             try outcome_intents.append(self.allocator, copied);
         }
+        if (self.fresh_oauth) |*enrollments| enrollments.deinit(self.allocator);
+        self.fresh_oauth = restored_enrollments;
+        self.owned_siwc_pairs.deinit(self.allocator);
+        self.owned_siwc_pairs = restored_pairs;
+        self.owned_renewal_accounting = parsed.value.owned_renewal_accounting;
+        self.fresh_oauth_host_id = parsed.value.fresh_oauth_host_id;
         self.state.deinit();
         self.state = replacement;
         self.requests.deinit();
@@ -2062,6 +3908,8 @@ pub const Engine = struct {
         self.native_owners = native;
         self.native_registry = parsed.value.native_registry;
         self.measured_codex_runtime = parsed.value.measured_codex_runtime;
+        if (self.qualified_native_runtime) |retained| self.allocator.free(retained.evidence);
+        self.qualified_native_runtime = restored_runtime;
         for (self.installed.items) |item| self.allocator.free(item);
         self.installed.deinit(self.allocator);
         self.installed = installed;
@@ -2085,6 +3933,7 @@ pub const Engine = struct {
         self.outcome_intents = outcome_intents;
         // Later derived checks may fail; self owns every replacement now.
         ownership_transferred = true;
+        self.reconcileFreshOAuthFences();
         self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
         _ = try self.snapshotUsage();
         self.committed_nonledger_bytes = try self.nonledgerBytes();
@@ -2203,7 +4052,7 @@ pub const Engine = struct {
             }
             var failed = control.parse(allocator, payload) catch return control.failure(allocator, .null, -32000, "CustodyUnavailable");
             defer failed.deinit();
-            if (channel == .control and (eql(failed.method, "system.handshake") or eql(failed.method, "state.snapshot") or eql(failed.method, "system.health") or eql(failed.method, "reliability.export") or eql(failed.method, "reliability.lifecycle") or eql(failed.method, "setup.readiness") or eql(failed.method, "setup.plan") or eql(failed.method, "setup.evidence") or eql(failed.method, "setup.refresh") or eql(failed.method, application_readiness.method))) return self.handleRequest(allocator, failed, channel);
+            if (channel == .control and (eql(failed.method, "oauth.enrollment.pending.v1") or eql(failed.method, "oauth.enrollment.descriptor.v1") or eql(failed.method, "oauth.enrollment.status.v1") or eql(failed.method, "system.handshake") or eql(failed.method, "state.snapshot") or eql(failed.method, "system.health") or eql(failed.method, "reliability.export") or eql(failed.method, "reliability.lifecycle") or eql(failed.method, "setup.readiness") or eql(failed.method, "setup.plan") or eql(failed.method, "setup.evidence") or eql(failed.method, "setup.refresh") or eql(failed.method, application_readiness.method))) return self.handleRequest(allocator, failed, channel);
             return control.failure(allocator, failed.id, -32000, "CustodyUnavailable");
         }
         if (channel == .browser) return self.executeBrowser(allocator, payload) catch |err| {
@@ -2216,7 +4065,7 @@ pub const Engine = struct {
         defer request.deinit();
         // Audit refusals do not restore or rewrite the actor's committed state.
         // Production control ingress already verifies the socket's peer user.
-        if (eql(request.method, "integrations.nativeRequestAudit")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
+        if (eql(request.method, "adapter.siwcCatalog") or eql(request.method, "oauth.enrollment.pending.v1") or eql(request.method, "oauth.enrollment.status.v1") or eql(request.method, "oauth.enrollment.descriptor.v1") or eql(request.method, "oauth.enrollment.authorization.v1") or eql(request.method, "integrations.nativeRequestAudit") or eql(request.method, "integrations.nativeFileCoordinationReadiness") or eql(request.method, "custody.reopen") or eql(request.method, "custody.observation")) return self.handleRequest(allocator, request, channel) catch |err| return control.failure(allocator, request.id, -32000, @errorName(err));
         return self.authorizedRequest(allocator, request, channel) catch |err| {
             self.restoreCommitted() catch {
                 self.poisoned = true;
@@ -2229,9 +4078,28 @@ pub const Engine = struct {
         if (eql(request.method, "setup.refresh")) return self.handleRequest(allocator, request, channel);
         const kind = mutationKind(request.method) orelse return self.handleRequest(allocator, request, channel);
         if (channel != .control) return error.WrongChannel;
+        // This is daemon-local request handling, not the user's end-to-end
+        // start or a timestamp that can be subtracted after restart.
+        const lifecycle_local_start: ?std.Io.Timestamp = if (eql(request.method, "source.disconnect")) std.Io.Clock.awake.now(self.io) else null;
         const operation_id = try control.operationId(request.params);
         const expected_revision = try control.expectedRevision(request.params);
-        const fingerprint = try mutationFingerprint(allocator, request.method, request.params, self.root_key);
+        var fingerprint = try mutationFingerprint(allocator, request.method, request.params, self.root_key);
+        if (eql(request.method, "oauth.enrollment.prepare.v1")) if (self.active_oauth_profile) |profile| {
+            var mac = std.crypto.auth.hmac.sha2.HmacSha256.init(&self.root_key);
+            mac.update("omux-fresh-oauth-private-profile-intent-v1");
+            mac.update(&fingerprint);
+            mac.update(&profile.view().sha256);
+            mac.final(&fingerprint);
+        };
+        if (eql(request.method, "oauth.enrollment.prepare.v1")) if (self.active_oss_callback_port) |port| {
+            var bytes: [2]u8 = undefined;
+            std.mem.writeInt(u16, &bytes, port, .big);
+            var hmac = std.crypto.auth.hmac.sha2.HmacSha256.init(&self.root_key);
+            hmac.update("omux-owned-oss-enrollment-operation-v1");
+            hmac.update(&fingerprint);
+            hmac.update(&bytes);
+            hmac.final(&fingerprint);
+        };
         const admission = try self.mutations.begin(operation_id, request.method, fingerprint, expected_revision, self.revision, kind);
         const slot = switch (admission) {
             .replay => |bytes| {
@@ -2247,7 +4115,7 @@ pub const Engine = struct {
         if (eql(request.method, lifecycle_witness.method)) {
             // Optional timing capacity belongs to the original authority row.
             // No clock is restored or started for cached acknowledgments.
-            if (try self.mutations.tryReserveLifecycleWitness(slot)) measurement = try lifecycle_witness.Session.begin(self.io, self.mutations.snapshot().records[slot], .{
+            if (try self.mutations.tryReserveLifecycleWitness(slot)) measurement = try lifecycle_witness.Session.beginOwnedRequest(self.io, self.mutations.snapshot().records[slot], .{
                 .os = switch (builtin.os.tag) {
                     .linux => .linux,
                     .macos => .macos,
@@ -2259,7 +4127,7 @@ pub const Engine = struct {
                     else => .other,
                 },
                 .channel = if (self.instance_selection == .dev) .development else .release,
-            });
+            }, lifecycle_local_start.?);
         }
         if (kind == .external) {
             try self.preflightMutationResult(allocator, request.method, request.params);
@@ -2344,6 +4212,11 @@ pub const Engine = struct {
                 .operation_correlation = std.mem.readInt(u64, correlation[0..8], .little),
                 .phase = .remove,
                 .outcome = .success,
+                .local_elapsed_ns = if (lifecycle_local_start) |started| blk: {
+                    const elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+                    // Missing timing preserves the outcome; never invent zero.
+                    break :blk if (elapsed >= 0 and elapsed <= std.math.maxInt(u64)) @as(u64, @intCast(elapsed)) else null;
+                } else null,
             }) catch |err| switch (err) {
                 error.ClockAnomaly, error.CounterSaturated => blk: {
                     if (err == error.ClockAnomaly) current.clock_anomaly = true else current.saturated = true;
@@ -2410,7 +4283,9 @@ pub const Engine = struct {
         if (eql(method, "source.reconcile") or eql(method, "enrollment.start")) {
             const job = try std.fmt.allocPrint(allocator, "reconcile-{s}", .{try control.string(params, "source_id")});
             defer allocator.free(job);
-            try setup.requireResultFits(allocator, .{ .operation_id = job, .status = "verifying_identity" });
+            if (try control.boolean(params, "include_operation_generation", false)) {
+                try setup.requireResultFits(allocator, .{ .operation_id = job, .status = "verifying_identity", .operation_generation = std.math.maxInt(u64), .admitted_revision = std.math.maxInt(u64) });
+            } else try setup.requireResultFits(allocator, .{ .operation_id = job, .status = "verifying_identity" });
         } else if (eql(method, "repair.start")) {
             const account = self.state.account(try control.string(params, "account_id")) orelse return error.NotFound;
             var jobs: std.ArrayList([]const u8) = .empty;
@@ -2442,15 +4317,24 @@ pub const Engine = struct {
         // retained label/provider fields and fixed generated handles are prepaid.
         const input_bytes = try snapshot_admission.countJson(params, storage.maximum_snapshot_bytes);
         if (eql(method, "source.connect")) {
+            const selected_native = control.get(params, "selected_native_context") != null;
+            if (selected_native) _ = try native_source_acquisition.controlSelection(params);
             var path_bytes: usize = 0;
             const source_path: []const u8 = (try control.optionalString(params, "source_path")) orelse "";
-            if (source_path.len == 0 and eql(try control.string(params, "kind"), "native_store") and eql(try control.string(params, "provider"), "codex")) {
+            if (!selected_native and source_path.len == 0 and eql(try control.string(params, "kind"), "native_store") and eql(try control.string(params, "provider"), "codex")) {
                 const home = if (std.c.getenv("CODEX_HOME")) |value| std.mem.span(value) else std.mem.span(std.c.getenv("HOME") orelse return error.MissingHome);
                 path_bytes = try snapshot_admission.countJson(home, storage.maximum_snapshot_bytes);
             }
             const handle: [64]u8 = @splat('a');
+            const native_job_id: [74]u8 = @splat('a');
+            const native_job_bytes = if (selected_native) (try snapshot_admission.countJson(domain.Job{
+                .id = &native_job_id,
+                .kind = .enrollment,
+                .status = .completed,
+                .operation_generation = std.math.maxInt(u64),
+            }, storage.maximum_snapshot_bytes)) + 1 else 0;
             const fixed = try snapshot_admission.countJson(domain.Source{ .id = &handle, .kind = .native_store, .provider = "github", .authorized_at = std.math.maxInt(i64), .authorized_until = std.math.minInt(i64) }, storage.maximum_snapshot_bytes);
-            return .{ .bytes = try std.math.add(usize, try std.math.mul(usize, input_bytes, 2), path_bytes + fixed + (try snapshot_admission.countJson(SourceDescription{ .source_id = &handle, .provider = "github", .path = "/.codex/auth.json" }, storage.maximum_snapshot_bytes)) + (try snapshot_admission.countJson(ImportSourceAuthority{ .source_id = @constCast(&handle), .generation = std.math.maxInt(u64) }, storage.maximum_snapshot_bytes))), .slots = .{ .sources = 1, .source_descriptions = 1 } };
+            return .{ .bytes = try std.math.add(usize, try std.math.mul(usize, input_bytes, 2), path_bytes + fixed + native_job_bytes + (if (selected_native) native_source_description_budget else 0) + (try snapshot_admission.countJson(SourceDescription{ .source_id = &handle, .provider = "github", .path = "/.codex/auth.json" }, storage.maximum_snapshot_bytes)) + (try snapshot_admission.countJson(ImportSourceAuthority{ .source_id = @constCast(&handle), .generation = std.math.maxInt(u64) }, storage.maximum_snapshot_bytes))), .slots = .{ .sources = 1, .source_descriptions = 1, .jobs = if (selected_native) 1 else 0 } };
         }
         if (eql(method, "source.reconcile") or eql(method, "enrollment.start") or eql(method, "repair.start")) {
             var bytes: usize = 1;
@@ -2627,9 +4511,18 @@ pub const Engine = struct {
     fn applicationReadiness(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
         if (request.params != .object) return error.InvalidParams;
         var fields = request.params.object.iterator();
-        while (fields.next()) |field| if (!eql(field.key_ptr.*, "application") and !eql(field.key_ptr.*, "expected_revision") and !eql(field.key_ptr.*, "demand")) return error.InvalidParams;
+        while (fields.next()) |field| if (!eql(field.key_ptr.*, "application") and !eql(field.key_ptr.*, "expected_revision") and !eql(field.key_ptr.*, "demand") and !eql(field.key_ptr.*, "account_id")) return error.InvalidParams;
         const application = std.meta.stringToEnum(application_readiness.Application, try control.string(request.params, "application")) orelse return error.UnknownAdapter;
         const expected: ?u64 = if (control.get(request.params, "expected_revision") != null) try control.expectedRevision(request.params) else null;
+        const account_id = if (control.get(request.params, "account_id") != null) try control.string(request.params, "account_id") else null;
+        if (account_id != null and (expected == null or control.get(request.params, "demand") == null)) return error.InvalidParams;
+        // Resolve only at the exact revision with available custody. A stale or
+        // unloaded query cannot borrow an alternative or disclose membership.
+        const selected_account: ?domain.Account = if (account_id) |id| selected: {
+            if (self.poisoned or expected.? != self.revision) break :selected null;
+            break :selected self.state.account(id);
+        } else null;
+        var allowed_accounts: [1][]const u8 = undefined;
         const DemandInput = struct {
             provider: []const u8,
             audience: []const u8,
@@ -2663,6 +4556,10 @@ pub const Engine = struct {
             // every borrowed demand string in the parsed arena through reply.
             parsed = try std.json.parseFromSlice(DemandInput, allocator, encoded, .{ .allocate = .alloc_always });
             const d = parsed.?.value;
+            // The old native ChatGPT readiness profile is not SIWC API
+            // Responses authority. Keep its projection closed until a
+            // separately reviewed profile-aware report exists.
+            if (application == .codex and eql(d.provider, siwc_route.provider)) return error.SiwcReadinessProfileRequired;
             if (d.purpose != .request or !std.math.isFinite(d.required) or d.required < 0 or d.required > 1e15 or d.scopes.len > 64) return error.InvalidParams;
             for ([_][]const u8{ d.provider, d.audience, d.resource.kind, d.resource.target, d.resource.unit_name, d.resource.scope }) |text| if (text.len > 256) return error.InvalidParams;
             if (d.issuer) |issuer| if (issuer.len > 256) return error.InvalidParams;
@@ -2674,17 +4571,27 @@ pub const Engine = struct {
             }.lessThan);
             for (scopes.?, 0..) |scope, index| if (scope.len == 0 or scope.len > 256 or (index > 0 and eql(scope, scopes.?[index - 1]))) return error.InvalidParams;
             demand = .{ .provider = d.provider, .audience = d.audience, .issuer = d.issuer, .purpose = d.purpose, .resource = d.resource, .required = d.required, .scopes = scopes.?, .requires_capacity = d.requires_capacity, .now = self.now() };
+            if (account_id) |id| {
+                allowed_accounts[0] = if (selected_account) |account| account.id else id;
+                demand.?.allowed_account_ids = &allowed_accounts;
+            }
             var normalized = d;
             normalized.scopes = scopes.?;
-            const intent = try std.json.Stringify.valueAlloc(allocator, .{ .domain = "omux.application-readiness.v1", .installation = self.db.?.checkpoint.installation, .revision = self.revision, .application = application, .demand = normalized }, .{});
-            defer allocator.free(intent);
-            var digest: [32]u8 = undefined;
-            std.crypto.auth.hmac.sha2.HmacSha256.create(&digest, intent, &self.root_key);
-            context = std.fmt.bytesToHex(digest, .lower);
+            if (account_id == null or selected_account != null) {
+                const intent = if (selected_account) |account|
+                    try std.json.Stringify.valueAlloc(allocator, .{ .domain = "omux.application-readiness.account.v2", .installation = self.db.?.checkpoint.installation, .revision = self.revision, .application = application, .account_id = account.id, .demand = normalized }, .{})
+                else
+                    try std.json.Stringify.valueAlloc(allocator, .{ .domain = "omux.application-readiness.v1", .installation = self.db.?.checkpoint.installation, .revision = self.revision, .application = application, .demand = normalized }, .{});
+                defer allocator.free(intent);
+                var digest: [32]u8 = undefined;
+                std.crypto.auth.hmac.sha2.HmacSha256.create(&digest, intent, &self.root_key);
+                context = std.fmt.bytesToHex(digest, .lower);
+            }
         }
         var custody: std.ArrayList(application_readiness.Custody) = .empty;
         defer custody.deinit(allocator);
         if (!self.poisoned and demand != null and (expected == null or expected.? == self.revision)) for (self.state.grants.items) |grant| {
+            if (account_id != null and (selected_account == null or !eql(grant.account_id, selected_account.?.id))) continue;
             const row = (try self.db.?.readGrantStatus(grant.account_id, grant.id)) orelse continue;
             try custody.append(allocator, .{ .account_id = grant.account_id, .grant_id = grant.id, .generation = row.generation, .state = switch (row.state) {
                 .ready => .ready,
@@ -2696,8 +4603,40 @@ pub const Engine = struct {
                 .omux => .omux,
             } });
         };
-        const readiness_report = try application_readiness.project(&self.state, .{ .application = application, .revision = self.revision, .expected_revision = expected, .context_ref = if (context) |*value| value else null, .demand = demand, .custody = custody.items, .custody_available = !self.poisoned, .adapter = .{ .application = application, .revision = self.revision, .configuration = if (self.integrationInstalled(@tagName(application))) .installed else .absent } });
+        const readiness_report = try application_readiness.project(&self.state, .{ .application = application, .revision = self.revision, .expected_revision = expected, .context_ref = if (context) |*value| value else null, .account_id = account_id, .demand = demand, .custody = custody.items, .custody_available = !self.poisoned, .adapter = .{ .application = application, .revision = self.revision, .configuration = if (self.integrationInstalled(@tagName(application))) .installed else .absent } });
+        if (account_id != null) return control.success(allocator, request.id, application_readiness.SelectedReport{ .account_id = if (selected_account) |account| account.id else null, .diagnostics = readiness_report });
         return control.success(allocator, request.id, readiness_report);
+    }
+
+    fn applicationReadinessCustodyFaultForTest(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) ![]u8 {
+        if (!builtin.is_test) return error.TestOnly;
+        if (channel != .adapter or !eql(try self.authenticate(request.params), "enrollment")) return error.WrongPurpose;
+        if (request.params != .object or request.params.object.count() != 7) return error.InvalidParams;
+        const account_id = try control.string(request.params, "account_id");
+        const grant_id = try control.string(request.params, "grant_id");
+        const grant = self.state.grant(grant_id) orelse return error.NotFound;
+        if (!eql(grant.account_id, account_id)) return error.NotFound;
+        const state_text = try control.string(request.params, "state");
+        const owner_text = try control.string(request.params, "renewal_owner");
+        _ = std.meta.stringToEnum(storage.RenewalOwner, owner_text) orelse return error.InvalidParams;
+        const generation = control.get(request.params, "generation") orelse return error.InvalidParams;
+        if (generation != .integer or generation.integer <= 0) return error.InvalidParams;
+        const missing = eql(state_text, "missing");
+        if (!missing) {
+            _ = std.meta.stringToEnum(storage.GrantState, state_text) orelse return error.InvalidParams;
+        }
+        var statement: ?*sql_api.sqlite3_stmt = null;
+        const sql = if (missing) "DELETE FROM grants WHERE account_id=?1 AND grant_id=?2;" else "UPDATE grants SET state=?3,generation=?4,renewal_owner=?5 WHERE account_id=?1 AND grant_id=?2;";
+        if (sql_api.sqlite3_prepare_v2(self.db.?.db, sql, -1, &statement, null) != sql_api.SQLITE_OK) return error.FixtureSqlFailed;
+        defer _ = sql_api.sqlite3_finalize(statement.?);
+        if (sql_api.sqlite3_bind_text(statement.?, 1, account_id.ptr, @intCast(account_id.len), null) != sql_api.SQLITE_OK or sql_api.sqlite3_bind_text(statement.?, 2, grant_id.ptr, @intCast(grant_id.len), null) != sql_api.SQLITE_OK) return error.FixtureSqlFailed;
+        if (!missing) {
+            if (sql_api.sqlite3_bind_text(statement.?, 3, state_text.ptr, @intCast(state_text.len), null) != sql_api.SQLITE_OK or sql_api.sqlite3_bind_int64(statement.?, 4, generation.integer) != sql_api.SQLITE_OK or sql_api.sqlite3_bind_text(statement.?, 5, owner_text.ptr, @intCast(owner_text.len), null) != sql_api.SQLITE_OK) return error.FixtureSqlFailed;
+        }
+        if (sql_api.sqlite3_step(statement.?) != sql_api.SQLITE_DONE or sql_api.sqlite3_changes(self.db.?.db) != 1) return error.FixtureSqlFailed;
+        // Deliberately inconsistent SQL metadata is fixture setup only. The
+        // diagnostic under test must observe it, never repair/materialize it.
+        return control.success(allocator, request.id, .{ .updated = true });
     }
 
     fn applicationReadinessPoisonedForTest(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) anyerror![]u8 {
@@ -2711,9 +4650,1805 @@ pub const Engine = struct {
         return self.execute(allocator, payload, .control);
     }
 
+    fn nativeFileCoordinationReadiness(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) ![]u8 {
+        // This is permanently a refusal-only readiness
+        // query. An effectful issuer requires a distinct versioned mutation with
+        // operation_id/expected_revision and cannot upgrade this replay-free API.
+        if (channel != .control) return error.WrongChannel;
+        // An explicit request is not recorded consent or a native permit. No
+        // copy key, caller certificate, PID, label or native path can fill the
+        // genuinely absent coordination issuer/registry/participation proof.
+        const params = request.params;
+        if (params != .object or params.object.count() != 4) return error.InvalidParams;
+        for (params.object.keys()) |key| {
+            if (!eql(key, "source_id") and !eql(key, "account_id") and !eql(key, "purpose") and !eql(key, "consent_seconds")) return error.InvalidParams;
+        }
+        const source_id = try control.string(params, "source_id");
+        const account_id = try control.string(params, "account_id");
+        if (source_id.len != 64 or account_id.len == 0 or account_id.len > 64) return error.InvalidParams;
+        const source_handle = try parseOpaqueId(source_id);
+        if (std.mem.allEqual(u8, &source_handle, 0)) return error.InvalidParams;
+        if (!eql(try control.string(params, "purpose"), "native_file_coordination_only")) return error.WrongPurpose;
+        const consent_seconds = control.get(params, "consent_seconds") orelse return error.InvalidParams;
+        if (consent_seconds != .integer or consent_seconds.integer <= 0 or consent_seconds.integer > 3600) return error.InvalidParams;
+        if (self.vault_locked or self.poisoned) return error.CustodyUnavailable;
+        const Reason = enum { unsupported_platform, source_unavailable, account_unavailable, account_inactive, identity_unverified, native_copy_scope_retired, coordination_trust_unavailable };
+        const reason: Reason = blk: {
+            if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) break :blk .unsupported_platform;
+            const timestamp = self.now();
+            var source: ?domain.Source = null;
+            for (self.state.sources.items) |item| if (eql(item.id, source_id)) {
+                source = item;
+                break;
+            };
+            const selected = source orelse break :blk .source_unavailable;
+            if (selected.kind != .native_store or !eql(selected.provider, "codex") or selected.status != .connected or selected.authorized_at > timestamp or (selected.authorized_until != null and selected.authorized_until.? <= timestamp)) break :blk .source_unavailable;
+            const account = self.state.account(account_id) orelse break :blk .account_unavailable;
+            var associated = false;
+            for (account.source_ids) |id| if (eql(id, source_id)) {
+                associated = true;
+                break;
+            };
+            if (!associated) break :blk .account_unavailable;
+            if (account.lifecycle != .active) break :blk .account_inactive;
+            if (!account.identity.verified or !eql(account.identity.provider, "codex") or !eql(account.identity.issuer, "https://chatgpt.com") or account.identity.subject.len == 0 or account.identity.tenant.len == 0) break :blk .identity_unverified;
+            var scope: ?NativeSourceAuthority = null;
+            for (self.descriptions.items) |description| if (eql(description.source_id, source_id)) {
+                scope = description.native_authority;
+                break;
+            };
+            const retained = scope orelse break :blk .native_copy_scope_retired;
+            retained.consent.validate() catch break :blk .native_copy_scope_retired;
+            if (retained.context == null or retained.consent.expires_at <= timestamp or retained.consent.forget_epoch != self.import_forget_epoch or !self.nativeSourceMaintenanceMatches(source_id, retained, retained.consent.source_generation)) break :blk .native_copy_scope_retired;
+            retained.context.?.validate() catch break :blk .native_copy_scope_retired;
+            // Retained access-copy metadata is useful only to reject stale
+            // requests. Even this complete tuple cannot certify native writers
+            // or construct the distinct coordination key, registry or consent.
+            break :blk .coordination_trust_unavailable;
+        };
+        return control.success(allocator, request.id, .{
+            .status = @as(enum { unsupported }, .unsupported),
+            .registry_status = @as(enum { unknown }, .unknown),
+            .purpose = "native_file_coordination_only",
+            .reason = reason,
+            .missing_predicates = [_]enum { configured_coordination_authority, authenticated_enrollment_registry, original_manager_profile_attestation, certified_participating_file_writers }{ .configured_coordination_authority, .authenticated_enrollment_registry, .original_manager_profile_attestation, .certified_participating_file_writers },
+            .consent_recorded = false,
+            .enrollment_issued = false,
+            .native_writer_activated = false,
+            .provider_request_initiated = false,
+        });
+    }
+
+    fn cancelOwnedRenewals(self: *Engine, source_id: ?[]const u8, account_id: ?[]const u8) void {
+        for (self.owned_renewal_pending.items) |*pending| {
+            if (source_id) |id| if (!eql(id, &pending.binding.source_id)) continue;
+            if (account_id) |id| if (!eql(id, &pending.binding.account_id)) continue;
+            _ = pending.fence.invalidate();
+            if (self.network) |client| {
+                if (pending.transport_id) |id| client.cancel(id) catch |err| {
+                    self.owned_renewal_cancel_failure = err;
+                };
+                if (pending.jwks_id) |id| client.cancel(id) catch |err| {
+                    self.owned_renewal_cancel_failure = err;
+                };
+            }
+        }
+    }
+    fn ownedRenewalCurrent(self: *Engine, pending: *OwnedRenewalPending) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.OAuthAuthorityChanged;
+        try pending.fence.checkLive();
+        if (!std.meta.eql(pending.binding, try pending.ticket.renewalBinding())) return error.OAuthAuthorityChanged;
+        const row = self.owned_siwc_pairs.find(pending.binding.registration_transaction) orelse return error.OAuthAuthorityChanged;
+        if (row.status != .refreshing or row.renewal == null or !std.meta.eql(row.renewal.?, pending.binding.operation) or row.consent_status != .recorded or row.forget_tombstone) return error.OAuthAuthorityChanged;
+        try oauth_issue.verifyCurrentOwnedRefresh(self.allocator, &self.db.?, pending.ticket);
+        try pending.fence.checkLive();
+    }
+    fn ownedPairTuple(self: *Engine, row: *const siwc_pair.Record) !storage.OwnedPairRotation {
+        const renewal = row.renewal orelse return error.OAuthAuthorityChanged;
+        return .{
+            .operation_id = &row.renewal.?.operation_id,
+            .access = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.access_grant_id, .generation = renewal.family_generation, .purpose = "request", .scope = siwc_pair.resource_uri },
+            .refresh = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.refresh_grant_id, .generation = renewal.family_generation, .purpose = "renewal", .scope = siwc_pair.resource_uri },
+        };
+    }
+    fn prepareOwnedRenewalAccounting(self: *Engine, activated_unix: i64) !bool {
+        if (self.owned_renewal_accounting != null) return true;
+        self.owned_renewal_accounting = try owned_renewal_accounting.Snapshot.init(activated_unix);
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        _ = self.snapshotUsage() catch |err| switch (err) {
+            error.SnapshotTooLarge, error.SnapshotCardinalityExceeded => {
+                self.owned_renewal_accounting = null;
+                self.renewal_accounting_capacity_unavailable = true;
+                self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+                _ = try self.snapshotUsage();
+                return false;
+            },
+            else => return err,
+        };
+        self.renewal_accounting_capacity_unavailable = false;
+        return true;
+    }
+    fn ownedRenewalAccountingSummary(self: *Engine) !owned_renewal_accounting.Summary {
+        const authority = !self.poisoned and !self.vault_locked and self.db != null and !self.db.?.poisoned;
+        var result = try owned_renewal_accounting.summarize(self.owned_renewal_accounting, authority, self.renewal_accounting_capacity_unavailable);
+        if (!result.authority_available) return result;
+        for (self.owned_siwc_pairs.records.items) |pair| if (pair.renewal) |renewal| {
+            if (renewal.accounting_capacity_unavailable) result.retained_last_capacity_exclusions += 1;
+        };
+        result.activation_capacity_unavailable = result.activation_capacity_unavailable or result.retained_last_capacity_exclusions != 0;
+        return result;
+    }
+    fn settleOwnedRenewalAccounting(self: *Engine, renewal: *siwc_pair.Renewal, outcome: owned_renewal_accounting.Outcome, cause: owned_renewal_accounting.Cause) !void {
+        // Existing authenticated operation/state is the idempotence fence.
+        // Legacy witnesses are not invented admissions in the new window.
+        if (renewal.state != .issued) return;
+        if (renewal.accounting_admitted) {
+            const aggregate = if (self.owned_renewal_accounting) |*value| value else return error.InvalidRenewalAccounting;
+            try aggregate.terminal(outcome, cause);
+        }
+        renewal.state = if (outcome == .committed_successor) .completed else .unknown;
+    }
+    fn retireOwnedRenewalAccounting(self: *Engine, source_id: ?[]const u8, account_id: ?[]const u8, cause: owned_renewal_accounting.Cause) !void {
+        for (self.owned_siwc_pairs.records.items) |*row| {
+            if (source_id) |id| if (!eql(id, row.source_id)) continue;
+            if (account_id) |id| if (!eql(id, row.account_id)) continue;
+            if (row.renewal) |*renewal| try self.settleOwnedRenewalAccounting(renewal, .completion_unknown, cause);
+        }
+    }
+    fn quarantineOwnedRenewalRow(self: *Engine, transaction: [32]u8, operation: [64]u8, outcome: owned_renewal_accounting.Outcome, cause: owned_renewal_accounting.Cause) !void {
+        const row = self.owned_siwc_pairs.find(transaction) orelse return;
+        if (row.status != .refreshing or row.renewal == null or !std.meta.eql(row.renewal.?.operation_id, operation)) return;
+        // Reduction of authority can run after the issuance deadline. It must
+        // still name the exact actual operation, not a newer replacement pair.
+        const tuple = try self.ownedPairTuple(row);
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
+        row.status = .quarantined;
+        try self.settleOwnedRenewalAccounting(&row.renewal.?, outcome, cause);
+        for (self.state.grants.items) |*grant| if (eql(grant.id, row.access_grant_id) or eql(grant.id, row.refresh_grant_id)) {
+            grant.status = .quarantined;
+        };
+        if (self.state.revision == std.math.maxInt(u64)) return error.GenerationExhausted;
+        self.state.revision += 1;
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        _ = try self.snapshotUsage();
+        const nonledger = try self.nonledgerBytes();
+        const snapshot = try std.json.Stringify.valueAlloc(self.allocator, self.persisted(), .{});
+        defer self.allocator.free(snapshot);
+        self.invalidateCatalogContexts();
+        self.revision = try self.db.?.quarantineOwnedPairRotation(self.revision, snapshot, tuple);
+        self.committed_nonledger_bytes = nonledger;
+        self.committed_counts = self.actualCounts();
+    }
+    fn resolveOwnedRenewal(self: *Engine, pending: *OwnedRenewalPending, outcome: owned_renewal_accounting.Outcome, cause: owned_renewal_accounting.Cause) !void {
+        _ = pending.fence.invalidate();
+        self.cancelOwnedRenewals(&pending.binding.source_id, &pending.binding.account_id);
+        try self.quarantineOwnedRenewalRow(pending.binding.registration_transaction, pending.binding.operation.operation_id, outcome, cause);
+    }
+    fn unknownOwnedRenewal(self: *Engine, pending: *OwnedRenewalPending, cause: owned_renewal_accounting.Cause) !void {
+        try self.resolveOwnedRenewal(pending, .completion_unknown, cause);
+    }
+    fn holdOwnedRenewalFixture(self: *Engine, operation: siwc_pair.Renewal) !void {
+        if (!builtin.is_test) return error.TestOnly;
+        if (self.fixture_owned_renewal_hold_window) {
+            const limit = operation.grant_window.limitingExpiry() orelse return error.InvalidFixtureWindow;
+            try OwnedRenewalFixtureExpiry.wait(self.io, limit);
+        } else {
+            const remaining = operation.originalUntil().durationFromNow(self.io).raw.toNanoseconds();
+            if (remaining > 0) try self.io.sleep(.fromNanoseconds(remaining + 20_000_000), .awake);
+        }
+    }
+    const OwnedRenewalIssueWriter = struct {
+        engine: *Engine,
+        transaction: [32]u8,
+        operation: siwc_pair.Renewal,
+        fn check(raw: *anyopaque, stage: storage.CommitStage) !void {
+            const self: *OwnedRenewalIssueWriter = @ptrCast(@alignCast(raw));
+            const current = self.engine;
+            current.invalidateCatalogContexts();
+            if (current.stopping or current.poisoned or current.vault_locked or current.db == null) return error.OAuthAuthorityChanged;
+            const row = current.owned_siwc_pairs.find(self.transaction) orelse return error.OAuthAuthorityChanged;
+            if (row.status != .refreshing or row.renewal == null or !std.meta.eql(row.renewal.?, self.operation) or row.consent_status != .recorded or row.forget_tombstone or
+                row.source_generation != self.operation.source_generation or row.consent_generation != self.operation.consent_generation or row.family_generation != self.operation.family_generation or row.writer_generation != self.operation.writer_generation) return error.OAuthAuthorityChanged;
+            if (builtin.is_test and current.fixture_owned_renewal_hold_kind == .issue and current.fixture_owned_renewal_hold_stage == stage) {
+                current.fixture_owned_renewal_hold_stage = null;
+                try current.holdOwnedRenewalFixture(self.operation);
+            }
+            try native_source_acquisition.deadline(current.io, self.operation.originalUntil());
+            try self.operation.grant_window.check(current.now());
+            if (!std.meta.eql(try siwc_pair.grantWindow(current.state.grants.items, row.*), self.operation.grant_window)) return error.OAuthAuthorityChanged;
+            if (current.now() < self.operation.admitted_unix or current.now() >= self.operation.source_expires_at) return error.OAuthAuthorityChanged;
+            var source_ok = false;
+            for (current.state.sources.items) |source| if (eql(source.id, row.source_id)) {
+                source_ok = source.kind == .oauth and source.status != .disconnected and eql(source.provider, "openai_siwc") and source.authorized_at <= current.now() and
+                    (source.authorized_until orelse 253_402_300_799) == self.operation.source_expires_at;
+            };
+            if (!source_ok or try current.importSourceGeneration(row.source_id) != self.operation.source_generation or current.state.account(row.account_id) == null) return error.OAuthAuthorityChanged;
+            try native_source_acquisition.deadline(current.io, self.operation.originalUntil());
+            try self.operation.grant_window.check(current.now());
+        }
+    };
+    fn startOwnedRenewal(self: *Engine, account_id: []const u8, access_grant_id: []const u8, until: std.Io.Clock.Timestamp, routes: ?oauth_issue.ModelRoutes) !u64 {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null or self.network == null or self.native_workers == null) return error.OAuthAuthorityChanged;
+        if (routes != null and !builtin.is_test) return error.TestOnly;
+        if (self.owned_renewal_pending.items.len == max_owned_renewals) return error.Backpressure;
+        var selected: ?*siwc_pair.Record = null;
+        for (self.owned_siwc_pairs.records.items) |*row| if (eql(row.account_id, account_id) and eql(row.access_grant_id, access_grant_id) and row.status == .ready and row.consent_status == .recorded) {
+            if (selected != null) return error.SiwcDuplicateLineage;
+            selected = row;
+        };
+        const row = selected orelse return error.RenewalNotOwned;
+        // Different independently retained grants may belong to one account.
+        // Select the exact family, and serialize the known registration client
+        // without turning its lineage count into independent quota capacity.
+        for (self.owned_siwc_pairs.records.items) |other| if (other.status == .refreshing and std.crypto.timing_safe.eql([32]u8, other.issued_client_commitment, row.issued_client_commitment)) return error.Backpressure;
+        const authority = try siwc_pair.currentRenewalOwner(&self.db.?, row.account_id, row.access_grant_id, row.access_generation, self.now());
+        authority.deinit();
+        try native_source_acquisition.deadline(self.io, until);
+        if (row.family_generation >= std.math.maxInt(i64) or self.state.revision > std.math.maxInt(u64) - 3) return error.GenerationExhausted;
+        try self.owned_renewal_pending.ensureUnusedCapacity(self.allocator, 1);
+        var nonce: [32]u8 = undefined;
+        try self.io.randomSecure(&nonce);
+        const operation = std.fmt.bytesToHex(nonce, .lower);
+        var source_expiry: i64 = 0;
+        for (self.state.sources.items) |source| if (eql(source.id, row.source_id)) {
+            source_expiry = source.authorized_until orelse 253_402_300_799;
+        };
+        if (source_expiry <= self.now()) return error.OAuthAuthorityChanged;
+        const window = try siwc_pair.grantWindow(self.state.grants.items, row.*);
+        try window.check(self.now());
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
+        row.status = .refreshing;
+        row.renewal = .{ .operation_id = operation, .issued_transaction = nonce, .family_generation = row.family_generation, .writer_generation = row.writer_generation, .source_generation = row.source_generation, .consent_generation = row.consent_generation, .forget_epoch = self.import_forget_epoch, .admitted_unix = self.now(), .admitted_awake_nanoseconds = std.Io.Clock.awake.now(self.io).nanoseconds, .until_nanoseconds = until.raw.nanoseconds, .source_expires_at = source_expiry, .grant_window = window };
+        var found = false;
+        for (self.state.grants.items) |*grant| if (eql(grant.id, row.refresh_grant_id) and grant.credential_kind == .oauth_refresh and grant.ownership == .omux and grant.generation == row.refresh_generation and grant.status == .ready) {
+            grant.status = .refreshing;
+            found = true;
+        };
+        if (!found) return error.RenewalNotOwned;
+        self.state.revision += 1;
+        // First reserve the ORIGINAL full issuance/widening promise. Optional
+        // aggregate admission must never consume its remaining effect budget.
+        const accounting_active = try self.prepareOwnedRenewalAccounting(row.renewal.?.admitted_unix);
+        row.renewal.?.accounting_admitted = accounting_active;
+        row.renewal.?.accounting_capacity_unavailable = !accounting_active;
+        if (accounting_active) try self.owned_renewal_accounting.?.admit();
+        if (builtin.is_test and self.fixture_owned_renewal_accounting_tamper) {
+            self.fixture_owned_renewal_accounting_tamper = false;
+            if (!accounting_active) return error.AccountingFixtureUnavailable;
+            try self.owned_renewal_accounting.?.admit();
+        }
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        _ = try self.snapshotUsage();
+        const nonledger = try self.nonledgerBytes();
+        const snapshot = try std.json.Stringify.valueAlloc(self.allocator, self.persisted(), .{});
+        defer self.allocator.free(snapshot);
+        var writer: OwnedRenewalIssueWriter = .{ .engine = self, .transaction = row.transaction_id, .operation = row.renewal.? };
+        const writer_guard: storage.CommitFence = .{ .context = &writer, .check = OwnedRenewalIssueWriter.check };
+        self.invalidateCatalogContexts();
+        const ticket = try oauth_issue.issueOwnedRefresh(self.io, self.allocator, &self.db.?, self.revision, snapshot, row.account_id, row.access_grant_id, row.family_generation, until, &writer_guard);
+        errdefer ticket.deinit();
+        const binding = try ticket.renewalBinding();
+        self.revision = ticket.committedRevision();
+        self.committed_nonledger_bytes = nonledger;
+        self.committed_counts = self.actualCounts();
+        if (routes) |model| try oauth_issue.testing.attachPairedRefreshModelRoutes(ticket, model);
+        const dispatch_fence = ticket.retainFence();
+        errdefer dispatch_fence.deinit();
+        var pending: OwnedRenewalPending = .{ .ticket = ticket, .fence = dispatch_fence, .binding = binding };
+        try self.ownedRenewalCurrent(&pending);
+        if (builtin.is_test) {
+            var selected_servers = self.active_owned_renewal_fixture;
+            if (selected_servers == null) for (self.fixture_owned_renewal_servers.items) |servers| {
+                if (eql(&servers.account_id, &binding.account_id) and !servers.token.started()) {
+                    selected_servers = servers;
+                    break;
+                }
+            };
+            if (selected_servers) |servers| {
+                if (!eql(&servers.account_id, &binding.account_id)) return error.InvalidFixtureSubject;
+                try servers.token.start(ticket);
+                try servers.keys.start(ticket);
+            }
+        }
+        if (builtin.is_test and self.fixture_owned_renewal_dispatch_hold) {
+            self.fixture_owned_renewal_dispatch_hold = false;
+            try self.holdOwnedRenewalFixture(binding.operation);
+        }
+        pending.transport_id = self.network.?.startOAuth(ticket) catch |err| {
+            self.owned_renewal_failure = err;
+            // No ID was transferred into the transport owner's queue. Keep
+            // the original quarantine/cancellation; classify only this known
+            // pre-accept rejection as refusal, never a later lost response.
+            try self.resolveOwnedRenewal(&pending, .safe_refusal, .transport_admission_refused);
+            return err;
+        };
+        const id = pending.transport_id.?;
+        self.owned_renewal_pending.appendAssumeCapacity(pending);
+        return id;
+    }
+    fn pollOwnedRenewals(self: *Engine) !void {
+        if (self.poisoned or self.vault_locked or self.db == null) return;
+        var index: usize = 0;
+        while (index < self.owned_renewal_pending.items.len) {
+            const pending = &self.owned_renewal_pending.items[index];
+            self.ownedRenewalCurrent(pending) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                self.owned_renewal_failure = err;
+                try self.unknownOwnedRenewal(pending, .authority_check_failed);
+                pending.deinit();
+                _ = self.owned_renewal_pending.orderedRemove(index);
+                continue;
+            };
+            index += 1;
+        }
+        // A late constructor/readback failure cannot reconstruct an issued
+        // ticket. Resolve only this stranded tuple, never a newer lineage.
+        for (self.owned_siwc_pairs.records.items) |row| {
+            if (row.status != .refreshing or row.renewal == null) continue;
+            var held = false;
+            for (self.owned_renewal_pending.items) |pending| if (std.meta.eql(pending.binding.operation.operation_id, row.renewal.?.operation_id)) {
+                held = true;
+            };
+            if (!held) try self.quarantineOwnedRenewalRow(row.transaction_id, row.renewal.?.operation_id, .completion_unknown, .interrupted_or_stranded);
+        }
+        if (self.stopping or self.network == null or self.native_workers == null or self.owned_renewal_pending.items.len >= max_owned_renewals) return;
+        const count = self.owned_siwc_pairs.records.items.len;
+        if (count == 0) return;
+        // At most one fresh dispatch per timer opportunity, with a bounded
+        // metadata scan and round-robin fairness. This is authorized lifecycle
+        // maintenance, independent of speculative route warming/model reads.
+        for (0..count) |_| {
+            const position = self.owned_renewal_cursor % count;
+            self.owned_renewal_cursor = (position + 1) % count;
+            const row = self.owned_siwc_pairs.records.items[position];
+            if (row.status != .ready or row.consent_status != .recorded or row.forget_tombstone or row.access_expires_at > self.now() + 60) continue;
+            var routes: ?oauth_issue.ModelRoutes = null;
+            if (builtin.is_test) {
+                for (self.fixture_owned_renewal_routes.items) |model| if (eql(&model.account_id, row.account_id)) {
+                    routes = model.routes;
+                    break;
+                };
+                // Declared tests never accidentally call the real provider.
+                if (routes == null) continue;
+            }
+            _ = self.startOwnedRenewal(row.account_id, row.access_grant_id, .fromNow(self.io, .{ .clock = .awake, .raw = .fromSeconds(120) }), routes) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                error.SiwcPairUnavailable, error.SiwcPairQuarantined, error.SiwcPairAuthorityChanged, error.SiwcPairExpired, error.OAuthAuthorityChanged, error.Backpressure, error.RenewalNotOwned => {
+                    self.owned_renewal_failure = err;
+                },
+                else => return err,
+            };
+            return;
+        }
+    }
+
+    fn consumeOwnedRenewalOAuth(self: *Engine, completion: *const transport.OAuthCompletion) !bool {
+        for (self.owned_renewal_pending.items, 0..) |*pending, index| {
+            if (pending.transport_id != completion.id) continue;
+            pending.transport_id = null;
+            self.ownedRenewalCurrent(pending) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                self.owned_renewal_failure = err;
+                try self.unknownOwnedRenewal(pending, .authority_check_failed);
+                pending.deinit();
+                _ = self.owned_renewal_pending.orderedRemove(index);
+                return true;
+            };
+            switch (completion.result) {
+                .failure => {
+                    try self.unknownOwnedRenewal(pending, .token_transport_failed);
+                    pending.deinit();
+                    _ = self.owned_renewal_pending.orderedRemove(index);
+                },
+                .response => |response| {
+                    response.recheck(pending.ticket) catch |err| {
+                        self.owned_renewal_failure = err;
+                        try self.unknownOwnedRenewal(pending, .authority_check_failed);
+                        pending.deinit();
+                        _ = self.owned_renewal_pending.orderedRemove(index);
+                        return true;
+                    };
+                    // Syntax is not activation. A missing replacement RT never
+                    // copies the cached old token into a ready successor.
+                    var evidence = response.evidence(self.allocator) catch |err| {
+                        if (err == error.OutOfMemory) return err;
+                        self.owned_renewal_failure = err;
+                        try self.unknownOwnedRenewal(pending, .token_reply_unusable);
+                        pending.deinit();
+                        _ = self.owned_renewal_pending.orderedRemove(index);
+                        return true;
+                    };
+                    defer evidence.deinit();
+                    if (!response.isOwnOss() or response.status() != 200 or evidence.refresh_token == null) {
+                        try self.unknownOwnedRenewal(pending, .token_reply_unusable);
+                        pending.deinit();
+                        _ = self.owned_renewal_pending.orderedRemove(index);
+                        return true;
+                    }
+                    try self.ownedRenewalCurrent(pending);
+                    try response.recheck(pending.ticket);
+                    response.retain();
+                    pending.response = response;
+                    pending.jwks_id = self.network.?.startJwks(pending.ticket) catch |err| {
+                        self.owned_renewal_failure = err;
+                        try self.unknownOwnedRenewal(pending, .key_transport_failed);
+                        pending.deinit();
+                        _ = self.owned_renewal_pending.orderedRemove(index);
+                        return true;
+                    };
+                },
+            }
+            return true;
+        }
+        return false;
+    }
+    fn consumeOwnedRenewalJwks(self: *Engine, completion: *const transport.JwksCompletion) !bool {
+        for (self.owned_renewal_pending.items, 0..) |*pending, index| {
+            if (pending.jwks_id != completion.id) continue;
+            pending.jwks_id = null;
+            self.ownedRenewalCurrent(pending) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                self.owned_renewal_failure = err;
+                try self.unknownOwnedRenewal(pending, .authority_check_failed);
+                pending.deinit();
+                _ = self.owned_renewal_pending.orderedRemove(index);
+                return true;
+            };
+            switch (completion.result) {
+                .failure => {
+                    try self.unknownOwnedRenewal(pending, .key_transport_failed);
+                    pending.deinit();
+                    _ = self.owned_renewal_pending.orderedRemove(index);
+                },
+                .lease => |keys| self.startOwnedRenewalVerification(pending, keys) catch |err| {
+                    self.owned_renewal_failure = err;
+                    try self.unknownOwnedRenewal(pending, .verification_failed);
+                    pending.deinit();
+                    _ = self.owned_renewal_pending.orderedRemove(index);
+                },
+            }
+            return true;
+        }
+        return false;
+    }
+    fn startOwnedRenewalVerification(self: *Engine, pending: *OwnedRenewalPending, keys: *transport.JwksLease) !void {
+        try self.ownedRenewalCurrent(pending);
+        if (pending.verifying or self.owned_renewal_tasks.items.len >= max_owned_renewals) return error.Backpressure;
+        const response = pending.response orelse return error.OAuthAuthorityChanged;
+        try response.recheck(pending.ticket);
+        try keys.recheckTicket(pending.ticket);
+        try self.owned_renewal_tasks.ensureUnusedCapacity(self.allocator, 1);
+        const task = try self.allocator.create(OwnedRenewalVerifyTask);
+        errdefer self.allocator.destroy(task);
+        pending.ticket.retain();
+        errdefer pending.ticket.deinit();
+        response.retain();
+        errdefer response.deinit();
+        keys.retain();
+        errdefer keys.deinit();
+        task.* = .{ .allocator = self.allocator, .ticket = pending.ticket, .response = response, .keys = keys, .fixture_hold_window = builtin.is_test and self.fixture_owned_renewal_worker_hold, .job = .{ .lane = .continuation, .context = task, .run = OwnedRenewalVerifyTask.run } };
+        if (builtin.is_test) self.fixture_owned_renewal_worker_hold = false;
+        try self.ownedRenewalCurrent(pending);
+        try self.native_workers.?.enqueue(&task.job);
+        self.owned_renewal_tasks.appendAssumeCapacity(task);
+        pending.verifying = true;
+    }
+    fn completeOwnedRenewalVerification(self: *Engine, task: *OwnedRenewalVerifyTask) !void {
+        if (builtin.is_test and task.fixture_verified_before_hold) self.fixture_owned_renewal_verified_before_expiry = true;
+        const binding = try task.ticket.renewalBinding();
+        for (self.owned_renewal_pending.items, 0..) |*pending, index| {
+            if (!std.meta.eql(pending.binding.operation.operation_id, binding.operation.operation_id)) continue;
+            defer {
+                pending.deinit();
+                _ = self.owned_renewal_pending.orderedRemove(index);
+            }
+            self.ownedRenewalCurrent(pending) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                self.owned_renewal_failure = err;
+                try self.unknownOwnedRenewal(pending, .authority_check_failed);
+                return;
+            };
+            if (task.failure) |err| {
+                self.owned_renewal_failure = err;
+                try self.unknownOwnedRenewal(pending, .verification_failed);
+                return;
+            }
+            self.commitOwnedRenewal(pending, task.proof orelse return error.OIDCProofUnavailable, task.response) catch |err| {
+                self.owned_renewal_failure = err;
+                if (self.db.?.poisoned) return err;
+                try self.restoreCommitted();
+                try self.unknownOwnedRenewal(pending, .successor_commit_failed);
+            };
+            return;
+        }
+        // A retired/replaced source cannot be recovered from a late worker.
+    }
+    const OwnedRenewalCommitWriter = struct {
+        engine: *Engine,
+        pending: *OwnedRenewalPending,
+        proof: *siwc_renewal.VerifiedRotation,
+        response: *transport.OAuthResponse,
+        successor_activation: [32]u8,
+        fn check(raw: *anyopaque, stage: storage.CommitStage) !void {
+            const self: *OwnedRenewalCommitWriter = @ptrCast(@alignCast(raw));
+            const current = self.engine;
+            current.invalidateCatalogContexts();
+            if (builtin.is_test and current.fixture_owned_renewal_commit_failure == stage) {
+                current.fixture_owned_renewal_commit_failure = null;
+                return error.OwnedRenewalAccountingFixtureFault;
+            }
+            const binding = self.pending.binding;
+            if (current.stopping or current.poisoned or current.vault_locked or current.db == null) return error.OAuthAuthorityChanged;
+            const row = current.owned_siwc_pairs.find(binding.registration_transaction) orelse return error.OAuthAuthorityChanged;
+            if (row.status != .ready or row.consent_status != .recorded or row.forget_tombstone or row.renewal == null or row.renewal.?.state != .completed or
+                row.family_generation != binding.operation.family_generation + 1 or row.writer_generation != row.family_generation or row.access_generation != row.family_generation or row.refresh_generation != row.family_generation or
+                row.source_generation != binding.operation.source_generation or row.consent_generation != binding.operation.consent_generation or !std.crypto.timing_safe.eql([32]u8, row.activation_commitment, self.successor_activation)) return error.OAuthAuthorityChanged;
+            if (builtin.is_test and current.fixture_owned_renewal_hold_kind == .successor and current.fixture_owned_renewal_hold_stage == stage) {
+                current.fixture_owned_renewal_hold_stage = null;
+                try current.holdOwnedRenewalFixture(binding.operation);
+            }
+            if (stage == .before_begin) {
+                // Before SQL mutation, authenticate the actual original intent.
+                try oauth_issue.verifyCurrentOwnedRefresh(current.allocator, &current.db.?, self.pending.ticket);
+            } else {
+                // The old metadata checkpoint cannot authenticate a proposed
+                // successor. Join exact staged SQL rows and operation instead.
+                const access = (try current.db.?.readGrantStatus(row.account_id, row.access_grant_id)) orelse return error.OAuthAuthorityChanged;
+                const refresh = (try current.db.?.readGrantStatus(row.account_id, row.refresh_grant_id)) orelse return error.OAuthAuthorityChanged;
+                const operation = (try current.db.?.readOperation(&binding.operation.operation_id)) orelse return error.OAuthAuthorityChanged;
+                if (access.generation != row.access_generation or refresh.generation != row.refresh_generation or access.state != .ready or refresh.state != .ready or
+                    access.renewal_owner != .omux or refresh.renewal_owner != .omux or operation.status != .completed or operation.generation != binding.operation.family_generation) return error.OAuthAuthorityChanged;
+            }
+            var source_ok = false;
+            for (current.state.sources.items) |source| if (eql(source.id, row.source_id)) {
+                source_ok = source.kind == .oauth and source.status != .disconnected and eql(source.provider, "openai_siwc") and source.authorized_at <= current.now() and
+                    (source.authorized_until orelse 253_402_300_799) == binding.operation.source_expires_at;
+            };
+            if (!source_ok or current.now() >= binding.operation.source_expires_at or try current.importSourceGeneration(row.source_id) != binding.operation.source_generation or current.state.account(row.account_id) == null) return error.OAuthAuthorityChanged;
+            try self.pending.fence.checkLive();
+            try self.proof.recheck(self.pending.ticket, self.response);
+            try self.pending.ticket.checkBeforeVerification();
+            // Both ciphertexts have already been sealed. These exact original
+            // custody/RT bounds also fence recovery reservation and COMMIT.
+            try binding.operation.grant_window.check(current.now());
+            var successor_window = try siwc_pair.grantWindow(current.state.grants.items, row.*);
+            successor_window.access_provider_expires_at = binding.operation.grant_window.access_provider_expires_at;
+            if (!std.meta.eql(successor_window, binding.operation.grant_window)) return error.OAuthAuthorityChanged;
+            try binding.operation.grant_window.check(current.now());
+        }
+    };
+    fn commitOwnedRenewal(self: *Engine, pending: *OwnedRenewalPending, proof: *siwc_renewal.VerifiedRotation, response: *transport.OAuthResponse) !void {
+        const a = self.allocator;
+        try self.ownedRenewalCurrent(pending);
+        try proof.recheck(pending.ticket, response);
+        var evidence = try response.evidence(a);
+        defer evidence.deinit();
+        try proof.matchesEvidence(pending.ticket, &evidence);
+        const replacement = evidence.refresh_token orelse return error.OwnedRefreshTokenMissing;
+        const row = self.owned_siwc_pairs.find(pending.binding.registration_transaction) orelse return error.OAuthAuthorityChanged;
+        const original_tuple = try self.ownedPairTuple(row);
+        if (self.state.revision > std.math.maxInt(u64) - 2) return error.GenerationExhausted;
+        const next_generation = std.math.add(u64, row.family_generation, 1) catch return error.GenerationExhausted;
+        const activation = try proof.successorCommitment(pending.ticket);
+        if (!std.crypto.timing_safe.eql([32]u8, proof.identityCommitment(), row.identity_commitment)) return error.OidcIdentityChanged;
+        const access_plain = try std.json.Stringify.valueAlloc(a, .{ .access_token = evidence.access_token }, .{});
+        defer {
+            std.crypto.secureZero(u8, access_plain);
+            a.free(access_plain);
+        }
+        const refresh_plain = try std.json.Stringify.valueAlloc(a, .{ .refresh_token = replacement, .client_id = pending.ticket.issuedClientId() }, .{});
+        defer {
+            std.crypto.secureZero(u8, refresh_plain);
+            a.free(refresh_plain);
+        }
+        // Same-byte returned RT is not a cached-token fallback. It remains
+        // authenticated actual response provenance and a new consumed generation.
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
+        var access = self.state.grant(row.access_grant_id) orelse return error.OAuthAuthorityChanged;
+        var refresh = self.state.grant(row.refresh_grant_id) orelse return error.OAuthAuthorityChanged;
+        access.generation = next_generation;
+        access.status = .ready;
+        access.provider_expires_at = proof.accessExpiresAt();
+        refresh.generation = next_generation;
+        refresh.status = .ready;
+        _ = try self.state.addGrant(access);
+        _ = try self.state.addGrant(refresh);
+        row.status = .ready;
+        try self.settleOwnedRenewalAccounting(&row.renewal.?, .committed_successor, .verified_successor_commit);
+        row.family_generation = next_generation;
+        row.writer_generation = next_generation;
+        row.access_generation = next_generation;
+        row.refresh_generation = next_generation;
+        row.access_expires_at = proof.accessExpiresAt();
+        row.response_sha256 = proof.responseSha256();
+        row.activation_commitment = activation;
+        row.access_token_commitment = siwc_pair.tokenCommitment(self.root_key, evidence.access_token, .access);
+        row.refresh_token_commitment = siwc_pair.tokenCommitment(self.root_key, replacement, .refresh);
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        _ = try self.snapshotUsage();
+        const nonledger = try self.nonledgerBytes();
+        const snapshot = try std.json.Stringify.valueAlloc(a, self.persisted(), .{});
+        defer a.free(snapshot);
+        try oauth_issue.verifyCurrentOwnedRefresh(a, &self.db.?, pending.ticket);
+        try proof.recheck(pending.ticket, response);
+        try proof.matchesEvidence(pending.ticket, &evidence);
+        var writer: OwnedRenewalCommitWriter = .{ .engine = self, .pending = pending, .proof = proof, .response = response, .successor_activation = activation };
+        const guarded: storage.CommitFence = .{ .context = &writer, .check = OwnedRenewalCommitWriter.check };
+        self.invalidateCatalogContexts();
+        self.revision = try self.db.?.completeOwnedPairRotation(self.revision, snapshot, original_tuple, .{
+            .access = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.access_grant_id, .generation = next_generation, .purpose = "request", .scope = siwc_pair.resource_uri },
+            .refresh = .{ .key_id = self.root_id.?, .account_id = row.account_id, .grant_id = row.refresh_grant_id, .generation = next_generation, .purpose = "renewal", .scope = siwc_pair.resource_uri },
+            .access_plaintext = access_plain,
+            .refresh_plaintext = refresh_plain,
+        }, &guarded);
+        self.committed_nonledger_bytes = nonledger;
+        self.committed_counts = self.actualCounts();
+        const current = try siwc_pair.currentPair(&self.db.?, row.account_id, row.access_grant_id, next_generation, self.now());
+        defer current.deinit();
+        if (!std.crypto.timing_safe.eql([32]u8, current.activationCommitment(), activation)) return error.OAuthIssueReadbackLost;
+    }
+
+    fn cancelFreshOAuth(self: *Engine, id: ?[32]u8) void {
+        for (self.fresh_oauth_pending.items) |*pending| {
+            if (id) |selected| if (!std.meta.eql(selected, pending.attempt.binding.transaction_id)) continue;
+            if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
+            if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                self.fresh_oauth_cancel_failure = err;
+            };
+            if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                self.fresh_oauth_cancel_failure = err;
+            };
+            if (pending.receiver) |receiver| {
+                receiver.deinit();
+                pending.receiver = null;
+            }
+        }
+    }
+    fn freshOAuthCurrent(self: *Engine, pending: *const FreshOAuthPending) bool {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null or self.root_id == null or self.import_forget_epoch != pending.attempt.binding.forget_epoch or pending.attempt.until.clock != .awake or pending.attempt.until.durationFromNow(self.io).raw.toNanoseconds() <= 0 or self.now() >= pending.attempt.binding.consent_expires_at) return false;
+        oauth_enrollment.checkFlow(self.io, pending.attempt) catch return false;
+        if (pending.workUntil().durationFromNow(self.io).raw.toNanoseconds() <= 0) return false;
+        const ledger = if (self.fresh_oauth) |*value| value else return false;
+        const record = ledger.find(pending.attempt.binding.transaction_id) orelse return false;
+        return record.consent_status == .recorded and std.meta.eql(record.binding, pending.attempt.binding) and (record.phase == .prepared or record.phase == .callback_consumed or record.phase == .exchange_issued or record.phase == .verifying) and record.registration_profile_sha256 != null and std.crypto.timing_safe.eql([32]u8, record.registration_profile_sha256.?, pending.profile.view().sha256);
+    }
+    fn freshOAuthAuthorization(self: *Engine, allocator: std.mem.Allocator, id: [32]u8, revision: u64, until: std.Io.Clock.Timestamp) ![]u8 {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.EnrollmentAuthorityChanged;
+        if (self.revision != revision or until.clock != .awake or until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.StaleRevision;
+        for (self.fresh_oauth_pending.items) |*pending| {
+            if (!std.meta.eql(pending.attempt.binding.transaction_id, id)) continue;
+            if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+            const current = self.fresh_oauth.?.find(id) orelse return error.EnrollmentNotFound;
+            if (current.phase != .prepared or pending.receiver == null) return error.CallbackAlreadyConsumed;
+            if (pending.authorization_delivered) return error.AuthorizationAlreadyDelivered;
+            // Independent protected Store metadata, not caller-supplied URL
+            // hints, establishes the original committed consent/state tuple.
+            var retained = try self.db.?.readSnapshot();
+            defer retained.deinit();
+            if (retained.revision != revision) return error.StaleRevision;
+            const saved = try std.json.parseFromSlice(Persisted, allocator, retained.json, .{});
+            defer saved.deinit();
+            const rows = (saved.value.fresh_oauth_authority orelse return error.EnrollmentNotFound).records;
+            var matched = false;
+            for (rows) |row| if (std.meta.eql(row.binding.transaction_id, id)) {
+                if (row.phase != .prepared or row.consent_status != .recorded or !std.meta.eql(row.binding, pending.attempt.binding) or !std.meta.eql(row.state_digest, current.state_digest) or !std.meta.eql(row.challenge, current.challenge)) return error.EnrollmentAuthorityChanged;
+                matched = true;
+            };
+            if (!matched or !self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+            const result = try oauth_issue.authorizationUrl(self.io, allocator, pending.profile, pending.attempt, current.challenge);
+            pending.authorization_delivered = true;
+            return result;
+        }
+        return error.EnrollmentNotFound;
+    }
+    /// Rollback/revision restoration never reconstructs a live callback lease
+    /// or makes cancelled work live again. Drop only ephemeral stale receivers.
+    fn reconcileFreshOAuthFences(self: *Engine) void {
+        for (self.fresh_oauth_pending.items) |*pending| if (!self.freshOAuthCurrent(pending)) {
+            if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
+            if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                self.fresh_oauth_cancel_failure = err;
+            };
+            if (pending.jwks_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                self.fresh_oauth_cancel_failure = err;
+            };
+            if (pending.receiver) |receiver| {
+                receiver.deinit();
+                pending.receiver = null;
+            }
+        };
+    }
+    fn freshOAuthUnknown(self: *Engine, pending: *FreshOAuthPending) !void {
+        if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
+        if (self.fresh_oauth) |*ledger| {
+            const record = ledger.find(pending.attempt.binding.transaction_id) orelse return;
+            if (record.phase == .exchange_issued or record.phase == .completion_unknown or record.phase == .verifying) {
+                try ledger.markUnknown(self.allocator, pending.attempt.binding.transaction_id);
+            } else if (record.phase == .prepared or record.phase == .callback_consumed) try ledger.retire(self.allocator, pending.attempt.binding.transaction_id) else return;
+            try self.persist(&.{});
+        }
+    }
+    fn issueFreshOAuthCode(self: *Engine, pending: *FreshOAuthPending) !void {
+        if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+        const ledger = if (self.fresh_oauth) |*value| value else return error.EnrollmentNotFound;
+        // Callback consumption has already committed. No plaintext enters this
+        // snapshot; issuer opens only those independently reread Store capsules.
+        const exchange_until = try oauth_enrollment.exchangeDeadline(self.io, pending.attempt);
+        try ledger.markIssued(self.allocator, pending.attempt.binding);
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        _ = try self.snapshotUsage();
+        const serialized = try std.json.Stringify.valueAlloc(self.allocator, self.persisted(), .{});
+        defer self.allocator.free(serialized);
+        const ticket = oauth_issue.issueCode(self.io, self.allocator, &self.db.?, self.root_key, self.root_id.?, self.revision, serialized, pending.attempt.binding, pending.profile, exchange_until) catch |err| {
+            // A failure after actual Store commit/readback is not an unissued
+            // retry. Restore the Store row, retain issued uncertainty, and fence
+            // custody if its disposition cannot itself commit.
+            self.restoreCommitted() catch {
+                self.poisoned = true;
+                return err;
+            };
+            self.freshOAuthUnknown(pending) catch {
+                self.poisoned = true;
+            };
+            return err;
+        };
+        self.revision = ticket.committedRevision();
+        if (!std.meta.eql(ticket.binding(), pending.attempt.binding) or !std.crypto.timing_safe.eql([32]u8, ticket.registrationProfileSha256(), pending.profile.view().sha256)) {
+            ticket.deinit();
+            return error.EnrollmentAuthorityChanged;
+        }
+        pending.ticket = ticket;
+        pending.fence = ticket.retainFence();
+        self.committed_nonledger_bytes = try self.nonledgerBytes();
+        self.committed_counts = self.actualCounts();
+        if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+        const client = self.network orelse return error.TransportUnavailable;
+        pending.transport_id = try client.startOAuth(ticket);
+    }
+    fn pollFreshOAuth(self: *Engine) !void {
+        var index: usize = 0;
+        while (index < self.fresh_oauth_pending.items.len) {
+            const pending = &self.fresh_oauth_pending.items[index];
+            if (!self.freshOAuthCurrent(pending)) {
+                if (pending.transport_id) |transfer| if (self.network) |client| client.cancel(transfer) catch |err| {
+                    self.fresh_oauth_cancel_failure = err;
+                };
+                try self.freshOAuthUnknown(pending);
+                pending.deinit();
+                _ = self.fresh_oauth_pending.orderedRemove(index);
+                continue;
+            }
+            if (pending.receiver) |receiver| {
+                var captured = receiver.poll() catch |err| {
+                    self.fresh_oauth_failure = err;
+                    if (err == error.OutOfMemory) return err;
+                    receiver.acknowledge(.refused);
+                    try self.freshOAuthUnknown(pending);
+                    pending.deinit();
+                    _ = self.fresh_oauth_pending.orderedRemove(index);
+                    continue;
+                };
+                if (captured) |*callback| {
+                    defer callback.deinit();
+                    const ledger = if (self.fresh_oauth) |*value| value else return error.EnrollmentNotFound;
+                    if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+                    if (callback.denied) {
+                        try ledger.withdraw(self.allocator, pending.attempt.binding.transaction_id);
+                        try self.persist(&.{});
+                        receiver.acknowledge(.recorded);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(index);
+                        continue;
+                    }
+                    ledger.consumeOwnedCallback(self.io, self.allocator, self.root_key, self.root_id.?, pending.attempt, pending.attempt.binding, self.now(), &callback.state, callback.code.bytes, callback.client_id.bytes) catch |err| {
+                        receiver.acknowledge(.refused);
+                        return err;
+                    };
+                    // Encrypt first; actual actor commit precedes ACK or issue.
+                    try self.persist(&.{});
+                    receiver.acknowledge(.recorded);
+                    receiver.deinit();
+                    pending.receiver = null;
+                    self.issueFreshOAuthCode(pending) catch |err| {
+                        self.fresh_oauth_failure = err;
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(index);
+                        continue;
+                    };
+                }
+            }
+            index += 1;
+        }
+        if (self.network) |client| while (client.pollOAuth()) |value| {
+            var completion = value;
+            defer completion.deinit(self.allocator);
+            if (try self.consumeOwnedRenewalOAuth(&completion)) continue;
+            var found: ?usize = null;
+            for (self.fresh_oauth_pending.items, 0..) |pending, position| if (pending.transport_id == completion.id) {
+                found = position;
+                break;
+            };
+            const position = found orelse continue;
+            const pending = &self.fresh_oauth_pending.items[position];
+            if (!self.freshOAuthCurrent(pending)) {
+                try self.freshOAuthUnknown(pending);
+            } else switch (completion.result) {
+                .failure => try self.freshOAuthUnknown(pending),
+                .response => |response| {
+                    response.recheck(pending.ticket orelse return error.EnrollmentAuthorityChanged) catch {
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    };
+                    if (pending.ticket) |ticket| {
+                        if (self.revision < ticket.committedRevision() or !std.meta.eql(ticket.binding(), pending.attempt.binding) or !std.crypto.timing_safe.eql([32]u8, ticket.registrationProfileSha256(), pending.profile.view().sha256)) return error.EnrollmentAuthorityChanged;
+                        oauth_issue.verifyCurrentIssued(self.allocator, &self.db.?, ticket, pending.attempt.binding, pending.workUntil()) catch |err| switch (err) {
+                            error.OAuthAuthorityChanged, error.OAuthDeadline, error.OAuthConsentExpired => {
+                                try self.freshOAuthUnknown(pending);
+                                pending.deinit();
+                                _ = self.fresh_oauth_pending.orderedRemove(position);
+                                continue;
+                            },
+                            else => return err,
+                        };
+                    } else return error.EnrollmentAuthorityChanged;
+                    if (pending.fence) |oauth_fence| oauth_fence.checkBeforeCompletion() catch {
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    } else return error.EnrollmentAuthorityChanged;
+                    var evidence = response.evidence(self.allocator) catch |err| {
+                        self.fresh_oauth_failure = err;
+                        if (err == error.OutOfMemory) return err;
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    };
+                    defer evidence.deinit();
+                    // Allocation and token parsing consume the original lease.
+                    // Repeat actual-row and atomic consent checks immediately
+                    // before the quarantine transaction, never renew the clock.
+                    if (!self.freshOAuthCurrent(pending)) {
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    }
+                    oauth_issue.verifyCurrentIssued(self.allocator, &self.db.?, pending.ticket.?, pending.attempt.binding, pending.workUntil()) catch |err| switch (err) {
+                        error.OAuthAuthorityChanged, error.OAuthDeadline, error.OAuthConsentExpired => {
+                            try self.freshOAuthUnknown(pending);
+                            pending.deinit();
+                            _ = self.fresh_oauth_pending.orderedRemove(position);
+                            continue;
+                        },
+                        else => return err,
+                    };
+                    pending.fence.?.checkBeforeCompletion() catch {
+                        try self.freshOAuthUnknown(pending);
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    };
+                    // Token wire syntax is not identity/audience/family or
+                    // coexistence proof. No grant/owner is activated here.
+                    const ledger = if (self.fresh_oauth) |*item| item else return error.EnrollmentNotFound;
+                    const record = ledger.find(pending.attempt.binding.transaction_id) orelse return error.EnrollmentNotFound;
+                    var raw = try response.copyForEncryptedCustody(self.allocator, pending.ticket.?);
+                    defer raw.deinit();
+                    try oauth_enrollment.sealUnverifiedResponse(self.io, self.allocator, self.root_key, self.root_id.?, record, raw.bytes, pending.workUntil());
+                    if (self.now() >= pending.attempt.binding.consent_expires_at) {
+                        try ledger.withdraw(self.allocator, pending.attempt.binding.transaction_id);
+                        try self.persist(&.{});
+                        pending.deinit();
+                        _ = self.fresh_oauth_pending.orderedRemove(position);
+                        continue;
+                    }
+                    if (response.isOwnOss()) {
+                        try pending.ticket.?.requireOwnedOssEnrollment();
+                        record.phase = .verifying;
+                        try self.persist(&.{});
+                        response.retain();
+                        pending.response = response;
+                        pending.transport_id = null;
+                        pending.jwks_id = client.startJwks(pending.ticket.?) catch |err| {
+                            self.fresh_oauth_failure = err;
+                            try self.freshOAuthUnknown(pending);
+                            pending.deinit();
+                            _ = self.fresh_oauth_pending.orderedRemove(position);
+                            continue;
+                        };
+                        continue;
+                    }
+                    try self.persist(&.{});
+                },
+            }
+            pending.deinit();
+            _ = self.fresh_oauth_pending.orderedRemove(position);
+        };
+        if (self.network) |client| while (client.pollJwks()) |value| {
+            var completion = value;
+            defer completion.deinit(self.allocator);
+            if (try self.consumeOwnedRenewalJwks(&completion)) continue;
+            for (self.fresh_oauth_pending.items) |*pending| {
+                if (pending.jwks_id != completion.id) continue;
+                pending.jwks_id = null;
+                if (!self.freshOAuthCurrent(pending)) {
+                    try self.freshOAuthUnknown(pending);
+                    break;
+                }
+                switch (completion.result) {
+                    .failure => try self.freshOAuthUnknown(pending),
+                    .lease => |keys| self.startFreshOAuthVerification(pending, keys) catch |err| {
+                        self.fresh_oauth_failure = err;
+                        try self.freshOAuthUnknown(pending);
+                    },
+                }
+                break;
+            }
+        };
+    }
+
+    fn startFreshOAuthVerification(self: *Engine, pending: *FreshOAuthPending, keys: *transport.JwksLease) !void {
+        if (!self.freshOAuthCurrent(pending) or self.fresh_oauth_verifications.items.len >= oauth_callback.max_receivers) return error.EnrollmentAuthorityChanged;
+        const ticket = pending.ticket orelse return error.EnrollmentAuthorityChanged;
+        const response = pending.response orelse return error.EnrollmentAuthorityChanged;
+        try oauth_issue.verifyCurrentIssued(self.allocator, &self.db.?, ticket, pending.attempt.binding, pending.workUntil());
+        try response.recheck(ticket);
+        try keys.recheckTicket(ticket);
+        try self.fresh_oauth_verifications.ensureUnusedCapacity(self.allocator, 1);
+        const task = try self.allocator.create(FreshOAuthVerifyTask);
+        errdefer self.allocator.destroy(task);
+        ticket.retain();
+        errdefer ticket.deinit();
+        response.retain();
+        errdefer response.deinit();
+        keys.retain();
+        errdefer keys.deinit();
+        task.* = .{ .allocator = self.allocator, .ticket = ticket, .response = response, .jwks = keys, .job = .{ .lane = .continuation, .context = task, .run = FreshOAuthVerifyTask.run } };
+        try self.native_workers.?.enqueue(&task.job);
+        self.fresh_oauth_verifications.appendAssumeCapacity(task);
+    }
+    fn completeFreshOAuthVerification(self: *Engine, task: *FreshOAuthVerifyTask) !void {
+        for (self.fresh_oauth_pending.items, 0..) |*pending, index| {
+            if (!std.meta.eql(pending.attempt.binding.transaction_id, task.ticket.binding().transaction_id)) continue;
+            defer {
+                pending.deinit();
+                _ = self.fresh_oauth_pending.orderedRemove(index);
+            }
+            if (!self.freshOAuthCurrent(pending)) {
+                try self.freshOAuthUnknown(pending);
+                return;
+            }
+            if (task.failure) |err| {
+                self.fresh_oauth_failure = err;
+                if (pending.fence) |oauth_fence| _ = oauth_fence.invalidate();
+                const record = self.fresh_oauth.?.find(pending.attempt.binding.transaction_id) orelse return;
+                record.phase = .quarantined;
+                try self.persist(&.{});
+                return;
+            }
+            self.activateFreshOAuthPair(pending, task.proof orelse return error.OIDCProofUnavailable, task.response) catch |err| switch (err) {
+                error.OwnedRefreshTokenMissing, error.SiwcDuplicateLineage, error.SiwcEnrollmentRefused, error.SiwcPairExpired, error.OAuthAuthorityChanged, error.OAuthDeadline, error.OAuthConsentExpired => {
+                    self.fresh_oauth_failure = err;
+                    try self.freshOAuthUnknown(pending);
+                },
+                else => return err,
+            };
+            return;
+        }
+        // A cancelled/forgotten attempt cannot be recovered from a worker.
+    }
+    fn settleFreshOAuthAttempts(self: *Engine) !void {
+        const ledger = if (self.fresh_oauth) |*value| value else return;
+        if (ledger.records.items.len < oauth_enrollment.max_records) return;
+        var index: usize = 0;
+        while (index < ledger.records.items.len) {
+            const row = ledger.records.items[index];
+            var held = false;
+            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(row.binding.transaction_id, pending.attempt.binding.transaction_id)) {
+                held = true;
+            };
+            for (self.fresh_oauth_verifications.items) |task| if (std.meta.eql(row.binding.transaction_id, task.ticket.binding().transaction_id)) {
+                held = true;
+            };
+            if (!held and (row.phase == .prepared or row.phase == .callback_consumed) and self.now() >= row.binding.consent_expires_at) try ledger.retire(self.allocator, row.binding.transaction_id);
+            const phase = ledger.records.items[index].phase;
+            const transferred = self.owned_siwc_pairs.find(row.binding.transaction_id) != null;
+            if (!held and (phase == .retired or phase == .completion_unknown or phase == .quarantined or (phase == .active and transferred))) {
+                try ledger.settle(self.allocator, row.binding.transaction_id, transferred);
+                continue;
+            }
+            index += 1;
+        }
+    }
+    const FreshPairWriterFence = struct {
+        engine: *Engine,
+        pending: *FreshOAuthPending,
+        proof: *oauth_oidc.VerifiedProfile,
+        response: *transport.OAuthResponse,
+        fn check(context: *anyopaque, stage: storage.CommitStage) anyerror!void {
+            const self: *FreshPairWriterFence = @ptrCast(@alignCast(context));
+            const current = self.engine;
+            const ticket = self.pending.ticket orelse return error.EnrollmentAuthorityChanged;
+            const binding = ticket.binding();
+            if (current.stopping or current.poisoned or current.vault_locked or current.db == null or current.root_id == null or current.import_forget_epoch != binding.forget_epoch) return error.EnrollmentAuthorityChanged;
+            const attempt = current.fresh_oauth.?.find(binding.transaction_id) orelse return error.EnrollmentNotFound;
+            if (attempt.phase != .active or attempt.consent_status != .recorded or !std.meta.eql(attempt.binding, binding)) return error.EnrollmentAuthorityChanged;
+            const pair = current.owned_siwc_pairs.find(binding.transaction_id) orelse return error.SiwcPairUnavailable;
+            if (pair.status != .ready or pair.consent_status != .recorded or pair.forget_tombstone or pair.source_generation != binding.source_generation or pair.consent_generation != binding.consent_generation or !std.crypto.timing_safe.eql([32]u8, pair.activation_commitment, self.proof.activationCommitment())) return error.EnrollmentAuthorityChanged;
+            var authorized = false;
+            for (current.state.sources.items) |source| if (eql(source.id, pair.source_id)) {
+                authorized = source.status == .connected and eql(source.provider, "openai_siwc") and source.kind == .oauth and source.authorized_at <= current.now() and (source.authorized_until == null or source.authorized_until.? > current.now());
+            };
+            if (!authorized) return error.SourceUnauthorized;
+            if (stage == .before_begin) {
+                // Ciphertexts and validation already exist, but no SQL writer
+                // has begun: independently reread the original issued row now.
+                try oauth_issue.verifyCurrentIssued(current.allocator, &current.db.?, ticket, binding, self.pending.workUntil());
+            } else {
+                // Transaction has staged the new snapshot; its older checkpoint
+                // cannot authenticate that snapshot until COMMIT. Authenticate
+                // exact staged SQL rows and retained opaque proof instead.
+                const access = (try current.db.?.readGrantStatus(pair.account_id, pair.access_grant_id)) orelse return error.SiwcPairUnavailable;
+                const refresh = (try current.db.?.readGrantStatus(pair.account_id, pair.refresh_grant_id)) orelse return error.SiwcPairUnavailable;
+                if (access.state != .ready or refresh.state != .ready or access.renewal_owner != .omux or refresh.renewal_owner != .omux or access.generation != pair.access_generation or refresh.generation != pair.refresh_generation) return error.SiwcPairAuthorityChanged;
+            }
+            try self.proof.recheck(ticket, self.response);
+            try ticket.checkBeforeVerification();
+        }
+    };
+    /// Only this actual opaque verifier path creates the registry and two SQL
+    /// rows. A new Omux lineage is owned from inception; no import is adopted.
+    fn activateFreshOAuthPair(self: *Engine, pending: *FreshOAuthPending, proof: *oauth_oidc.VerifiedProfile, response: *transport.OAuthResponse) !void {
+        const a = self.allocator;
+        const ticket = pending.ticket orelse return error.EnrollmentAuthorityChanged;
+        if (!self.freshOAuthCurrent(pending)) return error.EnrollmentAuthorityChanged;
+        try oauth_issue.verifyCurrentIssued(a, &self.db.?, ticket, pending.attempt.binding, pending.workUntil());
+        try proof.recheck(ticket, response);
+        var evidence = try response.evidence(a);
+        defer evidence.deinit();
+        try proof.matchesEvidence(ticket, &evidence);
+        const refresh = evidence.refresh_token orelse return error.OwnedRefreshTokenMissing;
+        if (refresh.len == 0 or proof.accessExpiresAt() <= self.now()) return error.SiwcPairExpired;
+        const binding = ticket.binding();
+        const source_id = std.fmt.bytesToHex(binding.source_id, .lower);
+        const access_id = std.fmt.bytesToHex(binding.grant_id, .lower);
+        var random: [64]u8 = undefined;
+        try self.io.randomSecure(&random);
+        const refresh_id = std.fmt.bytesToHex(random[0..32].*, .lower);
+        const identity = std.fmt.bytesToHex(proof.identityCommitment(), .lower);
+        // Exact registration-scoped identity. No workspace or independent
+        // capacity is inferred from sub, email, client count, or scopes.
+        const account_id = identity;
+        if (self.state.grant(&access_id) != null or self.state.grant(&refresh_id) != null or self.owned_siwc_pairs.find(binding.transaction_id) != null) return error.SiwcDuplicateLineage;
+        for (self.state.sources.items) |source| if (eql(source.id, &source_id)) return error.SiwcDuplicateLineage;
+        for (self.owned_siwc_pairs.records.items) |prior| {
+            if (prior.forget_tombstone and std.crypto.timing_safe.eql([32]u8, prior.provider_subject_commitment, proof.providerSubjectCommitment())) return error.SiwcEnrollmentRefused;
+            // The provider issues a stable registered client per account /
+            // workspace. Reauthorization may reuse that client; it must not
+            // reuse any retained refresh credential lineage.
+            if (std.crypto.timing_safe.eql([32]u8, prior.refresh_token_commitment, siwc_pair.tokenCommitment(self.root_key, refresh, .refresh))) return error.SiwcDuplicateLineage;
+        }
+        var identity_plain = try proof.copyIdentityForEncryption(a);
+        defer identity_plain.deinit();
+        var row: siwc_pair.Record = .{
+            .transaction_id = binding.transaction_id,
+            .source_id = &source_id,
+            .account_id = &account_id,
+            .access_grant_id = &access_id,
+            .refresh_grant_id = &refresh_id,
+            .source_generation = binding.source_generation,
+            .consent_id = binding.consent_id,
+            .consent_generation = binding.consent_generation,
+            .lineage_id = random[32..64].*,
+            .access_expires_at = proof.accessExpiresAt(),
+            .profile_sha256 = ticket.registrationProfileSha256(),
+            .binding_sha256 = proof.bindingSha256(),
+            .response_sha256 = proof.responseSha256(),
+            .activation_commitment = proof.activationCommitment(),
+            .issued_client_commitment = proof.issuedClientCommitment(),
+            .identity_commitment = proof.identityCommitment(),
+            .provider_subject_commitment = proof.providerSubjectCommitment(),
+            .refresh_token_commitment = siwc_pair.tokenCommitment(self.root_key, refresh, .refresh),
+            .access_token_commitment = siwc_pair.tokenCommitment(self.root_key, evidence.access_token, .access),
+            .identity_capsule = &.{},
+        };
+        row.identity_capsule = try envelope.seal(self.io, a, self.root_key, siwc_pair.identityContext(self.root_id.?, row), identity_plain.bytes);
+        defer a.free(row.identity_capsule);
+        const access_plain = try std.json.Stringify.valueAlloc(a, .{ .access_token = evidence.access_token }, .{});
+        defer {
+            std.crypto.secureZero(u8, access_plain);
+            a.free(access_plain);
+        }
+        const refresh_plain = try std.json.Stringify.valueAlloc(a, .{ .refresh_token = refresh, .client_id = ticket.issuedClientId() }, .{});
+        defer {
+            std.crypto.secureZero(u8, refresh_plain);
+            a.free(refresh_plain);
+        }
+        // Precheck actual absence before any domain publication. Store commit
+        // still performs ownership/generation CAS, and seals all payloads before
+        // beginning its journal transaction.
+        if (try self.db.?.readGrantStatus(&account_id, &access_id) != null or try self.db.?.readGrantStatus(&account_id, &refresh_id) != null) return error.SiwcDuplicateLineage;
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
+        _ = try self.state.connectSource(.{ .id = &source_id, .provider = "openai_siwc", .kind = .oauth, .authorized_at = self.now() });
+        if (try self.importSourceGeneration(&source_id) != binding.source_generation) return error.EnrollmentAuthorityChanged;
+        const enrolled = try self.state.enroll(.{ .account_id = &account_id, .source_id = &source_id, .identity = .{ .provider = "openai_siwc", .issuer = siwc_pair.issuer_uri, .subject = &identity, .verified = true } }, self.now());
+        if (enrolled.status != .enrolled and enrolled.status != .existing) return error.SiwcEnrollmentRefused;
+        if (!eql(enrolled.account_id.?, &account_id)) return error.SiwcEnrollmentRefused;
+        _ = try self.state.addGrant(.{ .id = &access_id, .account_id = &account_id, .source_id = &source_id, .credential_kind = .oauth_access, .ownership = .omux, .purposes = &.{.request}, .audience = siwc_pair.resource_uri, .scopes = &.{ "resource.invoke", "chatgpt.tokens.use.direct" }, .provider_expires_at = proof.accessExpiresAt() });
+        _ = try self.state.addGrant(.{ .id = &refresh_id, .account_id = &account_id, .source_id = &source_id, .credential_kind = .oauth_refresh, .ownership = .omux, .purposes = &.{.renewal}, .audience = siwc_pair.resource_uri, .scopes = &.{"offline_access"} });
+        try self.owned_siwc_pairs.append(a, row);
+        try self.fresh_oauth.?.activate(a, binding);
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        _ = try self.snapshotUsage();
+        const nonledger = try self.nonledgerBytes();
+        const serialized = try std.json.Stringify.valueAlloc(a, self.persisted(), .{});
+        defer a.free(serialized);
+        // Last verification is after every allocation/serialization and exactly
+        // before the atomic Store writer; the original consent/cutoff is held.
+        try oauth_issue.verifyCurrentIssued(a, &self.db.?, ticket, binding, pending.workUntil());
+        try proof.recheck(ticket, response);
+        try proof.matchesEvidence(ticket, &evidence);
+        try ticket.checkBeforeVerification();
+        var writer_fence: FreshPairWriterFence = .{ .engine = self, .pending = pending, .proof = proof, .response = response };
+        self.invalidateCatalogContexts();
+        self.revision = try self.db.?.commitFenced(self.revision, serialized, &.{
+            .{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = &account_id, .grant_id = &access_id, .generation = 1, .purpose = "request", .scope = siwc_pair.resource_uri }, .plaintext = access_plain, .renewal_owner = .omux } },
+            .{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = &account_id, .grant_id = &refresh_id, .generation = 1, .purpose = "renewal", .scope = siwc_pair.resource_uri }, .plaintext = refresh_plain, .renewal_owner = .omux } },
+        }, .{ .context = &writer_fence, .check = FreshPairWriterFence.check });
+        self.committed_nonledger_bytes = nonledger;
+        self.committed_counts = self.actualCounts();
+        // Readiness is served only by currentPair's actual authenticated rows;
+        // no success flag or caller digest substitutes for that lookup.
+    }
+
+    const SignedPairFixtureResult = struct { account_id: [64]u8, source_id: [64]u8, access_grant_id: [64]u8, refresh_grant_id: [64]u8 };
+    /// Actual same-Store constructor exercised only in the declared test graph.
+    /// The subject is synthetic signer input, never a production proof factory.
+    fn admitSignedOssPairForTest(self: *Engine, subject: []const u8) !SignedPairFixtureResult {
+        if (!builtin.is_test) return error.TestOnly;
+        const a = self.allocator;
+        const io = self.io;
+        const until = self.active_until orelse return error.InvalidDeadline;
+        if (subject.len == 0 or subject.len > 128) return error.InvalidFixtureSubject;
+        for (subject) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '-') return error.InvalidFixtureSubject;
+        const tool = std.c.getenv("OMUX_OIDC_OPENSSL") orelse return error.MissingDeclaredSigner;
+        var signer = try @import("oauth_oidc_fixture.zig").Signer.init(a, io, std.mem.span(tool), until);
+        defer signer.deinit() catch @panic("synthetic signing key cleanup failed");
+        var token_server = try transport.testing.Server.listenToken(a);
+        defer token_server.deinit();
+        var key_server = try transport.testing.Server.listenJwks(a);
+        defer key_server.deinit();
+        if (self.fresh_oauth == null) self.fresh_oauth = .{};
+        try self.settleFreshOAuthAttempts();
+        if (self.fresh_oauth_host_id == null) {
+            var host: [32]u8 = undefined;
+            try io.randomSecure(&host);
+            self.fresh_oauth_host_id = host;
+        }
+        const profile = try oauth_issue.documentedOssEnrollment(a, self.fresh_oauth_host_id.?, "http://127.0.0.1:54321/auth/callback");
+        defer profile.deinit();
+        const ledger = &self.fresh_oauth.?;
+        var original = try ledger.prepare(io, a, self.root_key, self.root_id.?, self.import_forget_epoch, self.now(), 60, until);
+        defer original.deinit();
+        ledger.find(original.binding.transaction_id).?.provider = .openai_siwc;
+        ledger.find(original.binding.transaction_id).?.consent_purpose = .fresh_openai_siwc_oauth_enrollment;
+        const operation = std.fmt.bytesToHex(original.binding.transaction_id, .lower);
+        const bound = try ledger.bindForIssue(io, a, self.root_key, self.root_id.?, original, &operation, profile.view().sha256, profile.view().exact_redirect_uri, profile.view().host_id);
+        profile.retain();
+        var pending: FreshOAuthPending = .{ .attempt = bound, .profile = profile };
+        defer pending.deinit();
+        try self.persist(&.{});
+        const client_id = try std.fmt.allocPrint(a, "oaiapp_synthetic_{s}", .{subject});
+        defer a.free(client_id);
+        try ledger.consumeOwnedCallback(io, a, self.root_key, self.root_id.?, bound, bound.binding, self.now(), &bound.callback_state, "synthetic-callback-code", client_id);
+        try self.persist(&.{});
+        try ledger.markIssued(a, bound.binding);
+        self.maintenance_growth_bytes = try maintenanceReservation(self.persisted());
+        const issued = try std.json.Stringify.valueAlloc(a, self.persisted(), .{});
+        defer a.free(issued);
+        pending.ticket = try oauth_issue.issueCode(io, a, &self.db.?, self.root_key, self.root_id.?, self.revision, issued, bound.binding, profile, until);
+        self.revision = pending.ticket.?.committedRevision();
+        pending.fence = pending.ticket.?.retainFence();
+        try oauth_issue.testing.attachOssModelRoutes(pending.ticket.?, .{ .token_port = token_server.port(), .jwks_port = key_server.port() });
+        var nonce: [43]u8 = undefined;
+        defer std.crypto.secureZero(u8, &nonce);
+        _ = std.base64.url_safe_no_pad.Encoder.encode(&nonce, &bound.oidc_nonce);
+        const claims = try std.json.Stringify.valueAlloc(a, .{ .iss = siwc_pair.issuer_uri, .aud = client_id, .sub = subject, .nonce = nonce[0..], .iat = self.now(), .exp = self.now() + 300 }, .{});
+        defer {
+            std.crypto.secureZero(u8, claims);
+            a.free(claims);
+        }
+        const jwt = try signer.sign(claims);
+        defer {
+            std.crypto.secureZero(u8, jwt);
+            a.free(jwt);
+        }
+        const access = try std.fmt.allocPrint(a, "synthetic-access-{s}", .{subject});
+        defer {
+            std.crypto.secureZero(u8, access);
+            a.free(access);
+        }
+        const refresh = try std.fmt.allocPrint(a, "synthetic-refresh-{s}", .{subject});
+        defer {
+            std.crypto.secureZero(u8, refresh);
+            a.free(refresh);
+        }
+        const body = try std.json.Stringify.valueAlloc(a, .{ .access_token = access, .refresh_token = refresh, .id_token = jwt, .token_type = "Bearer", .expires_in = 300, .scope = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct" }, .{});
+        defer {
+            std.crypto.secureZero(u8, body);
+            a.free(body);
+        }
+        const keys = try signer.jwks();
+        defer a.free(keys);
+        try token_server.setBody(body);
+        try key_server.setBody(keys);
+        try token_server.start(pending.ticket.?);
+        try key_server.start(pending.ticket.?);
+        const client = try transport.Client.init(a);
+        defer client.deinit();
+        const token_id = try client.startOAuth(pending.ticket.?);
+        var tokens: ?transport.OAuthCompletion = null;
+        while (tokens == null) {
+            try native_source_acquisition.deadline(io, until);
+            if (self.now() >= bound.binding.consent_expires_at) return error.OAuthConsentExpired;
+            tokens = client.pollOAuth();
+            if (tokens == null) try io.sleep(.fromMilliseconds(5), .awake);
+        }
+        defer tokens.?.deinit(a);
+        if (tokens.?.id != token_id) return error.InvalidFixtureCompletion;
+        const response = switch (tokens.?.result) {
+            .response => |value| value,
+            .failure => return error.InvalidFixtureCompletion,
+        };
+        try std.testing.expect(token_server.wireValid() and token_server.requestCount() == 1);
+        var raw = try response.copyForEncryptedCustody(a, pending.ticket.?);
+        defer raw.deinit();
+        try oauth_enrollment.sealUnverifiedResponse(io, a, self.root_key, self.root_id.?, ledger.find(bound.binding.transaction_id).?, raw.bytes, until);
+        ledger.find(bound.binding.transaction_id).?.phase = .verifying;
+        try self.persist(&.{});
+        const key_id = try client.startJwks(pending.ticket.?);
+        var key_completion: ?transport.JwksCompletion = null;
+        while (key_completion == null) {
+            try pending.ticket.?.checkBeforeVerification();
+            key_completion = client.pollJwks();
+            if (key_completion == null) try io.sleep(.fromMilliseconds(5), .awake);
+        }
+        defer key_completion.?.deinit(a);
+        if (key_completion.?.id != key_id) return error.InvalidFixtureCompletion;
+        const lease = switch (key_completion.?.result) {
+            .lease => |value| value,
+            .failure => return error.InvalidFixtureCompletion,
+        };
+        try std.testing.expect(key_server.wireValid() and key_server.requestCount() == 1);
+        const proof = try oauth_oidc.verifyOwnedResponse(a, pending.ticket.?, response, lease);
+        defer proof.deinit();
+        try self.activateFreshOAuthPair(&pending, proof, response);
+        const row = self.owned_siwc_pairs.find(bound.binding.transaction_id) orelse return error.SiwcPairUnavailable;
+        const authority = try siwc_pair.currentPair(&self.db.?, row.account_id, row.access_grant_id, row.access_generation, self.now());
+        defer authority.deinit();
+        var result: SignedPairFixtureResult = undefined;
+        @memcpy(&result.account_id, row.account_id);
+        @memcpy(&result.source_id, row.source_id);
+        @memcpy(&result.access_grant_id, row.access_grant_id);
+        @memcpy(&result.refresh_grant_id, row.refresh_grant_id);
+        return result;
+    }
+
+    fn freshOAuthDescriptor(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
+        if (request.params != .null and (request.params != .object or request.params.object.count() != 0)) return error.InvalidParams;
+        return control.success(allocator, request.id, .{
+            .schema_version = 1,
+            .profile = siwc_pair.request_profile,
+            .purpose = oauth_enrollment.oss_purpose,
+            .provider = "openai_siwc",
+            .issuer = siwc_pair.issuer_uri,
+            .audience = siwc_pair.resource_uri,
+            .enrollment_io_policy = "documented_oss_dynamic_registration_v1",
+            .experimental = true,
+            .implemented = builtin.os.tag == .linux or builtin.os.tag == .macos,
+            .custody_available = !self.vault_locked and !self.poisoned and self.db != null,
+            .provider_proof = false,
+            .native_support_proven = false,
+            .live_handoff_proven = false,
+            .authorization_policy = .{ .scheme = "https", .host = "auth.openai.com", .path = "/api/accounts/authorize", .initial_client_id = "dynamic_agent_client", .agent_name_hint = "omux", .redirect_scheme = "http", .redirect_host = "127.0.0.1", .redirect_path = "/auth/callback", .redirect_port = "held_nonzero_loopback", .resource = siwc_pair.resource_uri, .scopes = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct", .pkce = "S256" },
+            .methods = .{ .prepare = "oauth.enrollment.prepare.siwc.v1", .authorization = "oauth.enrollment.authorization.v1", .status = "oauth.enrollment.status.v1", .pending = "oauth.enrollment.pending.v1", .withdraw = "oauth.enrollment.withdraw.v1" },
+            .flow = .{ .minimum_seconds = 1, .maximum_seconds = 3600, .minted_once = true, .wall_and_awake = true, .rpc_deadline_separate = true, .exchange_max_seconds = 120, .authorization_deliveries = 1, .reconnect_renews = false },
+        });
+    }
+    fn freshOAuthPendingMetadata(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
+        if (request.params != .null and (request.params != .object or request.params.object.count() != 0)) return error.InvalidParams;
+        const PendingView = struct { transaction_id: []const u8, source_id: []const u8, phase: oauth_enrollment.Phase, flow_expires_at: i64, authorization_delivered: bool };
+        if (self.vault_locked or self.poisoned or self.db == null) return control.success(allocator, request.id, .{ .schema_version = 1, .custody_available = false, .status = "unknown", .pending = @as(?[]const PendingView, null) });
+        var saved = try self.db.?.readSnapshot();
+        defer saved.deinit();
+        const parsed = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{});
+        defer parsed.deinit();
+        var rows: [oauth_enrollment.max_records]PendingView = undefined;
+        var transaction_ids: [oauth_enrollment.max_records][64]u8 = undefined;
+        var source_ids: [oauth_enrollment.max_records][64]u8 = undefined;
+        var count: usize = 0;
+        if (parsed.value.fresh_oauth_authority) |attempts| for (attempts.records) |record| {
+            if (record.provider != .openai_siwc or record.consent_status != .recorded or self.now() >= record.binding.consent_expires_at) continue;
+            if (record.phase != .prepared and record.phase != .callback_consumed and record.phase != .exchange_issued and record.phase != .verifying) continue;
+            // Only original live in-memory owners appear; restart never
+            // reconstructs a receiver/ticket from durable pending metadata.
+            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(pending.attempt.binding.transaction_id, record.binding.transaction_id) and self.freshOAuthCurrent(&pending)) {
+                if (count == rows.len) return error.InvalidOAuthEnrollment;
+                transaction_ids[count] = std.fmt.bytesToHex(record.binding.transaction_id, .lower);
+                source_ids[count] = std.fmt.bytesToHex(record.binding.source_id, .lower);
+                rows[count] = .{ .transaction_id = transaction_ids[count][0..], .source_id = source_ids[count][0..], .phase = record.phase, .flow_expires_at = record.binding.consent_expires_at, .authorization_delivered = pending.authorization_delivered };
+                count += 1;
+                break;
+            };
+        };
+        return control.success(allocator, request.id, .{ .schema_version = 1, .custody_available = true, .revision = saved.revision, .status = "current", .pending = rows[0..count] });
+    }
+    fn freshOAuthStatus(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
+        const params = request.params;
+        if (params != .object or params.object.count() != 2 or control.get(params, "purpose") == null or control.get(params, "transaction_id") == null) return error.InvalidParams;
+        if (!eql(try control.string(params, "purpose"), oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+        const id = try parseOpaqueId(try control.string(params, "transaction_id"));
+        const encoded_id = std.fmt.bytesToHex(id, .lower);
+        if (self.vault_locked or self.poisoned or self.db == null) return control.success(allocator, request.id, .{
+            .schema_version = 1,
+            .transaction_id = encoded_id[0..],
+            .status = "unknown",
+            .phase = @as(?oauth_enrollment.Phase, null),
+            .custody_available = false,
+            .paired_committed = @as(?bool, null),
+            .grant_ready = @as(?bool, null),
+            .reason = "custody_unavailable",
+        });
+        var saved = try self.db.?.readSnapshot();
+        defer saved.deinit();
+        const parsed = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{});
+        defer parsed.deinit();
+        if (parsed.value.owned_siwc_pairs) |pairs| for (pairs.records) |pair| if (std.meta.eql(pair.transaction_id, id)) {
+            var ready = false;
+            var reason: ?[]const u8 = null;
+            if (pair.status == .ready or pair.status == .refreshing) {
+                const current: ?*siwc_pair.PairAuthority = siwc_pair.currentPair(&self.db.?, pair.account_id, pair.access_grant_id, pair.access_generation, self.now()) catch |err| switch (err) {
+                    error.SiwcPairUnavailable, error.SiwcPairAuthorityChanged, error.SiwcPairQuarantined, error.SiwcPairExpired => missing: {
+                        reason = @errorName(err);
+                        break :missing null;
+                    },
+                    else => return err,
+                };
+                if (current) |authority| {
+                    authority.deinit();
+                    ready = true;
+                }
+                for (parsed.value.state.accounts) |account| if (eql(account.id, pair.account_id) and account.lifecycle != .active) {
+                    ready = false;
+                    reason = "account_paused_or_draining";
+                };
+            } else reason = if (pair.status == .retired) "consent_or_source_retired" else "renewal_unavailable";
+            return control.success(allocator, request.id, .{
+                .schema_version = 1,
+                .transaction_id = encoded_id[0..],
+                .revision = saved.revision,
+                .status = if (pair.status == .retired) "retired" else "paired",
+                .phase = if (pair.status == .retired) oauth_enrollment.Phase.retired else oauth_enrollment.Phase.active,
+                .custody_available = true,
+                .paired_committed = true,
+                .grant_ready = ready,
+                .reason = reason,
+                .consent_status = pair.consent_status,
+                .retirement_reason = pair.retirement_reason,
+                .source_id = pair.source_id,
+                .account_id = pair.account_id,
+            });
+        };
+        if (parsed.value.fresh_oauth_authority) |attempts| for (attempts.records) |row| if (std.meta.eql(row.binding.transaction_id, id)) {
+            if (row.provider != .openai_siwc) return error.WrongPurpose;
+            var expired = self.now() >= row.binding.consent_expires_at;
+            for (self.fresh_oauth_pending.items) |pending| if (std.meta.eql(pending.attempt.binding.transaction_id, id) and pending.workUntil().durationFromNow(self.io).raw.toNanoseconds() <= 0) {
+                expired = true;
+            };
+            const status: []const u8 = switch (row.phase) {
+                .prepared, .callback_consumed, .exchange_issued, .verifying => if (expired) "expired" else "pending",
+                .completion_unknown, .active => "unknown",
+                .quarantined => "quarantined",
+                .retired => if (row.consent_status == .withdrawn) "cancelled" else if (expired) "expired" else "retired",
+            };
+            return control.success(allocator, request.id, .{
+                .schema_version = 1,
+                .transaction_id = encoded_id[0..],
+                .revision = saved.revision,
+                .status = status,
+                .phase = row.phase,
+                .flow_expired = expired,
+                .custody_available = true,
+                .paired_committed = false,
+                .grant_ready = false,
+                .consent_status = row.consent_status,
+                .flow_expires_at = row.binding.consent_expires_at,
+                .flow_seconds = row.binding.flow_duration_seconds,
+                .source_id = std.fmt.bytesToHex(row.binding.source_id, .lower)[0..],
+                .account_id = @as(?[]const u8, null),
+            });
+        };
+        // Reclaimed terminal records never revive; absence cannot be presented
+        // as zero accounts, an active flow, success or a reusable callback.
+        return control.success(allocator, request.id, .{
+            .schema_version = 1,
+            .transaction_id = encoded_id[0..],
+            .revision = saved.revision,
+            .status = "not_retained",
+            .phase = @as(?oauth_enrollment.Phase, null),
+            .custody_available = true,
+            .paired_committed = @as(?bool, null),
+            .grant_ready = @as(?bool, null),
+            .reason = "terminal_or_unknown_handle",
+        });
+    }
+
+    /// Identified local-atomic intent only. No caller client/endpoint/profile,
+    /// callback code, native token or certificate can authorize provider IO.
+    fn freshOAuthIntent(self: *Engine, allocator: std.mem.Allocator, request: control.Request) ![]u8 {
+        const params = request.params;
+        const initial_oss = eql(request.method, "oauth.enrollment.prepare.siwc.v1");
+        const preparing = initial_oss or eql(request.method, "oauth.enrollment.prepare.v1");
+        if (params != .object or params.object.count() != (if (preparing) @as(usize, 5) else 4)) return error.InvalidParams;
+        for (params.object.keys()) |name| {
+            if (!eql(name, "operation_id") and !eql(name, "expected_revision") and !eql(name, "purpose") and
+                !(preparing and (eql(name, "provider") or eql(name, "consent_seconds"))) and
+                !(!preparing and eql(name, "transaction_id"))) return error.InvalidParams;
+        }
+        const requested_purpose = try control.string(params, "purpose");
+        if (!eql(requested_purpose, oauth_enrollment.purpose) and !eql(requested_purpose, oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+        if (preparing) {
+            const provider = try control.string(params, "provider");
+            const oss = eql(provider, "openai_siwc");
+            if (!oss and !eql(provider, "codex")) return error.UnsupportedProvider;
+            if (oss != eql(requested_purpose, oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+            if (initial_oss and (!oss or self.active_oauth_profile != null or self.active_oss_callback_port != null)) return error.WrongPurpose;
+            const duration = control.get(params, "consent_seconds") orelse return error.InvalidParams;
+            if (duration != .integer or duration.integer <= 0 or duration.integer > 3600) return error.InvalidParams;
+            if (self.root_id == null or self.vault_locked) return error.WrappingKeyUnavailable;
+            if (self.fresh_oauth == null) self.fresh_oauth = .{};
+            try self.settleFreshOAuthAttempts();
+            const reply_until = self.active_until orelse return error.EnrollmentExpired;
+            var prepared = if (initial_oss) try self.fresh_oauth.?.prepareFlow(self.io, self.allocator, self.root_key, self.root_id.?, self.import_forget_epoch, self.now(), @intCast(duration.integer), reply_until) else try self.fresh_oauth.?.prepare(self.io, self.allocator, self.root_key, self.root_id.?, self.import_forget_epoch, self.now(), @intCast(duration.integer), reply_until);
+            defer prepared.deinit();
+            if (oss) {
+                const record = self.fresh_oauth.?.find(prepared.binding.transaction_id).?;
+                record.provider = .openai_siwc;
+                record.consent_purpose = .fresh_openai_siwc_oauth_enrollment;
+            }
+            var owned_profile: ?*oauth_issue.EnrollmentProfile = null;
+            defer if (owned_profile) |profile| profile.deinit();
+            var reservation: ?*oauth_callback.ListenerReservation = null;
+            defer if (reservation) |listener| listener.deinit();
+            if (initial_oss) {
+                if (self.fresh_oauth_pending.items.len >= oauth_callback.max_receivers) return error.EnrollmentCapacity;
+                reservation = try oauth_callback.reserveDocumentedLoopback(self.io, self.allocator, prepared.until);
+            }
+            const selected_port: ?u16 = if (reservation) |listener| listener.port() else self.active_oss_callback_port;
+            if (selected_port) |port| {
+                if (!oss or self.active_oauth_profile != null) return error.WrongPurpose;
+                if (self.fresh_oauth_host_id == null) {
+                    var host: [32]u8 = undefined;
+                    try self.io.randomSecure(&host);
+                    if (std.mem.allEqual(u8, &host, 0)) return error.EnrollmentIdCollision;
+                    self.fresh_oauth_host_id = host;
+                }
+                const redirect = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}/auth/callback", .{port});
+                defer self.allocator.free(redirect);
+                owned_profile = try oauth_issue.documentedOssEnrollment(self.allocator, self.fresh_oauth_host_id.?, redirect);
+            }
+            if (owned_profile orelse self.active_oauth_profile) |profile| {
+                if (!oss) return error.WrongPurpose;
+                try profile.requireAvailable();
+                if (self.fresh_oauth_pending.items.len >= oauth_callback.max_receivers) return error.EnrollmentCapacity;
+                const operation = try control.operationId(params);
+                var bound = try self.fresh_oauth.?.bindForIssue(self.io, self.allocator, self.root_key, self.root_id.?, prepared, operation, profile.view().sha256, profile.view().exact_redirect_uri, profile.view().host_id);
+                defer bound.deinit();
+                const receiver = if (reservation) |listener| try listener.take(profile, bound) else try oauth_callback.open(self.io, self.allocator, profile, bound);
+                errdefer receiver.deinit();
+                try self.fresh_oauth_pending.ensureUnusedCapacity(self.allocator, 1);
+                profile.retain();
+                self.fresh_oauth_pending.appendAssumeCapacity(.{ .attempt = bound, .profile = profile, .receiver = receiver });
+                // Actor-owned copy retains private expected state after caller
+                // temporary is scrubbed; no raw state enters the response.
+            }
+            try self.persist(&.{});
+            const transaction_id = std.fmt.bytesToHex(prepared.binding.transaction_id, .lower);
+            const available = owned_profile != null or self.active_oauth_profile != null;
+            return control.success(allocator, request.id, .{ .transaction_id = transaction_id[0..], .source_id = std.fmt.bytesToHex(prepared.binding.source_id, .lower)[0..], .admitted_revision = if (self.staging_mutation) self.revision + 1 else self.revision, .flow_expires_at = prepared.binding.consent_expires_at, .flow_seconds = prepared.binding.flow_duration_seconds, .phase = oauth_enrollment.Phase.prepared, .consent_recorded = true, .registration = if (available) oauth_enrollment.Registration.enrollment_policy else .unqualified, .blocked_reason = if (available) @as(?oauth_enrollment.BlockedReason, null) else .registration_profile_unavailable, .authorization_available = available, .provider_request_initiated = false, .grant_activated = false });
+        }
+        const id = try parseOpaqueId(try control.string(params, "transaction_id"));
+        if (self.owned_siwc_pairs.find(id)) |pair| {
+            if (!eql(requested_purpose, oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+            if (!eql(request.method, "oauth.enrollment.withdraw.v1")) return error.EnrollmentAlreadyActivated;
+            // Source retirement and explicit consent withdrawal are distinct.
+            // A later withdrawal must record consent even after disconnection.
+            if (pair.consent_status != .withdrawn) {
+                if (pair.consent_generation == std.math.maxInt(u64)) return error.GenerationExhausted;
+                pair.consent_generation += 1;
+                pair.consent_status = .withdrawn;
+                pair.retirement_reason = .withdrawn;
+                pair.status = .retired;
+                if (pair.renewal) |*renewal| if (renewal.state == .issued) {
+                    try self.settleOwnedRenewalAccounting(renewal, .completion_unknown, .consent_withdrawn);
+                };
+                self.cancelOwnedRenewals(pair.source_id, pair.account_id);
+                self.allocator.free(pair.identity_capsule);
+                pair.identity_capsule = &.{};
+                try self.disconnectImportSource(pair.source_id);
+                if (self.fresh_oauth) |*ledger| if (ledger.find(id) != null) try ledger.withdraw(self.allocator, id);
+                self.cancelFreshOAuth(id);
+                try self.persist(&.{
+                    .{ .delete = .{ .account_id = pair.account_id, .grant_id = pair.access_grant_id } },
+                    .{ .delete = .{ .account_id = pair.account_id, .grant_id = pair.refresh_grant_id } },
+                });
+            }
+            return control.success(allocator, request.id, .{ .consent_withdrawn = true, .issued_work_may_have_occurred = true, .upstream_revoked = false });
+        }
+        const selected = if (self.fresh_oauth) |*ledger| ledger.find(id) orelse return error.EnrollmentNotFound else return error.EnrollmentNotFound;
+        if ((selected.provider == .openai_siwc) != eql(requested_purpose, oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+        const withdrawing = eql(request.method, "oauth.enrollment.withdraw.v1");
+        if (self.fresh_oauth) |*enrollments| {
+            if (withdrawing) try enrollments.withdraw(self.allocator, id) else try enrollments.retire(self.allocator, id);
+        } else return error.EnrollmentNotFound;
+        self.cancelFreshOAuth(id);
+        try self.persist(&.{});
+        if (withdrawing) return control.success(allocator, request.id, .{ .consent_withdrawn = true, .issued_work_may_have_occurred = self.fresh_oauth.?.find(id).?.phase == .completion_unknown, .upstream_revoked = false });
+        return control.success(allocator, request.id, .{ .retired = true, .provider_request_initiated = false });
+    }
+
     fn handleRequest(self: *Engine, allocator: std.mem.Allocator, request: control.Request, channel: Channel) ![]u8 {
         const method = request.method;
         const params = request.params;
+        if (eql(method, "adapter.siwcCatalog")) {
+            if (channel != .adapter) return error.WrongChannel;
+            return error.SiwcCatalogRequiresActor;
+        }
+        if (eql(method, "oauth.enrollment.pending.v1") or eql(method, "oauth.enrollment.descriptor.v1") or eql(method, "oauth.enrollment.status.v1")) {
+            if (channel != .control) return error.WrongChannel;
+            if (eql(method, "oauth.enrollment.pending.v1")) return self.freshOAuthPendingMetadata(allocator, request);
+            return if (eql(method, "oauth.enrollment.descriptor.v1")) self.freshOAuthDescriptor(allocator, request) else self.freshOAuthStatus(allocator, request);
+        }
+        if (eql(method, "integrations.nativeFileCoordinationReadiness")) return self.nativeFileCoordinationReadiness(allocator, request, channel);
+        if (eql(method, "oauth.enrollment.authorization.v1")) {
+            if (channel != .control) return error.WrongChannel;
+            if (params != .object or params.object.count() != 3 or control.get(params, "purpose") == null or control.get(params, "transaction_id") == null or control.get(params, "expected_revision") == null) return error.InvalidParams;
+            if (!eql(try control.string(params, "purpose"), oauth_enrollment.oss_purpose)) return error.WrongPurpose;
+            var url: envelope.Secret = .{ .allocator = allocator, .bytes = try self.freshOAuthAuthorization(allocator, try parseOpaqueId(try control.string(params, "transaction_id")), try control.expectedRevision(params), self.active_until orelse return error.EnrollmentExpired) };
+            defer url.deinit();
+            return control.success(allocator, request.id, .{ .authorization_url = url.bytes, .provider_request_initiated = false, .grant_activated = false });
+        }
+        if (builtin.is_test and eql(method, "fixture.siwcRenewalStart")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const account_id = try control.string(params, "account_id");
+            var access_id = try control.optionalString(params, "access_grant_id");
+            if (access_id == null) {
+                for (self.owned_siwc_pairs.records.items) |row| if (eql(row.account_id, account_id)) {
+                    if (access_id != null) return error.InvalidFixtureSubject;
+                    access_id = row.access_grant_id;
+                };
+            }
+            const selected_access = access_id orelse return error.RenewalNotOwned;
+            if (account_id.len != 64 or self.fixture_owned_renewal_servers.items.len >= max_owned_renewals) return error.InvalidFixtureSubject;
+            self.fixture_owned_renewal_hold_window = try control.boolean(params, "hold_window", false);
+            self.fixture_owned_renewal_dispatch_hold = try control.boolean(params, "hold_before_dispatch", false);
+            self.fixture_owned_renewal_worker_hold = try control.boolean(params, "hold_worker", false);
+            self.fixture_owned_renewal_verified_before_expiry = false;
+            const milliseconds = (control.get(params, "milliseconds") orelse return error.InvalidParams);
+            if (milliseconds != .integer or milliseconds.integer < 1 or milliseconds.integer > 120_000) return error.InvalidDeadline;
+            if (try control.optionalString(params, "hold_stage")) |name| {
+                self.fixture_owned_renewal_hold_stage = std.meta.stringToEnum(storage.CommitStage, name) orelse return error.InvalidParams;
+                const kind = (try control.optionalString(params, "hold_kind")) orelse "successor";
+                self.fixture_owned_renewal_hold_kind = std.meta.stringToEnum(@FieldType(Engine, "fixture_owned_renewal_hold_kind"), kind) orelse return error.InvalidParams;
+            }
+            if (try control.optionalString(params, "fail_stage")) |name| {
+                self.fixture_owned_renewal_commit_failure = std.meta.stringToEnum(storage.CommitStage, name) orelse return error.InvalidParams;
+            }
+            self.fixture_owned_renewal_accounting_tamper = try control.boolean(params, "tamper_accounting", false);
+            const servers = try self.allocator.create(OwnedRenewalFixtureServers);
+            var retained_servers = false;
+            var transferred_servers = false;
+            errdefer if (!retained_servers) self.allocator.destroy(servers);
+            var token = try transport.testing.Server.listenToken(self.allocator);
+            errdefer if (!transferred_servers) token.deinit();
+            var keys = try transport.testing.Server.listenJwks(self.allocator);
+            errdefer if (!transferred_servers) keys.deinit();
+            try token.setBody(try control.string(params, "body"));
+            try keys.setBody(try control.string(params, "keys"));
+            const delay_value = control.get(params, "delay_ms");
+            const delay_ms: u32 = if (delay_value) |value| if (value == .integer and value.integer >= 0 and value.integer <= 3000) @intCast(value.integer) else return error.InvalidParams else 0;
+            try token.setFailureModel(try control.boolean(params, "lost_reply", false), delay_ms);
+            if (try control.boolean(params, "hold_reply", false)) try token.setHoldModel();
+            if (control.get(params, "http_status")) |status| {
+                if (status != .integer or status.integer < 200 or status.integer > 599) return error.InvalidParams;
+                try token.setStatusModel(@intCast(status.integer));
+            }
+            servers.* = .{ .allocator = self.allocator, .account_id = account_id[0..64].*, .token = token, .keys = keys };
+            transferred_servers = true;
+            errdefer if (!retained_servers) {
+                servers.token.deinit();
+                servers.keys.deinit();
+            };
+            try self.fixture_owned_renewal_servers.ensureUnusedCapacity(self.allocator, 1);
+            if (try control.boolean(params, "scheduled", false)) {
+                try self.fixture_owned_renewal_routes.append(self.allocator, .{ .account_id = servers.account_id, .routes = .{ .token_port = servers.token.port(), .jwks_port = servers.keys.port() } });
+                self.fixture_owned_renewal_servers.appendAssumeCapacity(servers);
+                retained_servers = true;
+                return control.success(allocator, request.id, .{ .configured = true, .issued = false });
+            }
+            self.active_owned_renewal_fixture = servers;
+            defer self.active_owned_renewal_fixture = null;
+            const until: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(milliseconds.integer) });
+            const id = try self.startOwnedRenewal(account_id, selected_access, until, .{ .token_port = servers.token.port(), .jwks_port = servers.keys.port() });
+            // Server owners stay stable through actual async curl and crypto.
+            self.fixture_owned_renewal_servers.appendAssumeCapacity(servers);
+            retained_servers = true;
+            return control.success(allocator, request.id, .{ .transport_id = id, .issued = true });
+        }
+        if (builtin.is_test and eql(method, "fixture.siwcGrantWindow")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const account_id = try control.string(params, "account_id");
+            const bound = try control.string(params, "bound");
+            const seconds = control.get(params, "seconds") orelse return error.InvalidParams;
+            if (seconds != .integer or seconds.integer < 0 or seconds.integer > 30) return error.InvalidFixtureWindow;
+            const expiry = self.now() + seconds.integer;
+            for (self.owned_siwc_pairs.records.items) |row| if (eql(row.account_id, account_id) and row.status == .ready) {
+                const id = if (eql(bound, "access_custody")) row.access_grant_id else if (eql(bound, "refresh_custody") or eql(bound, "refresh_provider")) row.refresh_grant_id else return error.InvalidParams;
+                for (self.state.grants.items) |*grant| if (eql(grant.id, id)) {
+                    // Test-only downgrade of real persisted domain fields; it
+                    // cannot create an identity, pair, ticket or longer lease.
+                    const prior = if (eql(bound, "refresh_provider")) grant.provider_expires_at else grant.custody_expires_at;
+                    if (prior != null and expiry > prior.?) return error.InvalidFixtureWindow;
+                    if (eql(bound, "refresh_provider")) grant.provider_expires_at = expiry else grant.custody_expires_at = expiry;
+                    self.state.revision += 1;
+                    try self.persist(&.{});
+                    // Preserve a bounded real pre-prune interval so public
+                    // expiry classification cannot pass merely via row deletion.
+                    if (try control.boolean(params, "hold_prune", false)) self.fixture_siwc_grant_prune_until = .fromNow(self.io, .{ .clock = .awake, .raw = .fromSeconds(3) });
+                    return control.success(allocator, request.id, .{ .expiry = expiry, .bound = bound });
+                };
+            };
+            return error.SiwcPairUnavailable;
+        }
+        if (builtin.is_test and eql(method, "fixture.siwcRenewalRelease")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const account_id = try control.string(params, "account_id");
+            for (self.fixture_owned_renewal_servers.items) |servers| if (eql(&servers.account_id, account_id)) {
+                servers.token.releaseModelReply();
+            };
+            return control.success(allocator, request.id, .{ .released = true });
+        }
+        if (builtin.is_test and eql(method, "fixture.siwcRenewalObserve")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const account_id = try control.string(params, "account_id");
+            for (self.owned_siwc_pairs.records.items) |row| if (eql(row.account_id, account_id)) {
+                const actual_access = try self.db.?.readGrantStatus(row.account_id, row.access_grant_id);
+                const actual_refresh = try self.db.?.readGrantStatus(row.account_id, row.refresh_grant_id);
+                const access_authority = siwc_pair.currentPair(&self.db.?, row.account_id, row.access_grant_id, row.access_generation, self.now()) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => null,
+                };
+                defer if (access_authority) |authority| authority.deinit();
+                var token_count: u32 = 0;
+                var key_count: u32 = 0;
+                var wire_valid = false;
+                for (self.fixture_owned_renewal_servers.items) |servers| if (eql(&servers.account_id, account_id)) {
+                    token_count += servers.token.requestCount();
+                    key_count += servers.keys.requestCount();
+                    wire_valid = servers.token.wireValid() and (servers.keys.requestCount() == 0 or servers.keys.wireValid());
+                };
+                var saved = try self.db.?.readSnapshot();
+                defer saved.deinit();
+                const parsed = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{});
+                defer parsed.deinit();
+                var persisted_status: ?@FieldType(siwc_pair.Record, "status") = null;
+                var persisted_generation: ?u64 = null;
+                var persisted_window: ?siwc_pair.GrantWindow = null;
+                for (parsed.value.owned_siwc_pairs.?.records) |retained| if (eql(retained.account_id, account_id)) {
+                    persisted_status = retained.status;
+                    persisted_generation = retained.family_generation;
+                    persisted_window = siwc_pair.grantWindow(parsed.value.state.grants, retained) catch null;
+                };
+                const independent = try self.db.?.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant");
+                const external_retained = self.state.grant("synthetic-owned-external-grant") != null and independent != null and independent.?.renewal_owner == .external and independent.?.generation == 1 and independent.?.state == .ready;
+                return control.success(allocator, request.id, .{ .status = row.status, .generation = row.family_generation, .renewal_state = if (row.renewal) |operation| @as(?@FieldType(siwc_pair.Renewal, "state"), operation.state) else null, .original_grant_window = if (row.renewal) |operation| @as(?siwc_pair.GrantWindow, operation.grant_window) else null, .access_authorized = access_authority != null, .access_sql = actual_access, .refresh_sql = actual_refresh, .persisted_status = persisted_status, .persisted_generation = persisted_generation, .revision = saved.revision, .persisted_grant_window = persisted_window, .pending = self.owned_renewal_pending.items.len, .workers = self.owned_renewal_tasks.items.len, .token_count = token_count, .key_count = key_count, .wire_valid = wire_valid, .verified_before_expiry = self.fixture_owned_renewal_verified_before_expiry, .failure = if (self.owned_renewal_failure) |failure| @as(?[]const u8, @errorName(failure)) else null, .external_retained = external_retained });
+            };
+            return error.SiwcPairUnavailable;
+        }
+        if (builtin.is_test and eql(method, "fixture.siwcExpireAccess")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const account_id = try control.string(params, "account_id");
+            for (self.owned_siwc_pairs.records.items) |*row| if (eql(row.account_id, account_id)) {
+                // Downgrade only: the real signed admission is retained, and
+                // the authentic encrypted AT remains joined to this exact row.
+                row.access_expires_at = self.now() - 1;
+                for (self.state.grants.items) |*grant| if (eql(grant.id, row.access_grant_id)) {
+                    grant.provider_expires_at = row.access_expires_at;
+                };
+                self.state.revision += 1;
+                try self.persist(&.{});
+                return control.success(allocator, request.id, .{ .expired = true });
+            };
+            return error.SiwcPairUnavailable;
+        }
+        if (builtin.is_test and eql(method, "fixture.siwcPairHandles")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const account_id = try control.string(params, "account_id");
+            for (self.owned_siwc_pairs.records.items) |row| if (eql(row.account_id, account_id)) {
+                return control.success(allocator, request.id, .{ .transaction_id = std.fmt.bytesToHex(row.transaction_id, .lower)[0..] });
+            };
+            return error.SiwcPairUnavailable;
+        }
+        if (builtin.is_test and eql(method, "fixture.siwcRejectCommitFault")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "codex")) return error.WrongPurpose;
+            if (sql_api.sqlite3_exec(self.db.?.db, "PRAGMA query_only=ON;", null, null, null) != sql_api.SQLITE_OK) return error.FixtureSqlFailed;
+            defer if (sql_api.sqlite3_exec(self.db.?.db, "PRAGMA query_only=OFF;", null, null, null) != sql_api.SQLITE_OK) {
+                self.poisoned = true;
+                self.db.?.poisoned = true;
+            };
+            // Actual persistence is denied before recovery reservation.
+            // Restore only fixture query_only control; never clear poison.
+            return self.siwcReject(allocator, request.id, params);
+        }
+        if (builtin.is_test and eql(method, "fixture.admitSignedOssPair")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const pair = try self.admitSignedOssPairForTest(try control.string(params, "subject"));
+            return control.success(allocator, request.id, .{ .account_id = pair.account_id[0..], .source_id = pair.source_id[0..], .access_grant_id = pair.access_grant_id[0..], .refresh_grant_id = pair.refresh_grant_id[0..] });
+        }
+        if (builtin.is_test and eql(method, "fixture.freshOAuthRetained")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const id = try parseOpaqueId(try control.string(params, "transaction_id"));
+            var saved = try self.db.?.readSnapshot();
+            defer saved.deinit();
+            const decoded = try std.json.parseFromSlice(Persisted, allocator, saved.json, .{});
+            defer decoded.deinit();
+            const records = (decoded.value.fresh_oauth_authority orelse return error.EnrollmentNotFound).records;
+            for (records) |record| if (std.meta.eql(record.binding.transaction_id, id)) {
+                return control.success(allocator, request.id, .{ .revision = saved.revision, .phase = record.phase, .consent_status = record.consent_status, .consent_generation = record.binding.consent_generation, .verifier_bytes = record.verifier_capsule.len, .callback_bytes = record.callback_capsule.len, .response_bytes = record.response_capsule.len, .pending = self.fresh_oauth_pending.items.len, .accounts = self.state.accounts.items.len, .grants = self.state.grants.items.len, .forget_epoch = self.import_forget_epoch, .host_id = decoded.value.fresh_oauth_host_id });
+            };
+            return error.EnrollmentNotFound;
+        }
+        if (builtin.is_test and eql(method, "fixture.custodyObservationRollbackFault")) {
+            if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
+            const mode = if (control.get(params, "mode") != null) try control.string(params, "mode") else "rollback";
+            if (eql(mode, "checkpoint")) {
+                if (sql_api.sqlite3_exec(self.db.?.db, "UPDATE recovery_checkpoint SET sequence=sequence+1 WHERE id=1;", null, null, null) != sql_api.SQLITE_OK) return error.AuthorizerFixtureFailed;
+                return control.success(allocator, request.id, .{ .armed = true });
+            }
+            if (!eql(mode, "rollback") and !eql(mode, "preexisting_poison")) return error.InvalidParams;
+            // Static callback has no borrowed fixture pointer. SQLite owns its
+            // connection lifetime and clears the callback when Store closes.
+            const Fault = struct {
+                fn authorize(_: ?*anyopaque, action: c_int, transaction: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8) callconv(.c) c_int {
+                    if (action == sql_api.SQLITE_TRANSACTION and transaction != null and std.ascii.eqlIgnoreCase(std.mem.span(transaction), "ROLLBACK")) return sql_api.SQLITE_DENY;
+                    return sql_api.SQLITE_OK;
+                }
+            };
+            if (sql_api.sqlite3_set_authorizer(self.db.?.db, Fault.authorize, null) != sql_api.SQLITE_OK) return error.AuthorizerFixtureFailed;
+            if (eql(mode, "preexisting_poison")) {
+                // Produce actual Store poison before the control branch sees
+                // it; do not manufacture either Store or actor flags.
+                _ = self.db.?.custodyObservation(self.revision, self.active_until orelse return error.MissingObservationDeadline) catch |err| {
+                    if (err != error.DatabaseDenied or !self.db.?.poisoned) return err;
+                    return control.success(allocator, request.id, .{ .armed = true });
+                };
+                return error.ExpectedFixtureFault;
+            }
+            return control.success(allocator, request.id, .{ .armed = true });
+        }
         if (builtin.is_test and eql(method, "fixture.measuredRuntime")) return self.measuredRuntimeFixture(allocator, request, channel);
         if (builtin.is_test and eql(method, "fixture.lifecycleMeasurementFault")) {
             if (channel != .control) return error.WrongChannel;
@@ -2723,6 +6458,7 @@ pub const Engine = struct {
             self.fixture_native_allocation_failed = false;
             return control.success(allocator, request.id, .{ .armed = true });
         }
+        if (builtin.is_test and eql(method, "fixture.applicationReadinessCustodyFault")) return self.applicationReadinessCustodyFaultForTest(allocator, request, channel);
         if (builtin.is_test and eql(method, "fixture.applicationReadinessPoisoned")) return self.applicationReadinessPoisonedForTest(allocator, request, channel);
         if (eql(method, application_readiness.method)) {
             if (channel != .control) return error.WrongChannel;
@@ -2743,12 +6479,24 @@ pub const Engine = struct {
         if (builtin.is_test and (eql(method, "fixture.providerSubmissions") or eql(method, "fixture.pollSources"))) {
             if (channel != .adapter or !eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
             if (eql(method, "fixture.pollSources")) {
-                self.fixture_force_poll = true;
+                self.fixture_force_poll = !try control.boolean(params, "respect_policy", false);
                 defer self.fixture_force_poll = false;
-                self.last_source_poll = 0;
+                if (!try control.boolean(params, "respect_cadence", false)) self.last_source_poll = 0;
                 try self.pollSources();
             }
             return control.success(allocator, request.id, .{ .identity_submissions = self.fixture_identity_submissions, .observation_submissions = self.fixture_observation_submissions });
+        }
+        if (builtin.is_test and eql(method, "fixture.nativeSourceMaintenanceStatus")) {
+            if (channel != .control) return error.WrongChannel;
+            return control.success(allocator, request.id, .{ .in_flight = self.native_source_maintenance != null });
+        }
+        if (builtin.is_test and eql(method, "fixture.nativeSourceMaintenance")) {
+            if (channel != .control) return error.WrongChannel;
+            if (params != .null and (params != .object or params.object.count() != 0)) return error.InvalidParams;
+            self.fixture_native_maintenance_enabled = true;
+            self.native_source_maintenance_due = null;
+            // Exercise the ordinary actor-clock path, not dispatch-time IO.
+            return control.success(allocator, request.id, .{ .enabled = true });
         }
         if (builtin.is_test and eql(method, "fixture.externalEffect")) {
             if (channel != .control) return error.WrongChannel;
@@ -2835,6 +6583,7 @@ pub const Engine = struct {
             if (!eql(try self.authenticate(params), "enrollment")) return error.WrongPurpose;
             if (eql(method, "fixture.importStart")) {
                 const reply = try self.startImportMode(allocator, request.id, params, true);
+                if (try control.boolean(params, "include_operation_generation", false)) return reply;
                 allocator.free(reply);
                 const source_id = try control.string(params, "source_id");
                 for (self.pending_imports.items) |pending| if (eql(pending.source_id, source_id) and self.importJobRunning(pending)) {
@@ -2853,6 +6602,12 @@ pub const Engine = struct {
                     return control.success(allocator, request.id, .{ .operation_id = job.id, .generation = job.operation_generation });
                 };
                 return error.NotFound;
+            }
+            if (eql(method, "fixture.importEnrollmentHold")) {
+                // Actor-owned test transport hold for control and source polling;
+                // neither a production parameter nor persisted authorization.
+                self.fixture_hold_enrollment_start = true;
+                return control.success(allocator, request.id, .{ .held = true });
             }
             if (eql(method, "fixture.importComplete")) {
                 const source_id = try control.string(params, "source_id");
@@ -2891,6 +6646,12 @@ pub const Engine = struct {
                     for (self.state.sources.items) |*item| if (eql(item.id, source_id)) {
                         item.authorized_at = self.now() - 60;
                         item.authorized_until = self.now();
+                    };
+                } else if (eql(transition, "future")) {
+                    const timestamp = self.now();
+                    for (self.state.sources.items) |*item| if (eql(item.id, source_id)) {
+                        item.authorized_at = timestamp + 3600;
+                        item.authorized_until = timestamp + 7200;
                     };
                 } else return error.InvalidParams;
                 try self.persist(&.{});
@@ -2966,11 +6727,61 @@ pub const Engine = struct {
         if (definition == null) return error.MethodNotFound;
         if (definition.?.channel != channel and !eql(method, "system.handshake")) return error.WrongChannel;
         if (channel == .adapter and !eql(method, "system.handshake")) _ = try self.authenticate(params);
+        if (eql(method, "custody.reopen")) {
+            if (params != .null and (params != .object or params.object.count() != 0)) return error.InvalidParams;
+            if (self.poisoned) return error.RepairRequired;
+            return control.success(allocator, request.id, .{ .reopened = false, .custody_available = true, .metadata_loaded = true, .account_count = self.state.accounts.items.len, .provider_request_initiated = false, .live_handoff_proven = false });
+        }
+        if (eql(method, "custody.observation")) {
+            if (params != .null and (params != .object or params.object.count() != 0)) return error.InvalidParams;
+            if (self.poisoned or self.vault_locked or self.db == null) return error.CustodyUnavailable;
+            if (self.db.?.poisoned) {
+                self.poisoned = true;
+                return error.CustodyUnavailable;
+            }
+            if (self.stopping or self.staging_mutation) return error.CustodyObservationPending;
+            const observation = self.db.?.custodyObservation(self.revision, self.active_until orelse return error.MissingObservationDeadline) catch |err| {
+                // A poisoned read transaction or known integrity loss cannot
+                // leave the actor admitting later credential work. No restore.
+                if (err == error.RevisionConflict) self.db.?.poisoned = true;
+                if (self.db.?.poisoned) self.poisoned = true;
+                return err;
+            };
+            const commitment = std.fmt.bytesToHex(observation.preservation_commitment, .lower);
+            // Socket ingress verifies the local peer. No JSON flag proves that
+            // transport to a caller; direct actor fixtures are not socket proof.
+            // No installed artifact digest, active-work claim or fence is made.
+            return control.success(allocator, request.id, .{
+                .schema_version = 1,
+                .scope = "exact-committed-custody-observation",
+                .commitment_format = "exact-committed-custody-v1",
+                .channel = if (self.instance_selection == .dev) "development" else "release",
+                .instance = @tagName(self.instance_selection),
+                .protocol_version = control.protocol_version,
+                .custody_available = true,
+                .metadata_loaded = true,
+                .storage_schema = observation.storage_schema,
+                .snapshot_schema = observation.snapshot_schema,
+                .custody_format = observation.custody_format,
+                .recovery_format = observation.recovery_format,
+                .revision = observation.revision,
+                .checkpoint_sequence = observation.checkpoint_sequence,
+                .preservation_commitment = commitment[0..],
+                .required_features = .{ "tombstones-v1", "credential-generations-v1", "replay-authority-v1" },
+                .artifact_digest = @as(?[]const u8, null),
+                .artifact_compatibility_available = false,
+                .active_work = @as(?u64, null),
+                .update_fence = @as(?[]const u8, null),
+                .activation_authorized = false,
+                .provider_request_initiated = false,
+                .live_handoff_proven = false,
+            });
+        }
         if (eql(method, "system.handshake")) return control.success(allocator, request.id, .{
             .protocol_version = control.protocol_version,
             .service = "omuxd",
             .channel = @tagName(channel),
-            .capabilities = .{ .native_launch = true, .credential_free_control = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false },
+            .capabilities = .{ .owned_siwc_enrollment_v1 = builtin.os.tag == .linux or builtin.os.tag == .macos, .native_launch = true, .credential_free_control = true, .custody_reopen = true, .late_codex_attachment = true, .native_hook_required = true, .live_handoff_proven = false, .enrollment_generation_reply = true, .account_scoped_readiness_v2 = true },
             .custody_available = !self.poisoned,
         });
         if (eql(method, "state.snapshot") or eql(method, "events.watch") or eql(method, "accounts.list") or eql(method, "sources.list") or eql(method, "usage.summary")) return self.publicSnapshot(allocator, request.id);
@@ -3046,6 +6857,8 @@ pub const Engine = struct {
                 .protocol_version = control.protocol_version,
                 .revision = self.revision,
                 .custody_available = !self.poisoned,
+                .metadata_loaded = true,
+                .account_count = self.state.accounts.items.len,
                 .status = if (self.poisoned) "repair_required" else "ready",
                 .metrics_available = !metric_failure,
                 .live_handoff_proven = false,
@@ -3068,23 +6881,40 @@ pub const Engine = struct {
                 },
             });
         }
-        if (eql(method, "reliability.lifecycle")) return control.success(allocator, request.id, .{
-            .source_disconnect_timing = try lifecycle_source.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
-            .native_removal_timing = try native_removal_timing.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
-            .setup_verification = try setup_verification.summarize(allocator, self.mutations.snapshot(), self.now()),
-            .terminal_adapter_setup = try terminal_adapter_setup.summarize(allocator, self.mutations.snapshot()),
-            .terminal_removal = try terminal_removal.summarize(allocator, self.mutations.snapshot()),
-            .schema_version = 1,
-            .measurements = self.lifecycle_measurements,
-            .scope = "terminal_source_removal_native_import_and_authorized_browser_refusal",
-            .coverage = if (self.lifecycle_measurements == null) "unmeasured" else "partial",
-            .latency = "partial_native_import_admission_to_terminal",
-            .import_latency_scope = "admission_to_terminal_before_commit_process_local",
-            .browser_refusal_timing = "unknown",
-            .browser_refusal_coverage = if (self.browser_attempts == null or self.lifecycle_measurements == null) "recorder_unavailable" else if (self.browser_attempts.?.count == browser_attempt.max_records) "authority_capacity_exhausted" else "partial_authorized_context_ingress",
-            .browser_refusal_authority = .{ .capacity = browser_attempt.max_records, .retained = if (self.browser_attempts) |ledger| ledger.count else 0, .retirement_supported = false },
-            .achieved_slo = false,
-        });
+        if (eql(method, "reliability.lifecycle")) {
+            // A failed final store commit can leave prepared facts in memory.
+            // Raw diagnostics remain visible; no durable outcome projection is
+            // authorized until the committed custody state is trustworthy.
+            const phase_export: reliability.LifecyclePhaseExport = if (self.poisoned)
+                .{ .phases = null, .unavailable_reason = .custody_unavailable }
+            else
+                reliability.lifecycleExport(self.lifecycle_measurements, self.now());
+            return control.success(allocator, request.id, .{
+                .source_disconnect_timing = try lifecycle_source.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
+                .owned_pair_renewal = try siwc_pair.summarizeRenewals(self.owned_siwc_pairs.snapshot(), !self.poisoned and !self.vault_locked and self.db != null),
+                .owned_pair_renewal_attempts = try self.ownedRenewalAccountingSummary(),
+                .native_removal_timing = try native_removal_timing.summarize(allocator, self.mutations.snapshot(), self.revision, !self.poisoned),
+                .setup_verification = try setup_verification.summarize(allocator, self.mutations.snapshot(), self.now()),
+                .terminal_adapter_setup = try terminal_adapter_setup.summarize(allocator, self.mutations.snapshot()),
+                .terminal_removal = try terminal_removal.summarize(allocator, self.mutations.snapshot()),
+                .schema_version = 1,
+                .measurements = self.lifecycle_measurements,
+                .phase_outcomes = phase_export.phases,
+                .phase_outcomes_unavailable_reason = phase_export.unavailable_reason,
+                .source_detachment_local_latency_scope = "daemon_request_to_terminal_before_snapshot_commit",
+                .user_end_to_end_elapsed_measured = false,
+                .supported_demand_readiness_coverage_measured = false,
+                .unobserved_success_phases = .{ "install_and_activate", "adopted_renewal", "ordinary_native_launch_resume", "owned_update_activation" },
+                .scope = "terminal_source_removal_native_import_and_authorized_browser_refusal",
+                .coverage = if (self.lifecycle_measurements == null) "unmeasured" else "partial",
+                .latency = "partial_native_import_admission_to_terminal",
+                .import_latency_scope = "admission_to_terminal_before_commit_process_local",
+                .browser_refusal_timing = "unknown",
+                .browser_refusal_coverage = if (self.browser_attempts == null or self.lifecycle_measurements == null) "recorder_unavailable" else if (self.browser_attempts.?.count == browser_attempt.max_records) "authority_capacity_exhausted" else "partial_authorized_context_ingress",
+                .browser_refusal_authority = .{ .capacity = browser_attempt.max_records, .retained = if (self.browser_attempts) |ledger| ledger.count else 0, .retirement_supported = false },
+                .achieved_slo = false,
+            });
+        }
         if (eql(method, "reliability.export")) {
             self.metrics_mutex.lockUncancelable(self.io);
             defer self.metrics_mutex.unlock(self.io);
@@ -3107,6 +6937,9 @@ pub const Engine = struct {
             return control.success(allocator, request.id, self.policy);
         }
         if (eql(method, "source.connect")) {
+            // Selected native contexts require the supervised authenticated
+            // descriptor path. Never reinterpret them as daemon-default auth.
+            if (control.get(params, "selected_native_context") != null) return error.NativeSourceSupervisionRequired;
             const kind_name = try control.string(params, "kind");
             const kind = std.meta.stringToEnum(domain.SourceKind, kind_name) orelse return error.InvalidParams;
             const provider = try control.string(params, "provider");
@@ -3133,13 +6966,24 @@ pub const Engine = struct {
             defer changes.deinit(allocator);
             for (self.state.grants.items) |grant| if (eql(grant.source_id, id)) try changes.append(allocator, .{ .delete = .{ .account_id = grant.account_id, .grant_id = grant.id } });
             try self.disconnectImportSource(id);
+            try self.retireOwnedRenewalAccounting(id, null, .source_disconnected);
+            self.owned_siwc_pairs.retireFor(self.allocator, id, null);
+            self.cancelOwnedRenewals(id, null);
             try self.persist(changes.items);
             return control.success(allocator, request.id, .{ .disconnected = true });
         }
         if (eql(method, "source.reconcile") or eql(method, "enrollment.start")) {
             const source_id = try control.string(params, "source_id");
-            const operation = try self.reconcileSource(source_id);
-            return control.success(allocator, request.id, .{ .operation_id = operation, .status = if (operation != null) "verifying_identity" else "reconciled" });
+            // Parse before reconciliation can perform external I/O. Generation
+            // is the admitted persisted job, never inferred from a later snapshot.
+            const include_generation = try control.boolean(params, "include_operation_generation", false);
+            // Only a newly admitted explicit enrollment may fence stranded
+            // import ownership. Mutation replay returns before this dispatch.
+            const operation = if (eql(method, "enrollment.start"))
+                try self.reconcileSourceAuthorization(source_id, builtin.is_test and self.fixture_hold_enrollment_start, true)
+            else
+                try self.reconcileSource(source_id);
+            return self.sourceReconcileReply(allocator, request.id, operation, include_generation);
         }
         if (eql(method, "repair.start")) {
             const account_id = try control.string(params, "account_id");
@@ -3221,13 +7065,22 @@ pub const Engine = struct {
             try self.persist(&.{});
             return control.success(allocator, request.id, .{ .cancelled = true });
         }
+        if (eql(method, "oauth.enrollment.prepare.v1") or eql(method, "oauth.enrollment.prepare.siwc.v1") or eql(method, "oauth.enrollment.retire.v1") or eql(method, "oauth.enrollment.withdraw.v1")) return self.freshOAuthIntent(allocator, request);
         if (std.mem.startsWith(u8, method, "account.")) {
             const id = try control.string(params, "account_id");
             if (eql(method, "account.pause")) try self.state.pause(id, true) else if (eql(method, "account.resume")) try self.state.pause(id, false) else if (eql(method, "account.drain")) try self.state.drain(id) else if (eql(method, "account.forget")) {
                 if (self.import_forget_epoch == std.math.maxInt(u64)) return error.GenerationConflict;
                 try self.state.forget(id);
+                try self.retireOwnedRenewalAccounting(null, id, .account_forgotten);
+                self.owned_siwc_pairs.retireFor(self.allocator, null, id);
+                self.cancelOwnedRenewals(null, id);
                 try self.retireObservationCredits(null, id, null);
                 self.import_forget_epoch += 1;
+                // Identity is not known yet: every pending fresh transaction
+                // must lose its old global forget fence, without touching
+                // independently valid enrolled sources/grants.
+                if (self.fresh_oauth) |*enrollments| enrollments.invalidateForForget(self.allocator);
+                self.cancelFreshOAuth(null);
                 try self.persist(&.{.{ .tombstone_account = id }});
                 return control.success(allocator, request.id, .{ .forgotten = true });
             } else return error.MethodNotFound;
@@ -3237,6 +7090,8 @@ pub const Engine = struct {
         if (std.mem.startsWith(u8, method, "integrations.")) return self.publicIntegration(allocator, request.id, method, params);
         if (eql(method, "credential.import")) return self.startImport(allocator, request.id, params);
         if (eql(method, "adapter.acquire")) return self.acquire(allocator, request.id, params);
+        if (eql(method, "adapter.siwcReject")) return self.siwcReject(allocator, request.id, params);
+        if (eql(method, "adapter.siwcAcquireReplacement")) return self.siwcAcquireReplacement(allocator, request.id, params);
         if (eql(method, "adapter.materialize")) return self.materialize(allocator, request.id, params);
         if (eql(method, "adapter.report")) return self.report(allocator, request.id, params);
         if (eql(method, "adapter.metadata")) return self.adapterMetadata(allocator, request.id, params);
@@ -3261,16 +7116,17 @@ pub const Engine = struct {
     }
 
     fn publicSnapshot(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value) ![]u8 {
-        const AccountView = struct { id: []const u8, label: []const u8, account_type: []const u8, lifecycle: domain.AccountLifecycle, identity: struct { provider: []const u8 }, source_ids: []const []const u8 };
-        const accounts = try allocator.alloc(AccountView, self.state.accounts.items.len);
+        const accounts = try allocator.alloc(PublicAccountView, self.state.accounts.items.len);
         defer allocator.free(accounts);
-        for (self.state.accounts.items, accounts) |account, *view| view.* = .{
-            .id = account.id,
-            .label = account.label,
-            .account_type = account.account_type,
-            .lifecycle = account.lifecycle,
-            .identity = .{ .provider = account.identity.provider },
-            .source_ids = account.source_ids,
+        for (self.state.accounts.items, accounts) |account, *view| view.* = publicAccountView(account);
+        const PublicDescription = struct { source_id: []const u8, provider: []const u8, label: []const u8, path: []const u8 };
+        const descriptions = try allocator.alloc(PublicDescription, self.descriptions.items.len);
+        defer allocator.free(descriptions);
+        for (self.descriptions.items, descriptions) |description, *view| view.* = .{
+            .source_id = description.source_id,
+            .provider = description.provider,
+            .label = description.label,
+            .path = description.path,
         };
         const Capacity = struct { provider: []const u8, issuer: []const u8, complete: bool, resource: domain.Resource, window_start: i64, window_end: i64, remaining: f64, limit: ?f64, buckets: usize, unknown_buckets: usize };
         var capacities: std.ArrayList(Capacity) = .empty;
@@ -3293,7 +7149,15 @@ pub const Engine = struct {
             .custody_available = !self.poisoned,
             .accounts = accounts,
             .sources = self.state.sources.items,
-            .source_descriptions = self.descriptions.items,
+            .source_descriptions = descriptions,
+            // A historical read-only observation never grants acquisition,
+            // enrollment, renewal or native accepted-work authority.
+            .native_source_maintenance = if (self.native_source_maintenance_result) |result| @as(?NativeSourceMaintenanceView, .{
+                .source_id = result.source_id[0..],
+                .state = @tagName(result.state),
+                .observed_at = result.observed_at,
+                .reason = if (result.reason) |reason| @as(?[]const u8, @errorName(reason)) else null,
+            }) else null,
             .grants = self.state.grants.items,
             .leases = self.state.leases.items,
             .bindings = self.state.bindings.items,
@@ -3419,10 +7283,140 @@ pub const Engine = struct {
         return try std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = id, .@"error" = .{ .code = "NeedsProviderAdapterProof", .message = "Browser request was not admitted." } }, .{});
     }
 
+    fn browserSourceOperation(self: *const Engine, operation_id: []const u8) [64]u8 {
+        var namespace: [32]u8 = undefined;
+        std.crypto.auth.hmac.sha2.HmacSha256.create(&namespace, "omux.browser-source.operation.v1", &self.root_key);
+        defer std.crypto.secureZero(u8, &namespace);
+        var digest: [32]u8 = undefined;
+        std.crypto.auth.hmac.sha2.HmacSha256.create(&digest, operation_id, &namespace);
+        return std.fmt.bytesToHex(digest, .lower);
+    }
+
+    fn browserSourceIntent(self: *const Engine, allocator: std.mem.Allocator, input: browser.Validated, method: []const u8) ![32]u8 {
+        const canonical = try std.json.Stringify.valueAlloc(allocator, .{
+            .method = method,
+            .source_id = input.source_id,
+            .adapter = @tagName(input.adapter),
+            .origin = input.origin,
+            .browser = input.provenance.browser,
+            .extension_id = input.provenance.extension_id,
+            .channel = @tagName(input.provenance.channel),
+            .operation_id = input.operation_id.?,
+            .expected_revision = input.expected_revision orelse return error.ExpectedRevisionRequired,
+            .expected_generation = if (eql(method, "browser.disconnect")) input.expected_generation else null,
+        }, .{});
+        defer allocator.free(canonical);
+        return browser_attempt.fingerprint(self.root_key, canonical);
+    }
+
+    fn currentBrowserGeneration(self: *const Engine, source_id: []const u8) ?u64 {
+        for (self.import_sources.items) |authority| if (eql(authority.source_id, source_id)) return authority.generation;
+        return null;
+    }
+
+    const BrowserConnectResult = struct {
+        accepted: bool = true,
+        source_id: []const u8,
+        operation_id: []const u8,
+        generation: []const u8,
+        revision: []const u8,
+    };
+
+    fn browserConnectOutcome(self: *Engine, allocator: std.mem.Allocator, input: browser.Validated) ![]u8 {
+        const operation = self.browserSourceOperation(input.operation_id.?);
+        const record = try self.mutations.lookup(&operation);
+        var original: ?std.json.Parsed(BrowserConnectResult) = null;
+        defer if (original) |*parsed| parsed.deinit();
+        if (record) |found| {
+            const fingerprint = try self.browserSourceIntent(allocator, input, "browser.connect");
+            if (!eql(found.method[0..found.method_len], "browser.connect") or found.kind != .local_atomic or
+                found.expected_revision != input.expected_revision.? or !std.crypto.timing_safe.eql([32]u8, found.fingerprint, fingerprint)) return error.OperationIdConflict;
+            if (found.state != .completed) return error.OperationIndeterminate;
+            original = try std.json.parseFromSlice(BrowserConnectResult, allocator, found.result[0..found.result_len], .{});
+            if (!original.?.value.accepted or !eql(original.?.value.source_id, input.source_id) or !eql(original.?.value.operation_id, input.operation_id.?)) return error.InvalidMutationResult;
+        }
+        const generation = self.currentBrowserGeneration(input.source_id);
+        const current_generation = if (generation) |value| try std.fmt.allocPrint(allocator, "{d}", .{value}) else null;
+        defer if (current_generation) |value| allocator.free(value);
+        const revision = try std.fmt.allocPrint(allocator, "{d}", .{self.revision});
+        defer allocator.free(revision);
+        var source_status: []const u8 = "absent";
+        var authorized = false;
+        const timestamp = self.now();
+        for (self.state.sources.items) |source| if (eql(source.id, input.source_id)) {
+            source_status = @tagName(source.status);
+            authorized = source.status == .connected and source.authorized_at <= timestamp and
+                (source.authorized_until == null or source.authorized_until.? > timestamp);
+            break;
+        };
+        return std.json.Stringify.valueAlloc(allocator, .{
+            .version = 1,
+            .id = input.id,
+            .result = .{
+                .outcome = if (original != null) "committed" else "unknown",
+                .source_id = input.source_id,
+                .operation_id = input.operation_id.?,
+                .connect_generation = if (original) |parsed| parsed.value.generation else null,
+                .connect_revision = if (original) |parsed| parsed.value.revision else null,
+                .current_generation = current_generation,
+                .current_revision = revision,
+                .source_status = source_status,
+                .authorized = authorized,
+            },
+        }, .{});
+    }
+
+    fn commitBrowserSourceChange(self: *Engine, allocator: std.mem.Allocator, input: browser.Validated, context_label: []const u8) ![]u8 {
+        const operation = self.browserSourceOperation(input.operation_id.?);
+        const method: []const u8 = if (input.method == .connect) "browser.connect" else "browser.disconnect";
+        const fingerprint = try self.browserSourceIntent(allocator, input, method);
+        const slot = switch (try self.mutations.begin(&operation, method, fingerprint, input.expected_revision, self.revision, .local_atomic)) {
+            .replay => |cached| {
+                const parsed = try std.json.parseFromSlice(BrowserConnectResult, allocator, cached, .{});
+                defer parsed.deinit();
+                // Return the immutable original outcome, never renew authority.
+                return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = input.id, .result = parsed.value }, .{});
+            },
+            .indeterminate => return error.OperationIndeterminate,
+            .execute => |index| index,
+        };
+        _ = try self.snapshotUsage();
+        var changes: std.ArrayList(storage.GrantChange) = .empty;
+        defer changes.deinit(allocator);
+        if (input.method == .connect) {
+            _ = try self.connectImportSource(.{ .id = input.source_id, .kind = .browser, .provider = @tagName(input.adapter), .label = context_label, .authorized_at = self.now() });
+        } else {
+            var exists = false;
+            for (self.state.sources.items) |source| if (eql(source.id, input.source_id)) {
+                exists = true;
+            };
+            if (!exists) return error.NotFound;
+            const generation = self.currentBrowserGeneration(input.source_id) orelse return error.GenerationConflict;
+            if (generation != input.expected_generation.?) return error.GenerationConflict;
+            for (self.state.grants.items) |grant| if (eql(grant.source_id, input.source_id)) try changes.append(allocator, .{ .delete = .{ .account_id = grant.account_id, .grant_id = grant.id } });
+            try self.disconnectImportSource(input.source_id);
+        }
+        const generation = try self.importSourceGeneration(input.source_id);
+        const generation_text = try std.fmt.allocPrint(allocator, "{d}", .{generation});
+        defer allocator.free(generation_text);
+        const revision_text = try std.fmt.allocPrint(allocator, "{d}", .{try std.math.add(u64, self.revision, 1)});
+        defer allocator.free(revision_text);
+        const result: BrowserConnectResult = .{ .source_id = input.source_id, .operation_id = input.operation_id.?, .generation = generation_text, .revision = revision_text };
+        const cached = try std.json.Stringify.valueAlloc(allocator, result, .{});
+        defer allocator.free(cached);
+        try self.mutations.complete(slot, cached);
+        const reply = try std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = input.id, .result = result }, .{});
+        errdefer allocator.free(reply);
+        // Local effect + terminal receipt share the authenticated transaction.
+        // The executeBrowser owner restores committed state on every failure.
+        try self.persist(changes.items);
+        return reply;
+    }
+
     fn handleBrowser(self: *Engine, allocator: std.mem.Allocator, input: browser.Validated) ![]u8 {
         const expected: browser.Channel = if (self.instance_selection == .dev) .development else .release;
         if (input.provenance.channel != expected) return error.BrowserChannelMismatch;
-        if (input.method == .health) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = input.id, .result = .{ .status = if (self.poisoned) "repair_required" else "ready", .custody_available = !self.poisoned, .provider_access = false, .protocolVersion = 1, .channel = if (self.instance_selection == .dev) "development" else "release", .capabilities = .{ .source_connection = true, .production_export = false } } }, .{});
+        if (input.method == .health) return std.json.Stringify.valueAlloc(allocator, .{ .version = 1, .id = input.id, .result = .{ .status = if (self.poisoned) "repair_required" else "ready", .custody_available = !self.poisoned, .provider_access = false, .protocolVersion = 1, .channel = if (self.instance_selection == .dev) "development" else "release", .capabilities = .{ .source_connection = true, .production_export = false, .connect_recovery = true } } }, .{});
         var provenance_hash = std.crypto.hash.sha2.Sha256.init(.{});
         for ([_][]const u8{ input.provenance.browser, input.provenance.extension_id, input.source_id }) |part| {
             provenance_hash.update(part);
@@ -3437,9 +7431,12 @@ pub const Engine = struct {
             if (source.kind != .browser or !eql(source.provider, @tagName(input.adapter)) or !eql(source.label, context_label)) return error.BrowserContextMismatch;
             source_exists = true;
         };
+        if (input.method == .connect_outcome) return self.browserConnectOutcome(allocator, input);
+        if (input.operation_id != null and (input.method == .connect or input.method == .disconnect)) return self.commitBrowserSourceChange(allocator, input, context_label);
         if (input.method != .connect and !source_exists) return error.NotFound;
         switch (input.method) {
             .health => unreachable,
+            .connect_outcome => unreachable,
             .connect => {
                 _ = try self.connectImportSource(.{ .id = input.source_id, .kind = .browser, .provider = @tagName(input.adapter), .label = context_label, .authorized_at = self.now() });
                 // Bind future diagnostic ingress IDs to this explicit source
@@ -3448,6 +7445,10 @@ pub const Engine = struct {
                 try self.persist(&.{});
             },
             .disconnect => {
+                if (input.expected_generation) |expected_generation| {
+                    const current_generation = self.currentBrowserGeneration(input.source_id) orelse return error.GenerationConflict;
+                    if (current_generation != expected_generation) return error.GenerationConflict;
+                }
                 var changes: std.ArrayList(storage.GrantChange) = .empty;
                 defer changes.deinit(allocator);
                 for (self.state.grants.items) |grant| if (eql(grant.source_id, input.source_id)) try changes.append(allocator, .{ .delete = .{ .account_id = grant.account_id, .grant_id = grant.id } });
@@ -3462,8 +7463,13 @@ pub const Engine = struct {
                 }
             },
             .reconcile => {
+                const timestamp = self.now();
                 var found = false;
                 for (self.state.sources.items) |source| if (eql(source.id, input.source_id)) {
+                    // Reconciliation observes current acquisition authority; it
+                    // cannot reconnect or extend a previous source authorization.
+                    if (source.status != .connected or source.authorized_at > timestamp or
+                        (source.authorized_until != null and source.authorized_until.? <= timestamp)) return error.SourceUnauthorized;
                     found = true;
                     break;
                 };
@@ -3493,12 +7499,15 @@ pub const Engine = struct {
     }
 
     fn failImportJobCause(self: *Engine, pending: PendingImport, cause: reliability.Cause) !void {
+        var retired = false;
         for (self.state.jobs.items) |*job| if (eql(job.id, pending.job_id) and job.operation_generation == pending.job_generation and job.status == .running) {
             const previous = job.*;
             job.status = .failed;
             try self.recordImportTerminal(pending, previous, job.*, cause);
+            retired = true;
         };
         if (self.admission.lookup(pending.credit_key) != null) try self.releaseOutcome(pending.credit_key);
+        if (retired) self.retireNativeContextRotation(pending);
     }
 
     fn recordImportTerminal(self: *Engine, pending: PendingImport, previous: domain.Job, next: domain.Job, cause: reliability.Cause) !void {
@@ -3593,10 +7602,10 @@ pub const Engine = struct {
     }
 
     fn queueImport(self: *Engine, source_id: []const u8, provider: []const u8, token: []const u8, label: []const u8, expires_at: ?i64, custody_expires_at: ?i64, provider_account_id: ?[]const u8, credential_kind: domain.CredentialKind, allow_reenrollment: bool) ![]const u8 {
-        return self.queueImportMode(source_id, provider, token, label, expires_at, custody_expires_at, provider_account_id, credential_kind, allow_reenrollment, false, false);
+        return self.queueImportMode(source_id, provider, token, label, expires_at, custody_expires_at, provider_account_id, credential_kind, allow_reenrollment, false, false, null);
     }
 
-    fn queueImportMode(self: *Engine, source_id: []const u8, provider: []const u8, token: []const u8, label: []const u8, expires_at: ?i64, custody_expires_at: ?i64, provider_account_id: ?[]const u8, credential_kind: domain.CredentialKind, allow_reenrollment: bool, fixture_hold: bool, explicit_authorization: bool) ![]const u8 {
+    fn queueImportMode(self: *Engine, source_id: []const u8, provider: []const u8, token: []const u8, label: []const u8, expires_at: ?i64, custody_expires_at: ?i64, provider_account_id: ?[]const u8, credential_kind: domain.CredentialKind, allow_reenrollment: bool, fixture_hold: bool, explicit_authorization: bool, native: ?NativeImportOwnership) ![]const u8 {
         if (fixture_hold and !builtin.is_test) return error.TestOnly;
         if (!eql(provider, "github") and !eql(provider, "codex")) return error.NeedsProviderAdapterProof;
         if (credential_kind != .oauth_access and credential_kind != .api_key) return error.UnsupportedCredentialKind;
@@ -3611,10 +7620,23 @@ pub const Engine = struct {
         };
         if (!authorized) return error.SourceUnauthorized;
         const source_generation = try self.importSourceGeneration(source_id);
-        for (self.pending_imports.items) |pending| if (eql(pending.source_id, source_id) and pending.source_generation == source_generation and self.importJobRunning(pending) and (!allow_reenrollment or pending.allow_reenrollment) and (!pending.allow_reenrollment or pending.forget_epoch == self.import_forget_epoch)) return pending.job_id;
+        for (self.pending_imports.items) |pending| if (eql(pending.source_id, source_id) and pending.source_generation == source_generation and self.importJobRunning(pending) and (!allow_reenrollment or pending.allow_reenrollment) and (!pending.allow_reenrollment or pending.forget_epoch == self.import_forget_epoch)) {
+            if (native != null or pending.native_admission != null) return error.NativeSourceOperationPending;
+            return pending.job_id;
+        };
         const random_id = try self.identifier();
         var pending: PendingImport = .{ .network_id = 0, .source_id = try self.allocator.dupe(u8, source_id), .provider = undefined, .credential_kind = credential_kind, .allow_reenrollment = allow_reenrollment, .source_generation = source_generation, .forget_epoch = self.import_forget_epoch, .job_id = undefined, .credit_key = undefined, .token = undefined, .label = undefined, .expires_at = expires_at, .custody_expires_at = custody_expires_at };
         errdefer self.allocator.free(pending.source_id);
+        if (native) |scope| {
+            if (scope.admission.source_generation != source_generation or scope.admission.forget_epoch != self.import_forget_epoch) return error.NativeSourceSuperseded;
+            const expected_id = std.fmt.bytesToHex(scope.admission.source_id, .lower);
+            if (!eql(source_id, &expected_id)) return error.NativeSourceSuperseded;
+            pending.native_admission = scope.admission;
+            pending.native_started_at = scope.started_at;
+            pending.native_selection_digest = scope.selection_digest;
+            pending.native_operation = scope.operation;
+            pending.native_context = scope.context;
+        }
         pending.provider = try self.allocator.dupe(u8, provider);
         errdefer self.allocator.free(pending.provider);
         pending.job_id = try std.fmt.allocPrint(self.allocator, "reconcile-{s}", .{source_id});
@@ -3663,6 +7685,11 @@ pub const Engine = struct {
         pending.measurement_started_at = std.Io.Clock.awake.now(self.io);
         // Persist admission intent before issuing an authenticated read.
         try self.persist(&.{});
+        if (native) |scope| self.nativeImportCheck(pending, scope.fresh) catch |err| {
+            try self.failImportJobCause(pending, diagnosticCause(err));
+            try self.persist(&.{});
+            return err;
+        };
         pending.network_id = if (fixture_hold) 0 else self.submitIdentity(provider, source_id, &random_id, token, provider_account_id) catch |err| {
             try self.failImportJobCause(pending, diagnosticCause(err));
             try self.persist(&.{});
@@ -3685,6 +7712,7 @@ pub const Engine = struct {
     }
 
     fn startImportMode(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value, fixture_hold: bool) ![]u8 {
+        const include_generation = try control.boolean(params, "include_operation_generation", false);
         if (!eql(try control.string(params, "application"), "enrollment")) return error.WrongPurpose;
         const provider = try control.string(params, "provider");
         const kind = if (try control.optionalString(params, "credential_kind")) |name| std.meta.stringToEnum(domain.CredentialKind, name) orelse return error.UnsupportedCredentialKind else if (eql(provider, "github")) domain.CredentialKind.api_key else domain.CredentialKind.oauth_access;
@@ -3700,8 +7728,29 @@ pub const Engine = struct {
             .integer => value.integer,
             else => return error.InvalidParams,
         } else null;
-        const operation = try self.queueImportMode(try control.string(params, "source_id"), provider, try control.string(params, "access_token"), (try control.optionalString(params, "label")) orelse "", expiry, self.now() + seconds, try control.optionalString(params, "provider_account_id"), kind, try control.boolean(params, "allow_reenrollment", false), fixture_hold, true);
+        const operation = try self.queueImportMode(try control.string(params, "source_id"), provider, try control.string(params, "access_token"), (try control.optionalString(params, "label")) orelse "", expiry, self.now() + seconds, try control.optionalString(params, "provider_account_id"), kind, try control.boolean(params, "allow_reenrollment", false), fixture_hold, true, null);
+        if (include_generation) {
+            // queueImportMode persisted this exact generation before returning.
+            // Do not make the client infer generation from a later snapshot.
+            for (self.state.jobs.items) |job| if (eql(job.id, operation) and job.kind == .enrollment) {
+                return control.success(allocator, id, .{ .operation_id = operation, .status = "verifying_identity", .operation_generation = job.operation_generation, .admitted_revision = self.revision });
+            };
+            return error.NotFound;
+        }
         return control.success(allocator, id, .{ .operation_id = operation, .status = "verifying_identity" });
+    }
+
+    fn sourceReconcileReply(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, operation: ?[]const u8, include_generation: bool) ![]u8 {
+        if (include_generation) {
+            if (operation) |job_id| {
+                for (self.state.jobs.items) |job| if (eql(job.id, job_id) and job.kind == .enrollment and job.operation_generation > 0) {
+                    return control.success(allocator, id, .{ .operation_id = job.id, .status = "verifying_identity", .operation_generation = job.operation_generation, .admitted_revision = self.revision });
+                };
+                return error.NotFound;
+            }
+            return control.success(allocator, id, .{ .operation_id = operation, .status = "reconciled", .operation_generation = @as(?u64, null), .admitted_revision = self.revision });
+        }
+        return control.success(allocator, id, .{ .operation_id = operation, .status = if (operation != null) "verifying_identity" else "reconciled" });
     }
 
     fn reconcileSource(self: *Engine, source_id: []const u8) !?[]const u8 {
@@ -3709,6 +7758,10 @@ pub const Engine = struct {
     }
 
     fn reconcileSourceMode(self: *Engine, source_id: []const u8, fixture_hold: bool) !?[]const u8 {
+        return self.reconcileSourceAuthorization(source_id, fixture_hold, false);
+    }
+
+    fn reconcileSourceAuthorization(self: *Engine, source_id: []const u8, fixture_hold: bool, explicit_authorization: bool) !?[]const u8 {
         if (fixture_hold and !builtin.is_test) return error.TestOnly;
         var source_value: ?domain.Source = null;
         for (self.state.sources.items) |source| if (eql(source.id, source_id)) {
@@ -3722,6 +7775,7 @@ pub const Engine = struct {
             break;
         };
         const description = description_value orelse return error.SourcePathRequired;
+        if (description.native_authority != null) return error.NativeSourceSupervisionRequired;
         if (description.path.len == 0) return error.SourcePathRequired;
         const provider = std.meta.stringToEnum(discovery.Provider, description.provider) orelse return error.NeedsProviderAdapterProof;
         var result = try discovery.reconcile(self.io, self.allocator, .{ .source = source, .provider = provider, .path = description.path }, self.now());
@@ -3742,7 +7796,9 @@ pub const Engine = struct {
                     source = try self.connectImportSource(restored);
                     try self.persist(&.{});
                 }
-                for (self.state.grants.items) |grant| if (eql(grant.source_id, source_id) and grant.status == .ready) {
+                // Polling may reuse identical usable custody. A fresh explicit
+                // enrollment needs an admitted identity-verification generation.
+                if (!explicit_authorization) for (self.state.grants.items) |grant| if (eql(grant.source_id, source_id) and grant.status == .ready) {
                     var secret = self.db.?.loadGrant(.{ .key_id = self.root_id.?, .account_id = grant.account_id, .grant_id = grant.id, .generation = grant.generation, .purpose = "request", .scope = grant.audience }) catch continue;
                     defer secret.deinit();
                     const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, secret.bytes, .{ .allocate = .alloc_always });
@@ -3757,13 +7813,382 @@ pub const Engine = struct {
                     const same_custody_ceiling = if (grant.custody_expires_at) |retained| retained <= candidate.custody_expires_at else false;
                     if (eql(previous, candidate.access_token) and same_hint and grant.credential_kind == candidate.credential_kind and same_provider_expiry and same_custody_ceiling and (grant.custody_expires_at == null or grant.custody_expires_at.? > self.now() + 300)) return null;
                 };
-                return try self.queueImportMode(source_id, @tagName(candidate.provider), candidate.access_token, source.label, candidate.expires_at_limit, candidate.custody_expires_at, candidate.provider_account_id, candidate.credential_kind, false, fixture_hold, false);
+                return try self.queueImportMode(source_id, @tagName(candidate.provider), candidate.access_token, source.label, candidate.expires_at_limit, candidate.custody_expires_at, candidate.provider_account_id, candidate.credential_kind, false, fixture_hold, explicit_authorization, null);
             },
         }
     }
 
+    fn nativeSourceMaintenanceMatches(self: *Engine, source_id: []const u8, scope: NativeSourceAuthority, generation: u64) bool {
+        if (source_id.len != 64 or generation == 0 or generation != scope.consent.source_generation or
+            !eql(source_id, &std.fmt.bytesToHex(scope.consent.source_id, .lower))) return false;
+        var found_source = false;
+        for (self.state.sources.items) |source| if (eql(source.id, source_id)) {
+            if (found_source or source.kind != .native_store or !eql(source.provider, "codex") or source.status != .connected) return false;
+            found_source = true;
+        };
+        var found_generation = false;
+        for (self.import_sources.items) |authority| if (eql(authority.source_id, source_id)) {
+            if (found_generation or authority.generation != generation) return false;
+            found_generation = true;
+        };
+        var found_description = false;
+        for (self.descriptions.items) |description| if (eql(description.source_id, source_id)) {
+            if (found_description or description.path.len != 0 or !eql(description.provider, "codex") or
+                !std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, scope))) return false;
+            found_description = true;
+        };
+        return found_source and found_generation and found_description;
+    }
+
+    fn detachMaintainedNativeSource(self: *Engine, source_id: []const u8, scope: NativeSourceAuthority, generation: u64, reason: anyerror) !void {
+        if (!self.nativeSourceMaintenanceMatches(source_id, scope, generation)) return;
+        var id: [64]u8 = undefined;
+        @memcpy(&id, source_id);
+        // Detach ends this exact acquisition context, retaining independent
+        // grants/history. Never disconnect, forget, reconnect or extend consent.
+        try self.detachImportSource(source_id);
+        self.persist(&.{}) catch |err| {
+            try self.restoreCommitted();
+            return err;
+        };
+        self.native_source_maintenance_result = .{ .source_id = id, .state = .detached, .observed_at = self.now(), .reason = reason };
+    }
+
+    fn pollNativeSources(self: *Engine) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null or self.native_workers == null) return;
+        if (builtin.is_test and !self.fixture_native_maintenance_enabled) return;
+        // Cheap expiry checks are independent of route warming and native IO.
+        // Visit at most one changed record per actor tick, avoiding borrowed
+        // metadata across a persist/restore that replaces its owned strings.
+        for (self.descriptions.items) |description| {
+            const scope = description.native_authority orelse continue;
+            var expired = scope.consent.expires_at <= self.now();
+            for (self.state.sources.items) |source| if (eql(source.id, description.source_id)) {
+                expired = expired or (source.authorized_until != null and source.authorized_until.? <= self.now());
+            };
+            if (expired and self.nativeSourceMaintenanceMatches(description.source_id, scope, scope.consent.source_generation)) {
+                try self.detachMaintainedNativeSource(description.source_id, scope, scope.consent.source_generation, error.NativeSourceUnauthorized);
+                return;
+            }
+        }
+        if (self.native_source_maintenance != null or self.native_source_rotation != null) return;
+        if (self.native_source_maintenance_due) |due| if (due.durationFromNow(self.io).raw.toMilliseconds() > 0) return;
+        self.native_source_maintenance_due = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(1000) });
+        const count = self.descriptions.items.len;
+        if (count == 0) return;
+        const offset = self.native_source_maintenance_cursor % count;
+        for (0..count) |step| {
+            const index = (offset + step) % count;
+            const description = self.descriptions.items[index];
+            self.native_source_maintenance_cursor = (index + 1) % count;
+            const scope = description.native_authority orelse continue;
+            // An unresolved durable copy cannot be replayed or replaced by an
+            // automatic poll, including after loss of its process-local owner.
+            if (scope.rotation != null) {
+                var unresolved_id: [64]u8 = undefined;
+                if (description.source_id.len != unresolved_id.len) return error.InvalidNativeSourceAuthority;
+                @memcpy(&unresolved_id, description.source_id);
+                self.native_source_maintenance_result = .{ .source_id = unresolved_id, .state = .unverified, .observed_at = self.now(), .reason = error.NativeSourceOperationIndeterminateReconnectRequired };
+                continue;
+            }
+            if (!self.nativeSourceMaintenanceMatches(description.source_id, scope, scope.consent.source_generation)) continue;
+            var source_allowed = false;
+            for (self.state.sources.items) |source| if (eql(source.id, description.source_id)) {
+                source_allowed = source.authorized_at <= self.now() and (source.authorized_until == null or source.authorized_until.? > self.now());
+            };
+            var id: [64]u8 = undefined;
+            @memcpy(&id, description.source_id);
+            if (!source_allowed or scope.consent.forget_epoch != self.import_forget_epoch or scope.context == null or description.native_endpoint.len == 0 or builtin.os.tag != .linux) {
+                self.native_source_maintenance_result = .{ .source_id = id, .state = .unverified, .observed_at = self.now(), .reason = error.NativeSourceFreshCheckRequired };
+                return;
+            }
+            scope.consent.validate() catch |err| {
+                self.native_source_maintenance_result = .{ .source_id = id, .state = .unverified, .observed_at = self.now(), .reason = err };
+                return;
+            };
+            scope.context.?.validate() catch |err| {
+                self.native_source_maintenance_result = .{ .source_id = id, .state = .unverified, .observed_at = self.now(), .reason = err };
+                return;
+            };
+            const arena = try self.allocator.create(std.heap.ArenaAllocator);
+            errdefer self.allocator.destroy(arena);
+            arena.* = .init(self.allocator);
+            errdefer arena.deinit();
+            const a = arena.allocator();
+            const endpoint = try a.dupe(u8, description.native_endpoint);
+            const until: std.Io.Clock.Timestamp = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+            const selected = self.qualified_native_runtime;
+            var options: ?setup.Options = null;
+            defer if (options) |*captured| {
+                std.crypto.secureZero(u8, &captured.key);
+                std.crypto.secureZero(u8, &captured.capability);
+            };
+            var runtime_root: ?[]const u8 = null;
+            var runtime_record: ?QualifiedNativeRuntime = null;
+            if (selected) |retained| if (self.native_deployment_selection) |deployment| {
+                if (retained.adapter_epoch == self.adapter_epochs[0] and retained.registry != null and std.meta.eql(retained.registry, self.native_registry) and self.integrationInstalled("codex") and self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) == null) {
+                    var captured = self.setupOptions(a, .codex, .null) catch |err| {
+                        if (err == error.OutOfMemory) return err;
+                        self.native_source_maintenance_result = .{ .source_id = id, .state = .unverified, .observed_at = self.now(), .reason = err };
+                        arena.deinit();
+                        self.allocator.destroy(arena);
+                        return;
+                    };
+                    defer {
+                        std.crypto.secureZero(u8, &captured.key);
+                        std.crypto.secureZero(u8, &captured.capability);
+                    }
+                    captured.home = try a.dupe(u8, captured.home);
+                    captured.codex_home = if (captured.codex_home) |value| try a.dupe(u8, value) else null;
+                    captured.config_path = if (captured.config_path) |value| try a.dupe(u8, value) else null;
+                    captured.xdg_config_home = if (captured.xdg_config_home) |value| try a.dupe(u8, value) else null;
+                    captured.deadline = until;
+                    options = captured;
+                    runtime_root = try a.dupe(u8, deployment.installation_root);
+                    var copied = retained;
+                    copied.evidence = try a.dupe(u8, retained.evidence);
+                    runtime_record = copied;
+                }
+            };
+            const task = try self.allocator.create(NativeSourceMaintenanceTask);
+            errdefer self.allocator.destroy(task);
+            task.* = .{ .engine = self, .arena = arena, .source_id = id, .authority = scope, .generation = scope.consent.source_generation, .forget_epoch = self.import_forget_epoch, .epoch = self.adapter_epochs[0], .registry = self.native_registry, .selected = runtime_record, .runtime_root = runtime_root, .options = options, .endpoint = endpoint, .until = until, .operation = try self.identifier(), .job = .{ .lane = .continuation, .context = task, .run = NativeSourceMaintenanceTask.run } };
+            errdefer if (task.options) |*captured| {
+                std.crypto.secureZero(u8, &captured.key);
+                std.crypto.secureZero(u8, &captured.capability);
+            };
+            self.native_workers.?.enqueue(&task.job) catch |err| {
+                // Existing native work owns priority. Retain round-robin progress
+                // and try another bounded pass; never block the actor on IO.
+                if (err == error.NativeWorkCapacity) {
+                    task.deinit();
+                    return;
+                }
+                return err;
+            };
+            self.native_source_maintenance = task;
+            return;
+        }
+    }
+
+    fn completeNativeSourceMaintenance(self: *Engine, task: *NativeSourceMaintenanceTask) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return;
+        if (!self.nativeSourceMaintenanceMatches(&task.source_id, task.authority, task.generation)) return;
+        if (task.forget_epoch != self.import_forget_epoch) return;
+        for (self.descriptions.items) |description| if (eql(description.source_id, &task.source_id)) {
+            if (!eql(description.native_endpoint, task.endpoint)) return;
+        };
+        for (self.state.sources.items) |source| if (eql(source.id, &task.source_id)) {
+            if (source.authorized_at > self.now()) return;
+            if (source.authorized_until != null and source.authorized_until.? <= self.now()) return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, error.NativeSourceUnauthorized);
+        };
+        if (task.epoch != self.adapter_epochs[0] or !std.meta.eql(task.registry, self.native_registry)) return;
+        if (task.selected) |retained| {
+            if (!self.integrationInstalled("codex") or self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null) return;
+            const current = self.qualified_native_runtime orelse return;
+            if (!std.crypto.timing_safe.eql([32]u8, current.record_sha256, retained.record_sha256) or current.adapter_epoch != retained.adapter_epoch or
+                !std.meta.eql(current.registry, retained.registry)) return;
+            const options = task.options orelse return;
+            if (!std.crypto.timing_safe.eql(envelope.Key, options.key, self.root_key)) return;
+        }
+        if (task.failure) |failure| if (failure == error.OutOfMemory) return failure;
+        if (task.authority.consent.expires_at <= self.now()) return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, error.NativeSourceUnauthorized);
+        // An IO observation cannot outlive its original monotonic cutoff. The
+        // independent metadata expiry above needs no worker authority.
+        native_source_acquisition.deadline(self.io, task.until) catch |err| {
+            self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .unverified, .observed_at = self.now(), .reason = err };
+            return;
+        };
+        if (task.failure) |failure| {
+            switch (failure) {
+                error.NativeSourceUnavailable, error.NativeSourceContextMismatch, error.NativeSourceOriginChanged, error.NativeOwnerIdentityMismatch => {
+                    if (task.image_verified and task.negative_verified) return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, failure);
+                },
+                error.NativeOwnerPeerMismatch, error.PeerIncarnationChanged, error.PeerDeparted, error.PeerImageMismatch => return self.detachMaintainedNativeSource(&task.source_id, task.authority, task.generation, failure),
+                error.OutOfMemory => return failure,
+                else => {},
+            }
+            self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .unverified, .observed_at = self.now(), .reason = failure };
+            return;
+        }
+        const observed = task.observed_context orelse return error.NativeSourceFreshCheckRequired;
+        if (!observed.same(task.authority.context.?)) {
+            self.startNativeSourceRotation(task, observed) catch |err| {
+                if (err == error.OutOfMemory or self.poisoned) return err;
+                try self.restoreCommitted();
+                self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .unverified, .observed_at = self.now(), .reason = err };
+            };
+            return;
+        }
+        // An unchanged authenticated snapshot never copies a credential or
+        // opens a new durable operation. Account/native work state is untouched.
+        self.native_source_maintenance_result = .{ .source_id = task.source_id, .state = .owner_context_observed, .observed_at = self.now() };
+    }
+
+    fn startNativeSourceRotation(self: *Engine, observation: *NativeSourceMaintenanceTask, candidate: native_source_consent.Context) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null or self.native_workers == null) return error.NativeCustodyUnavailable;
+        if (!observation.image_verified or observation.observed_context == null or !candidate.same(observation.observed_context.?)) return error.NativeImageUnavailable;
+        if (!self.nativeSourceMaintenanceMatches(&observation.source_id, observation.authority, observation.generation) or observation.authority.rotation != null) return error.NativeSourceSuperseded;
+        try checkNativeContextSuccessor(observation.authority.context.?, candidate);
+        if (candidate.same(observation.authority.context.?)) return error.NativeSourceContextChanged;
+        if (self.native_source_rotation != null or self.pending_imports.items.len + self.native_import_tasks.items.len >= 16) return error.ServiceBusy;
+        if (self.native_source_rotation_due) |due| if (due.durationFromNow(self.io).raw.toMilliseconds() > 0) return error.NativeSourcePollTooSoon;
+        if (observation.authority.rotation_attempted_at) |previous| {
+            const elapsed = std.math.sub(i64, self.now(), previous) catch return error.NativeSourcePollTooSoon;
+            if (elapsed < 60) return error.NativeSourcePollTooSoon;
+        }
+        const job_id = try std.fmt.allocPrint(self.allocator, "reconcile-{s}", .{observation.source_id});
+        defer self.allocator.free(job_id);
+        // No automatic replacement of a pending/issued or orphaned owner.
+        for (self.state.jobs.items) |job| if (eql(job.id, job_id) and (job.status == .running or job.status == .pending)) return error.OperationIndeterminate;
+        for (self.pending_imports.items) |pending| if (eql(pending.source_id, &observation.source_id)) return error.NativeSourceOperationPending;
+        for (self.native_import_tasks.items) |task| if (eql(task.pending.source_id, &observation.source_id)) return error.NativeSourceOperationPending;
+        var label: []const u8 = "";
+        var wall_until = observation.authority.consent.expires_at;
+        for (self.state.sources.items) |source| if (eql(source.id, &observation.source_id)) {
+            label = source.label;
+            if (source.authorized_at > self.now()) return error.SourceUnauthorized;
+            if (source.authorized_until) |expiry| wall_until = @min(wall_until, expiry);
+        };
+        // Sample awake entry BEFORE the wall clock used for clipping: the
+        // intervening time is consumed, never added to the source-expiry budget.
+        const entry = std.Io.Clock.Timestamp.now(self.io, .awake);
+        const wall_entry = std.Io.Clock.real.now(self.io);
+        const acquisition_wall = wall_entry.toSeconds();
+        const remaining_wall = try std.math.sub(i64, wall_until, acquisition_wall);
+        const budget_ns = try nativeRotationBudgetNs(wall_until, wall_entry.toNanoseconds());
+        // DISTINCT acquisition admission, not an extension of the completed
+        // two-second observation. The native 13-second fallback is clipped in
+        // integer nanoseconds to source/consent expiry, including fractions.
+        const until = entry.addDuration(.{ .clock = .awake, .raw = .fromNanoseconds(budget_ns) });
+        const started = entry.raw;
+        try native_source_acquisition.deadline(self.io, until);
+        const admission = try native_source_consent.admit(.{ .source_id = observation.authority.consent.source_id, .source_generation = observation.generation, .status = .connected, .consent = observation.authority.consent, .owner = observation.authority.consent.owner, .context = candidate, .store_present = true, .forget_epoch = self.import_forget_epoch }, self.now(), 0, budget_ns);
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
+        errdefer self.allocator.destroy(arena);
+        arena.* = .init(self.allocator);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+        var options = try retainNativeOptions(a, observation.options orelse return error.NativeImageUnavailable);
+        defer {
+            std.crypto.secureZero(u8, &options.key);
+            std.crypto.secureZero(u8, &options.capability);
+        }
+        options.deadline = until;
+        var selected = observation.selected orelse return error.NativeImageUnavailable;
+        selected.evidence = try a.dupe(u8, selected.evidence);
+        const runtime_root = try a.dupe(u8, observation.runtime_root orelse return error.NativeImageUnavailable);
+        const endpoint = try a.dupe(u8, observation.endpoint);
+        const task = try self.allocator.create(NativeSourceRotationTask);
+        errdefer self.allocator.destroy(task);
+        var pending = try emptyNativeRotationImport(self.allocator, &observation.source_id, label);
+        errdefer pending.deinit(self.allocator);
+        pending.source_generation = observation.generation;
+        pending.forget_epoch = observation.forget_epoch;
+        pending.native_admission = admission;
+        pending.native_started_at = started;
+        pending.native_selection_digest = selected.record_sha256;
+        pending.native_operation = try self.identifier();
+        pending.native_expected_endpoint = try self.allocator.dupe(u8, endpoint);
+        // Any preparation failure restores the committed beforeimage. A write
+        // ambiguity poisons service in persistWithFences and is never retried.
+        errdefer self.restoreCommitted() catch {
+            self.poisoned = true;
+        };
+        pending.job_generation = (try self.state.reopenJob(.{ .id = pending.job_id, .kind = .enrollment, .status = .running })).operation_generation;
+        var expected = observation.authority;
+        expected.rotation_attempted_at = acquisition_wall;
+        expected.rotation = .{ .operation = pending.native_operation.?, .context = candidate, .job_generation = pending.job_generation, .admitted_at = acquisition_wall, .expires_at = try std.math.add(i64, acquisition_wall, @min(remaining_wall, 13)) };
+        pending.native_expected_authority = expected;
+        pending.credit_key = creditKey(.import, pending.job_id, pending.job_generation);
+        const plan = try domain.importGrowth("codex", &observation.source_id, label);
+        const rotation_bytes = try snapshot_admission.countJson(expected, native_source_description_budget);
+        try self.reserveOutcome(.{ .key = pending.credit_key, .owner_id = pending.job_id, .secondary_id = &observation.source_id, .source_id = &observation.source_id, .source_generation = pending.source_generation, .provider = "codex", .label = label, .plan_bytes = try std.math.add(usize, plan.bytes, rotation_bytes), .plan_counts = plan.counts() });
+        try self.prepareImportMeasurements();
+        pending.measurement_started_at = started;
+        for (self.descriptions.items) |*description| if (eql(description.source_id, &observation.source_id)) {
+            if (!std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, observation.authority)) or !eql(description.native_endpoint, endpoint)) return error.NativeSourceSuperseded;
+            var bounded = description.*;
+            bounded.native_authority = expected;
+            bounded.label = "";
+            if (try snapshot_admission.countJson(bounded, storage.maximum_snapshot_bytes) > native_source_description_budget) return error.NativeSourceDescriptionTooLarge;
+            description.native_authority = expected;
+        };
+        try native_source_acquisition.deadline(self.io, until);
+        try self.persist(&.{}); // Intent and old context durable BEFORE copy.
+        task.* = .{ .engine = self, .arena = arena, .pending = pending, .options = options, .runtime_root = runtime_root, .selected = selected, .endpoint = endpoint, .until = until, .observed_at = acquisition_wall, .custody_seconds = @intCast(@min(remaining_wall, 3600)), .job = .{ .lane = .continuation, .context = task, .run = NativeSourceRotationTask.run } };
+        errdefer {
+            std.crypto.secureZero(u8, &task.options.key);
+            std.crypto.secureZero(u8, &task.options.capability);
+        }
+        self.native_workers.?.enqueue(&task.job) catch |err| {
+            // Enqueue failed before request issue: known terminal retirement.
+            try self.failImport(pending, diagnosticCause(err));
+            return err;
+        };
+        self.native_source_rotation_due = .fromNow(self.io, .{ .clock = .awake, .raw = .fromMilliseconds(60_000) });
+        self.native_source_rotation = task;
+    }
+
+    fn completeNativeSourceRotation(self: *Engine, task: *NativeSourceRotationTask) !void {
+        if (task.failure) |failure| {
+            if (!task.request_attempted) try self.failImport(task.pending, diagnosticCause(failure));
+            // An attempted native request may have consumed its ID remotely.
+            // Preserve its durable running owner/credit on lost reply; no replay.
+            self.native_source_maintenance_result = .{ .source_id = std.fmt.bytesToHex(task.pending.native_admission.?.source_id, .lower), .state = .unverified, .observed_at = self.now(), .reason = failure };
+            return;
+        }
+        if (self.stopping or self.poisoned) return;
+        if (self.pending_imports.items.len + self.native_import_tasks.items.len >= 16) {
+            try self.failImport(task.pending, .busy);
+            return;
+        }
+        const copy = if (task.copy) |*value| value else return error.NativeSourceFreshCheckRequired;
+        if (copy.candidate.provider != .codex or copy.candidate.credential_kind != .oauth_access or copy.candidate.provider_account_id != null) return error.InvalidNativeSourcePayload;
+        const retained = try self.allocator.create(NativeImportContext);
+        retained.* = .{ .arena = task.arena, .endpoint = task.endpoint, .options = task.options, .image = task.image.?, .origin = copy.origin, .until = task.until, .registry = task.selected.registry, .epoch = task.selected.adapter_epoch };
+        task.pending.native_context = retained;
+        task.image = null;
+        task.arena_transferred = true;
+        const fresh: NativeImportFresh = .{ .origin = copy.origin, .selection_digest = task.selected.record_sha256, .declaration = .{ .owner_id = copy.binding.owner.id, .native_nonce = copy.binding.owner.nonce, .endpoint_generation = copy.binding.owner.endpoint_generation, .witness = copy.binding.owner.witness, .status = .available, .context = .{ .id = copy.binding.context.id, .generation = copy.binding.context.generation }, .store_present = true, .credential_acquisition_authorized = false } };
+        self.nativeImportCheck(task.pending, fresh) catch |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+            return;
+        };
+        const copy_checked_at = self.now();
+        if (copy.candidate.custody_expires_at <= copy_checked_at or (copy.candidate.expires_at_limit != null and copy.candidate.expires_at_limit.? <= copy_checked_at)) {
+            try self.failImport(task.pending, .other);
+            return;
+        }
+        const token = try self.allocator.dupe(u8, copy.candidate.access_token);
+        self.allocator.free(task.pending.token);
+        task.pending.token = token;
+        task.pending.expires_at = copy.candidate.expires_at_limit;
+        task.pending.custody_expires_at = copy.candidate.custody_expires_at;
+        try self.pending_imports.ensureUnusedCapacity(self.allocator, 1);
+        const deadline: transport.AbsoluteDeadline = .{ .io = self.io, .until = task.until };
+        const timeout_ms = try deadline.remaining();
+        task.pending.network_id = self.submitNativeRotationIdentity(task.pending, deadline, timeout_ms) catch |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+            return;
+        };
+        self.pending_imports.appendAssumeCapacity(task.pending);
+        task.pending_transferred = true;
+    }
+
+    fn submitNativeRotationIdentity(self: *Engine, pending: PendingImport, deadline: transport.AbsoluteDeadline, timeout_ms: u32) !u64 {
+        _ = try deadline.remaining();
+        if (builtin.is_test) {
+            self.fixture_identity_submissions += 1;
+            return error.TestProviderEffectDisabled;
+        }
+        const operation = pending.native_operation orelse return error.NativeSourceFreshCheckRequired;
+        return self.network.?.fetchIdentity(.{ .endpoint = .codex_identity, .account_id = pending.source_id, .grant_id = &operation, .access_token = pending.token, .timeout_ms = timeout_ms, .absolute_deadline = deadline });
+    }
+
     fn pollSources(self: *Engine) !void {
-        if (!self.policy.warm_alternatives and !(builtin.is_test and self.fixture_force_poll)) return;
+        // Authorized source lifecycle work is independent of route warming.
+        // Retain the same cadence and bounded import/verification path.
         if (self.now() - self.last_source_poll < 60) return;
         self.last_source_poll = self.now();
         var source_ids: std.ArrayList([]const u8) = .empty;
@@ -3777,13 +8202,15 @@ pub const Engine = struct {
             try source_ids.append(self.allocator, id);
         };
         for (source_ids.items) |source_id| {
-            _ = self.reconcileSource(source_id) catch |err| {
+            _ = self.reconcileSourceMode(source_id, builtin.is_test and self.fixture_hold_enrollment_start) catch |err| {
                 if (err == error.OutOfMemory or self.poisoned) return err;
                 try self.restoreCommitted();
                 // A malformed/unavailable source cannot poison other accounts.
                 continue;
             };
         }
+        // Warming opt-out still prevents speculative capacity observations.
+        if (!self.policy.warm_alternatives and !(builtin.is_test and self.fixture_force_poll)) return;
         self.observers.prune(&self.state, self.now());
         if (self.state.pruneObservations(self.now()) > 0) try self.persist(&.{});
         var grant_ids: std.ArrayList([]const u8) = .empty;
@@ -3883,7 +8310,16 @@ pub const Engine = struct {
                 continue;
             };
             var pending = self.pending_imports.orderedRemove(i);
-            defer pending.deinit(self.allocator);
+            var pending_owned = true;
+            defer if (pending_owned) pending.deinit(self.allocator);
+            if (pending.native_context != null) {
+                self.queueNativeImport(pending, completion) catch |err| {
+                    try self.failImport(pending, diagnosticCause(err));
+                    continue;
+                };
+                pending_owned = false;
+                continue;
+            }
             self.finishImport(pending, completion) catch |err| {
                 try self.failImport(pending, diagnosticCause(err));
             };
@@ -3899,7 +8335,201 @@ pub const Engine = struct {
         try self.persist(&.{});
     }
 
+    fn queueNativeImport(self: *Engine, pending: PendingImport, completion: transport.Completion) !void {
+        if (self.stopping or self.poisoned) return error.ServiceStopping;
+        if (self.native_import_tasks.items.len >= 16) return error.ServiceBusy;
+        try self.native_import_tasks.ensureUnusedCapacity(self.allocator, 1);
+        const task = try self.allocator.create(NativeImportTask);
+        errdefer self.allocator.destroy(task);
+        var copied = completion;
+        copied.owner = null;
+        switch (completion.result) {
+            .response => |response| copied.result = .{ .response = .{ .status = response.status, .streaming = response.streaming, .body = try self.allocator.dupe(u8, response.body) } },
+            .failure => {},
+        }
+        errdefer copied.deinit(self.allocator);
+        task.* = .{ .engine = self, .pending = pending, .completion = copied, .job = undefined };
+        task.job = .{ .lane = .continuation, .context = task, .run = NativeImportTask.run };
+        try self.native_workers.?.enqueue(&task.job);
+        self.native_import_tasks.appendAssumeCapacity(task);
+    }
+
+    fn completeNativeImport(self: *Engine, task: *NativeImportTask) !void {
+        defer task.deinit();
+        if (task.failure) |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+            return;
+        }
+        if (self.stopping or self.poisoned) {
+            try self.failImport(task.pending, .other);
+            return;
+        }
+        self.finishImportChecked(task.pending, task.completion, task.fresh) catch |err| {
+            try self.failImport(task.pending, diagnosticCause(err));
+        };
+    }
+
     fn finishImport(self: *Engine, pending: PendingImport, completion: transport.Completion) !void {
+        if (pending.native_admission != null) return error.NativeSourceFreshCheckRequired;
+        return self.finishImportChecked(pending, completion, null);
+    }
+
+    fn nativeImportCurrent(self: *Engine, pending: PendingImport, fresh: NativeImportFresh) !native_source_consent.Current {
+        const admission = pending.native_admission orelse return error.NativeSourceConsentRequired;
+        const source_id = std.fmt.bytesToHex(admission.source_id, .lower);
+        if (!eql(pending.source_id, &source_id) or pending.source_generation != admission.source_generation or
+            pending.forget_epoch != admission.forget_epoch) return error.NativeSourceSuperseded;
+        var description: ?SourceDescription = null;
+        for (self.descriptions.items) |item| if (eql(item.source_id, pending.source_id)) {
+            if (description != null) return error.NativeSourceAmbiguous;
+            description = item;
+        };
+        const scope = (description orelse return error.NativeSourceConsentRequired).native_authority orelse return error.NativeSourceConsentRequired;
+        // A fresh worker response cannot replace the persisted context authority.
+        // Fence older pending imports against any later source-context change.
+        const retained_context = scope.context orelse return error.NativeSourceFreshCheckRequired;
+        if (pending.native_expected_authority) |expected| {
+            // Only the trusted actor's admitted successor can use a new tuple.
+            // Old authority stays persisted until the atomic verified commit.
+            if (!std.meta.eql(scope, expected) or !eql(description.?.native_endpoint, pending.native_expected_endpoint orelse return error.NativeSourceFreshCheckRequired)) return error.NativeSourceSuperseded;
+            const intent = scope.rotation orelse return error.NativeSourceFreshCheckRequired;
+            if (intent.admitted_at > self.now() or intent.expires_at <= self.now()) return error.NativeSourceDeadline;
+            const operation = pending.native_operation orelse return error.NativeSourceFreshCheckRequired;
+            if (!eql(&intent.operation, &operation) or intent.job_generation != pending.job_generation or !intent.context.same(admission.context) or !self.importJobRunning(pending)) return error.NativeSourceSuperseded;
+            try checkNativeContextSuccessor(retained_context, intent.context);
+            if (retained_context.same(intent.context)) return error.NativeSourceContextChanged;
+        } else {
+            if (scope.rotation != null) return error.NativeSourceOperationPending;
+            if (!retained_context.same(admission.context)) return error.NativeSourceContextChanged;
+        }
+        if (!std.crypto.timing_safe.eql([32]u8, scope.origin, fresh.origin)) return error.NativeSourceOriginChanged;
+        if (fresh.declaration.status != .available or fresh.declaration.store_present != true or
+            fresh.declaration.credential_acquisition_authorized) return error.NativeSourceUnavailable;
+        const context = fresh.declaration.context orelse return error.NativeSourceUnavailable;
+        var generation: ?u64 = null;
+        for (self.import_sources.items) |authority| if (eql(authority.source_id, pending.source_id)) {
+            if (generation != null) return error.NativeSourceAmbiguous;
+            generation = authority.generation;
+        };
+        var source_status: ?domain.SourceStatus = null;
+        for (self.state.sources.items) |source| if (eql(source.id, pending.source_id)) {
+            if (source.kind != .native_store or !eql(source.provider, "codex")) return error.NativeSourceUnauthorized;
+            if (source.authorized_at > self.now() or (source.authorized_until != null and source.authorized_until.? <= self.now())) return error.NativeSourceUnauthorized;
+            source_status = source.status;
+        };
+        return .{ .source_id = admission.source_id, .source_generation = generation orelse return error.NativeSourceSuperseded, .status = switch (source_status orelse return error.NativeSourceUnauthorized) {
+            .connected => .connected,
+            .detached => .detached,
+            .disconnected => .disconnected,
+        }, .consent = scope.consent, .owner = .{ .id = fresh.declaration.owner_id, .nonce = fresh.declaration.native_nonce, .endpoint_generation = fresh.declaration.endpoint_generation, .witness = fresh.declaration.witness }, .context = .{ .id = context.id, .generation = context.generation }, .store_present = true, .forget_epoch = self.import_forget_epoch };
+    }
+
+    fn nativeImportWriterCheck(self: *Engine, adoption_fence: NativeAdoptionFence) !void {
+        var pending = adoption_fence.pending;
+        if (pending.native_expected_authority) |expected| {
+            if (adoption_fence.rotation_revision == null or adoption_fence.rotation_revision.? != self.revision) return error.NativeSourceSuperseded;
+            var after = expected;
+            after.context = pending.native_admission.?.context;
+            after.rotation = null;
+            var found = false;
+            for (self.descriptions.items) |description| if (eql(description.source_id, pending.source_id)) {
+                if (found or !std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, after)) or !eql(description.native_endpoint, pending.native_expected_endpoint orelse return error.NativeSourceFreshCheckRequired)) return error.NativeSourceSuperseded;
+                found = true;
+            };
+            if (!found) return error.NativeSourceSuperseded;
+            var terminal = false;
+            for (self.state.jobs.items) |job| if (eql(job.id, pending.job_id)) {
+                if (terminal or job.status != .completed or job.operation_generation != pending.job_generation) return error.ImportSuperseded;
+                terminal = true;
+            };
+            if (!terminal) return error.ImportSuperseded;
+            pending.native_expected_authority = null;
+        } else if (adoption_fence.rotation_revision != null) return error.NativeSourceSuperseded;
+        try self.nativeImportCheck(pending, adoption_fence.fresh);
+    }
+
+    fn stageNativeContextRotation(self: *Engine, pending: PendingImport) !void {
+        const expected = pending.native_expected_authority orelse return;
+        var found: ?*SourceDescription = null;
+        for (self.descriptions.items) |*description| if (eql(description.source_id, pending.source_id)) {
+            if (found != null or !std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, expected)) or !eql(description.native_endpoint, pending.native_expected_endpoint orelse return error.NativeSourceFreshCheckRequired)) return error.NativeSourceSuperseded;
+            found = description;
+        };
+        const description = found orelse return error.NativeSourceSuperseded;
+        var after = expected;
+        after.context = pending.native_admission.?.context;
+        after.rotation = null;
+        description.native_authority = after;
+    }
+
+    fn retireNativeContextRotation(self: *Engine, pending: PendingImport) void {
+        const expected = pending.native_expected_authority orelse return;
+        for (self.descriptions.items) |*description| if (eql(description.source_id, pending.source_id) and std.meta.eql(description.native_authority, @as(?NativeSourceAuthority, expected))) {
+            description.native_authority.?.rotation = null;
+        };
+    }
+
+    fn nativeImportCheck(self: *Engine, pending: PendingImport, fresh: NativeImportFresh) !void {
+        if (self.stopping or self.poisoned or self.vault_locked or self.db == null) return error.NativeCustodyUnavailable;
+        const admission = pending.native_admission orelse return error.NativeSourceConsentRequired;
+        if (pending.native_context) |context| {
+            if (!std.crypto.timing_safe.eql(envelope.Key, context.options.key, self.root_key)) return error.NativeCustodyGenerationMismatch;
+            if (context.epoch != self.adapter_epochs[0] or !std.meta.eql(context.registry, self.native_registry) or
+                !self.integrationInstalled("codex") or self.native_owners.applicationRemoval("codex", self.adapter_epochs[0]) != null)
+                return error.NativeCustodyGenerationMismatch;
+            try native_source_acquisition.deadline(self.io, context.until);
+        }
+        const selected = self.qualified_native_runtime orelse return error.NativeImageUnavailable;
+        const admitted_digest = pending.native_selection_digest orelse return error.NativeImageUnavailable;
+        if (!std.crypto.timing_safe.eql([32]u8, admitted_digest, selected.record_sha256) or
+            !std.crypto.timing_safe.eql([32]u8, admitted_digest, fresh.selection_digest)) return error.RuntimeSelectionDrift;
+        const started = pending.native_started_at orelse return error.NativeSourceDeadline;
+        const elapsed = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
+        if (elapsed < 0 or elapsed > std.math.maxInt(u64)) return error.NativeSourceDeadline;
+        try native_source_consent.check(admission, try self.nativeImportCurrent(pending, fresh), self.now(), @intCast(elapsed));
+    }
+
+    fn completeNativeRotationJob(self: *Engine, pending: PendingImport) !void {
+        if (!self.importJobRunning(pending)) return error.ImportSuperseded;
+        for (self.state.jobs.items) |*job| if (eql(job.id, pending.job_id) and job.operation_generation == pending.job_generation) {
+            const previous = job.*;
+            job.status = .completed;
+            try self.recordImportTerminal(pending, previous, job.*, .none);
+        };
+        try self.releaseOutcome(pending.credit_key);
+    }
+
+    fn nativeRotationSecretUnchanged(self: *Engine, pending: PendingImport, identity: domain.Identity) !bool {
+        var same_usable = false;
+        for (self.state.grants.items) |grant| {
+            if (!eql(grant.source_id, pending.source_id) or grant.credential_kind != .oauth_access or grant.ownership != .external or !eql(grant.audience, identity.issuer)) continue;
+            const sql = (try self.db.?.readGrantStatus(grant.account_id, grant.id)) orelse return error.NativeSourceFreshCheckRequired;
+            if (sql.renewal_owner != .external) return error.RenewalOwnerConflict;
+            if (sql.generation != grant.generation or sql.state != .ready) return error.NativeSourceUnchangedUnusable;
+            var secret = self.db.?.loadGrant(.{ .key_id = self.root_id.?, .account_id = grant.account_id, .grant_id = grant.id, .generation = grant.generation, .purpose = "request", .scope = grant.audience }) catch return error.NativeSourceFreshCheckRequired;
+            defer secret.deinit();
+            const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, secret.bytes, .{ .allocate = .alloc_always });
+            defer {
+                control.wipeJson(parsed.value);
+                parsed.deinit();
+            }
+            const previous = try control.string(parsed.value, "access_token");
+            if (!sameNativeSecret(previous, pending.token)) continue;
+            // Same bytes cannot restore invalid/quarantined/spent authority or
+            // extend expired custody, even if an identity GET succeeds.
+            if (grant.status != .ready or (grant.provider_expires_at != null and grant.provider_expires_at.? <= self.now()) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= self.now())) return error.NativeSourceUnchangedUnusable;
+            const account = self.state.account(grant.account_id) orelse return error.NativeSourceFreshCheckRequired;
+            if (!sameVerifiedIdentity(account.identity, identity)) continue;
+            const same_provider_ceiling = if (pending.expires_at) |limit| if (grant.provider_expires_at) |retained| retained <= limit else false else true;
+            const same_custody_ceiling = if (pending.custody_expires_at) |limit| if (grant.custody_expires_at) |retained| retained <= limit else false else false;
+            if (!same_provider_ceiling or !same_custody_ceiling) return error.NativeSourceUnchangedUnusable;
+            same_usable = true;
+        }
+        return same_usable;
+    }
+
+    fn finishImportChecked(self: *Engine, pending: PendingImport, completion: transport.Completion, native_fresh: ?NativeImportFresh) !void {
+        if (pending.native_admission != null) try self.nativeImportCheck(pending, native_fresh orelse return error.NativeSourceFreshCheckRequired) else if (native_fresh != null) return error.NativeSourceConsentRequired;
         if (completion.id != pending.network_id or !self.importJobRunning(pending)) return error.ImportSuperseded;
         var authorized = false;
         const timestamp = self.now();
@@ -3931,6 +8561,19 @@ pub const Engine = struct {
             break :blk .{ .subject = parsed.value.user_id, .tenant = parsed.value.account_id, .issuer = "https://chatgpt.com", .kind = parsed.value.plan_type, .provider_account_id = parsed.value.account_id };
         };
         const identity: domain.Identity = .{ .provider = pending.provider, .issuer = proof.issuer, .subject = proof.subject, .tenant = proof.tenant, .verified = true };
+        if (pending.native_expected_authority != null and try self.nativeRotationSecretUnchanged(pending, identity)) {
+            try self.nativeImportCheck(pending, native_fresh.?);
+            const revision = self.revision;
+            try self.stageNativeContextRotation(pending);
+            try self.completeNativeRotationJob(pending);
+            try self.persistWithNativeFence(&.{}, .{ .pending = pending, .fresh = native_fresh.?, .rotation_revision = revision });
+            return;
+        }
+        // No native read or provider response substitutes for the actor's
+        // current consent/source/forget authority. Fence again immediately
+        // before the first enrollment/tombstone mutation.
+        if (pending.native_admission != null) try self.nativeImportCheck(pending, native_fresh.?);
+        const rotation_revision: ?u64 = if (pending.native_expected_authority != null) self.revision else null;
         if (pending.allow_reenrollment) try self.state.permitReenrollment(identity, pending.source_id, self.now());
         const opaque_id = try self.identifier();
         const enrollment = try self.state.enroll(.{ .account_id = &opaque_id, .source_id = pending.source_id, .identity = identity, .label = if (pending.label.len != 0) pending.label else if (eql(pending.provider, "github")) "GitHub account" else "Codex account", .account_type = proof.kind }, self.now());
@@ -3959,13 +8602,41 @@ pub const Engine = struct {
             try self.recordImportTerminal(pending, previous, job.*, .none);
         };
         try self.releaseOutcome(pending.credit_key);
-        try self.persist(&.{.{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = account_id, .grant_id = owned_grant, .generation = generation, .purpose = "request", .scope = proof.issuer }, .plaintext = credential, .renewal_owner = .external } }});
+        try self.stageNativeContextRotation(pending);
+        try self.persistWithNativeFence(&.{.{ .put = .{ .context = .{ .key_id = self.root_id.?, .account_id = account_id, .grant_id = owned_grant, .generation = generation, .purpose = "request", .scope = proof.issuer }, .plaintext = credential, .renewal_owner = .external } }}, if (native_fresh) |fresh| .{ .pending = pending, .fresh = fresh, .rotation_revision = rotation_revision } else null);
+    }
+
+    fn currentSiwcStamp(self: *Engine, grant: domain.Grant) !siwc_route.Stamp {
+        const pair_module = @import("siwc_pair.zig");
+        const account = self.state.account(grant.account_id) orelse return error.SiwcPairUnavailable;
+        if (!account.identity.verified or !eql(account.identity.provider, siwc_route.provider) or
+            !eql(account.identity.issuer, siwc_route.issuer) or grant.credential_kind != .oauth_access or
+            grant.ownership != .omux or grant.status != .ready or !eql(grant.audience, siwc_route.audience))
+            return error.SiwcPairUnavailable;
+        const authority = try pair_module.currentPair(&self.db.?, grant.account_id, grant.id, grant.generation, self.now());
+        defer authority.deinit();
+        if (!eql(authority.profile(), siwc_route.profile) or !eql(authority.issuer(), siwc_route.issuer) or
+            !eql(authority.audience(), siwc_route.audience) or !eql(authority.authMode(), siwc_route.auth_mode) or
+            authority.expiresAt() <= self.now() or grant.provider_expires_at == null or
+            authority.expiresAt() != grant.provider_expires_at.? or authority.refreshGrantId().len == 0 or
+            authority.refreshGeneration() == 0) return error.SiwcPairAuthorityChanged;
+        const stamp: siwc_route.Stamp = .{
+            .activation = authority.activationCommitment(),
+            .family_generation = authority.familyGeneration(),
+            .writer_generation = authority.writerRegistryGeneration(),
+            .source_generation = authority.sourceGeneration(),
+            .consent_generation = authority.consentGeneration(),
+        };
+        if (!siwc_route.validStamp(stamp)) return error.SiwcPairAuthorityChanged;
+        return stamp;
     }
 
     fn acquire(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
         const native_ref = try self.protectedNativeRef(params, true);
         try self.expireLeases();
         const application = try control.string(params, "application");
+        const profile = try siwc_route.selected(application, try control.optionalString(params, "request_profile"));
+        if (profile == .siwc_responses) try siwc_route.onlyFields(params, &.{ "application", "capability", "native_ref", "session_id", "binding_id", "request_id", "request_profile", "demand" });
         const session_id = try control.string(params, "session_id");
         const request_id = try control.requestId(params);
         const external_binding = (try control.optionalString(params, "binding_id")) orelse session_id;
@@ -3979,7 +8650,9 @@ pub const Engine = struct {
         defer parsed.deinit();
         const d = parsed.value;
         if (eql(application, "enrollment") or d.purpose != .request) return error.WrongPurpose;
-        if ((eql(application, "codex") and (!eql(d.provider, "codex") or !eql(d.audience, "https://chatgpt.com") or !eql(d.resource.kind, "model"))) or (eql(application, "git") and (!eql(d.provider, "github") or !eql(d.audience, "https://github.com"))) or (eql(application, "claude") and !eql(d.provider, "claude"))) return error.WrongPurpose;
+        if (profile == .siwc_responses) {
+            try siwc_route.validateDemand(profile, application, d.provider, d.audience, d.purpose, d.resource);
+        } else if ((eql(application, "codex") and (!eql(d.provider, "codex") or !eql(d.audience, "https://chatgpt.com") or !eql(d.resource.kind, "model"))) or (eql(application, "git") and (!eql(d.provider, "github") or !eql(d.audience, "https://github.com"))) or (eql(application, "claude") and !eql(d.provider, "claude"))) return error.WrongPurpose;
         // A typed representation normalizes field order and default values.
         // Scope order does not affect authority, but duplicate scopes are
         // malformed instead of silently changing the declared demand.
@@ -3993,13 +8666,19 @@ pub const Engine = struct {
         for (scopes, 0..) |scope, index| if (index != 0 and eql(scope, scopes[index - 1])) return error.InvalidParams;
         var normalized = d;
         normalized.scopes = scopes;
-        const normalized_bytes = try std.json.Stringify.valueAlloc(allocator, normalized, .{});
+        const normalized_bytes = if (profile == .siwc_responses)
+            try std.json.Stringify.valueAlloc(allocator, .{ .request_profile = siwc_route.profile, .demand = normalized }, .{})
+        else
+            try std.json.Stringify.valueAlloc(allocator, normalized, .{});
         defer allocator.free(normalized_bytes);
         var fingerprint_bytes: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(normalized_bytes, &fingerprint_bytes, .{});
         const fingerprint = std.fmt.bytesToHex(fingerprint_bytes, .lower);
         const intent: request_authority.Intent = .{ .key = .{ .application = application, .session_id = session_id, .request_id = request_id }, .binding_id = binding_id, .demand_fingerprint = &fingerprint, .native_ref = native_ref };
         const attempt = try self.requests.checkIssue(intent);
+        // A provider error is not an independent quota/capacity witness. Never
+        // open the ordinary acquire path for a same-work SIWC second attempt.
+        if (profile == .siwc_responses and attempt != 1) return error.SiwcReplacementAuthorityUnavailable;
         const rejected_account = try self.requests.rejectedAccount(intent);
         if (self.native_leases.items.len >= 4096) return error.ServiceBusy;
         var allowed: std.ArrayList([]const u8) = .empty;
@@ -4009,13 +8688,32 @@ pub const Engine = struct {
             if (!rejected) try allowed.append(allocator, account.id);
         }
         if (allowed.items.len == 0) return error.NoReadyAccount;
-        const demand: domain.Demand = .{ .allowed_account_ids = allowed.items, .provider = d.provider, .audience = d.audience, .purpose = d.purpose, .resource = d.resource, .required = d.required, .scopes = d.scopes, .now = self.now() };
+        const demand: domain.Demand = .{ .allowed_account_ids = allowed.items, .provider = d.provider, .issuer = if (profile == .siwc_responses) siwc_route.issuer else null, .audience = d.audience, .purpose = d.purpose, .resource = d.resource, .required = d.required, .scopes = d.scopes, .now = self.now() };
         const previous = self.state.binding(binding_id);
-        const selected = try self.state.select(demand, if (previous != null) binding_id else null);
+        var paired_grants: std.ArrayList(domain.Grant) = .empty;
+        defer paired_grants.deinit(allocator);
+        var selectable = self.state;
+        if (profile == .siwc_responses) {
+            for (self.state.grants.items) |candidate| {
+                if (!eql(candidate.audience, siwc_route.audience)) continue;
+                _ = self.currentSiwcStamp(candidate) catch |err| switch (err) {
+                    error.SiwcPairUnavailable, error.SiwcPairAuthorityChanged, error.SiwcPairQuarantined, error.SiwcPairExpired => continue,
+                    else => return err,
+                };
+                try paired_grants.append(allocator, candidate);
+            }
+            if (paired_grants.items.len == 0) return error.SiwcPairUnavailable;
+            selectable.grants = paired_grants;
+        }
+        // Unknown quota does not remove otherwise technically compatible
+        // accounts. State.select applies actual pause/drain/expiry/scopes and
+        // sticky policy; no provider-error retry or reset is inferred here.
+        const selected = try selectable.select(demand, if (previous != null) binding_id else null);
         const grant = self.state.grant(selected.grant_id).?;
+        const siwc_activation: ?siwc_route.Stamp = if (profile == .siwc_responses) try self.currentSiwcStamp(grant) else null;
         const custody = (try self.db.?.readGrantStatus(grant.account_id, grant.id)) orelse return error.GrantNotReady;
         if (custody.state != .ready or custody.generation != grant.generation) return error.GrantNotReady;
-        const route_generation = if (previous) |old| old.route_generation + @as(u64, @intFromBool(!eql(old.grant_id, grant.id) or old.grant_generation != grant.generation)) else 1;
+        const route_generation = if (previous) |old| std.math.add(u64, old.route_generation, @as(u64, @intFromBool(!eql(old.grant_id, grant.id) or old.grant_generation != grant.generation))) catch return error.GenerationConflict else 1;
         if (previous == null or !selected.sticky) _ = try self.state.bind(.{ .id = binding_id, .application = application, .session_id = session_id, .account_id = grant.account_id, .grant_id = grant.id, .grant_generation = grant.generation, .route_generation = route_generation, .native_ref = native_ref });
         const handle = try self.identifier();
         var expires = self.now() + 300;
@@ -4028,6 +8726,8 @@ pub const Engine = struct {
         const report_plan = try domain.reportGrowth(held_lease);
         _ = try self.state.beginLease(held_lease, self.now());
         var record = try NativeLease.create(self.allocator, handle, application, request_id, binding_id, grant.account_id, encoded, attempt, expires, native_ref);
+        record.request_profile = profile;
+        record.siwc_activation = siwc_activation;
         var committed = false;
         errdefer if (!committed) record.deinit(self.allocator);
         try self.native_leases.append(self.allocator, record);
@@ -4100,12 +8800,24 @@ pub const Engine = struct {
         var expired_grants: std.ArrayList(storage.GrantChange) = .empty;
         defer expired_grants.deinit(self.allocator);
         const timestamp = self.now();
-        if (self.last_secret_prune != timestamp) for (self.state.grants.items) |*grant| {
+        const hold_expired_rows = builtin.is_test and self.fixture_siwc_grant_prune_until != null and self.fixture_siwc_grant_prune_until.?.durationFromNow(self.io).raw.toNanoseconds() > 0;
+        if (self.last_secret_prune != timestamp and !hold_expired_rows) for (self.state.grants.items) |*grant| {
             var source_expired = false;
             for (self.state.sources.items) |source| if (eql(source.id, grant.source_id)) {
                 source_expired = source.authorized_until != null and source.authorized_until.? <= timestamp;
             };
-            if (source_expired or (grant.provider_expires_at != null and grant.provider_expires_at.? <= timestamp) or (grant.custody_expires_at != null and grant.custody_expires_at.? <= timestamp)) {
+            const provider_expired = grant.provider_expires_at != null and grant.provider_expires_at.? <= timestamp;
+            const custody_expired = grant.custody_expires_at != null and grant.custody_expires_at.? <= timestamp;
+            if (provider_expired and !source_expired and !custody_expired and grant.ownership == .omux and grant.credential_kind == .oauth_access and eql(grant.audience, siwc_pair.resource_uri)) {
+                // Request eligibility still checks the expired provider bound.
+                // Keep ciphertext only under actual renewable pair authority;
+                // imported rows and unknown/retired pairs follow normal prune.
+                if (siwc_pair.retainExpiredAccessForRenewal(&self.db.?, grant.account_id, grant.id, grant.generation, timestamp)) |_| continue else |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => {},
+                }
+            }
+            if (source_expired or provider_expired or custody_expired) {
                 _ = (try self.db.?.readGrantStatus(grant.account_id, grant.id)) orelse continue;
                 try expired_grants.append(self.allocator, .{ .delete = .{ .account_id = grant.account_id, .grant_id = grant.id } });
                 grant.status = .invalid;
@@ -4185,6 +8897,12 @@ pub const Engine = struct {
     fn materialize(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
         _ = try self.protectedNativeRef(params, true);
         const native = try self.nativeLease(params);
+        const profile = try siwc_route.selected(native.application, try control.optionalString(params, "request_profile"));
+        if (profile != native.request_profile) return error.SiwcProfileMismatch;
+        if (profile == .siwc_responses) {
+            if (params != .object or params.object.count() != 5) return error.InvalidSiwcParams;
+            try siwc_route.onlyFields(params, &.{ "application", "capability", "native_ref", "lease_handle", "request_profile" });
+        }
         if (native.status != .issued) return error.LeaseNotMaterializable;
         var lease: ?domain.Lease = null;
         for (self.state.leases.items) |item| if (eql(item.id, &native.handle)) {
@@ -4194,6 +8912,27 @@ pub const Engine = struct {
         const held = lease orelse return error.UnknownLease;
         if (held.expires_at <= self.now()) return error.LeaseExpired;
         const grant = self.state.grant(held.grant_id) orelse return error.GrantNotReady;
+        if (profile == .siwc_responses) {
+            const binding = self.state.binding(held.binding_id) orelse return error.BindingChanged;
+            if (!eql(binding.account_id, held.account_id) or !eql(binding.grant_id, held.grant_id) or
+                binding.grant_generation != held.grant_generation or binding.route_generation != held.route_generation)
+                return error.BindingChanged;
+            const stamp = try self.currentSiwcStamp(grant);
+            if (!siwc_route.sameStamp(native.siwc_activation orelse return error.SiwcPairUnavailable, stamp)) return error.SiwcPairAuthorityChanged;
+            const StoredDemand = struct { provider: []const u8, audience: []const u8, purpose: domain.Purpose = .request, resource: domain.Resource, required: f64 = 1, scopes: []const []const u8 = &.{} };
+            const d = try std.json.parseFromSlice(StoredDemand, allocator, native.demand_json, .{});
+            defer d.deinit();
+            // Use the actual original request context, narrowed to this exact
+            // grant/account. A pause, drain, expired source or known rejection
+            // before materialization cannot be hidden by a ready SQL row.
+            var candidate = grant;
+            var selectable = self.state;
+            selectable.grants = .empty;
+            selectable.grants.items = (&candidate)[0..1];
+            selectable.grants.capacity = 1;
+            const demand: domain.Demand = .{ .provider = d.value.provider, .audience = d.value.audience, .purpose = d.value.purpose, .resource = d.value.resource, .required = d.value.required, .scopes = d.value.scopes, .now = self.now(), .issuer = siwc_route.issuer, .allowed_account_ids = &.{held.account_id} };
+            _ = try selectable.select(demand, null);
+        }
         if (held.purpose != .request or !eql(held.audience, grant.audience)) return error.WrongPurpose;
         _ = self.state.account(held.account_id) orelse return error.GrantNotReady;
         for (self.state.sources.items) |source| if (eql(source.id, grant.source_id)) {
@@ -4207,7 +8946,86 @@ pub const Engine = struct {
             control.wipeJson(parsed.value);
             parsed.deinit();
         }
+        if (profile == .siwc_responses) return control.success(allocator, id, .{
+            .request_profile = siwc_route.profile,
+            .issuer = siwc_route.issuer,
+            .audience = siwc_route.audience,
+            .auth_mode = siwc_route.auth_mode,
+            .access_token = try control.string(parsed.value, "access_token"),
+            .expires_at = held.expires_at,
+            .route_generation = held.route_generation,
+        });
         return control.success(allocator, id, .{ .access_token = try control.string(parsed.value, "access_token"), .provider_account_id = try control.optionalString(parsed.value, "provider_account_id"), .expires_at = held.expires_at, .route_generation = held.route_generation });
+    }
+
+    fn siwcReject(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
+        if (params != .object or params.object.count() != 11) return error.InvalidSiwcRejection;
+        const fields = [_][]const u8{ "application", "capability", "native_ref", "lease_handle", "request_profile", "status", "error_code", "error_param", "provider_request_id", "pre_acceptance", "response_started" };
+        try siwc_route.onlyFields(params, &fields);
+        const reference = (try self.protectedNativeRef(params, true)) orelse return error.NativeOwnerRequired;
+        const native = try self.nativeLease(params);
+        const profile = try siwc_route.selected(native.application, try control.optionalString(params, "request_profile"));
+        if (native.request_profile != .siwc_responses or profile != .siwc_responses) return error.SiwcProfileMismatch;
+        if (native.status != .issued or native.expires_at <= self.now()) return error.UnsafeReplay;
+        const status = control.get(params, "status") orelse return error.InvalidSiwcRejection;
+        if (status != .integer or status.integer < 400 or status.integer > 599) return error.InvalidSiwcRejection;
+        const cause = try siwc_route.rejection(@intCast(status.integer), try control.optionalString(params, "error_code"), try control.optionalString(params, "error_param"), try control.optionalString(params, "provider_request_id"), try control.boolean(params, "pre_acceptance", false), try control.boolean(params, "response_started", true));
+        const intent = self.requests.intentForHandle(native.application, &native.handle) orelse return error.UnknownLease;
+        if (!eql(intent.key.request_id, native.request_id) or !eql(intent.binding_id, native.binding_id)) return error.RequestMismatch;
+        const attempt = self.requests.attempt(native.application, &native.handle) orelse return error.UnknownLease;
+        if (attempt.state != .issued) return error.UnsafeReplay;
+        var selected: ?domain.Lease = null;
+        for (self.state.leases.items) |lease| {
+            if (eql(lease.id, &native.handle)) {
+                selected = lease;
+                break;
+            }
+        }
+        const lease = selected orelse return error.UnknownLease;
+        const binding = self.state.binding(native.binding_id) orelse return error.BindingChanged;
+        if (!eql(lease.account_id, native.account_id) or !eql(binding.grant_id, lease.grant_id) or
+            binding.grant_generation != lease.grant_generation or binding.route_generation != lease.route_generation)
+            return error.BindingChanged;
+        const grant = self.state.grant(lease.grant_id) orelse return error.GrantNotReady;
+        const stamp = try self.currentSiwcStamp(grant);
+        if (!siwc_route.sameStamp(native.siwc_activation orelse return error.SiwcPairUnavailable, stamp)) return error.SiwcPairAuthorityChanged;
+        // Structured 401/403/429 diagnostics do not authorize refresh, plan
+        // scope/reset inference or quota rotation. No real cause-specific SIWC
+        // independent capacity producer exists: close this request instead of
+        // minting a replacement ticket from model param or generic observations.
+        const evidence: request_authority.Report = .{ .event = .abandoned, .pre_acceptance = true, .response_started = false, .status = @intCast(status.integer) };
+        _ = try self.requests.checkReportForOwner(native.application, &native.handle, reference, evidence);
+        const credit = creditKey(.request, &native.handle, attempt.issued_sequence);
+        try self.state.completeLease(&native.handle);
+        _ = try self.requests.reportForOwner(native.application, &native.handle, reference, evidence);
+        try self.releaseOutcome(credit);
+        try self.persist(&.{});
+        // The durable terminal receipt owns this cache transition. A failed
+        // commit must leave its original issued handle fenced for recovery.
+        native.status = .abandoned;
+        self.invalidateCatalogContexts();
+        return control.success(allocator, id, .{
+            .recorded = true,
+            .request_profile = siwc_route.profile,
+            .rejected_lease_handle = native.handle[0..],
+            .rejected_route_generation = lease.route_generation,
+            .disposition = siwc_route.disposition(cause),
+            .replacement = @as(?u8, null),
+        });
+    }
+
+    fn siwcAcquireReplacement(self: *Engine, _: std.mem.Allocator, _: std.json.Value, params: std.json.Value) ![]u8 {
+        _ = (try self.protectedNativeRef(params, true)) orelse return error.NativeOwnerRequired;
+        const profile = try siwc_route.selected(try control.string(params, "application"), try control.optionalString(params, "request_profile"));
+        if (profile != .siwc_responses) return error.SiwcProfileMismatch;
+        _ = try control.requestId(params);
+        const ticket = try control.string(params, "replacement_ticket");
+        if (ticket.len != 64) return error.InvalidSiwcReplacementTicket;
+        for (ticket) |byte| if (!std.ascii.isHex(byte)) return error.InvalidSiwcReplacementTicket;
+        // No positive ticket constructor exists without a cause-specific,
+        // independently qualified SIWC bucket authority. Explicit policy or
+        // credential lifecycle changes instead select on a NEW request ID.
+        return error.SiwcReplacementAuthorityUnavailable;
     }
 
     fn report(self: *Engine, allocator: std.mem.Allocator, id: std.json.Value, params: std.json.Value) ![]u8 {
@@ -4226,6 +9044,8 @@ pub const Engine = struct {
             .response_started = try control.boolean(params, "response_started", true),
             .status = reported_status,
         };
+        // Original owner-bound durable evidence adjudicates exact duplicates
+        // and recovered uncertainty before requiring an ephemeral lease cache.
         const transition = if (native_ref) |reference| try self.requests.checkReportForOwner(application, handle, reference, evidence) else try self.requests.checkReport(application, handle, evidence);
         if (!transition) return control.success(allocator, id, .{ .recorded = true });
         const authority = self.requests.attempt(application, handle) orelse return error.UnknownLease;
@@ -4253,6 +9073,7 @@ pub const Engine = struct {
             try self.persist(&.{});
             return control.success(allocator, id, .{ .recorded = true });
         };
+        if (evidence.event == .rejected and native.request_profile == .siwc_responses) return error.SiwcStructuredRejectionRequired;
         var held: ?domain.Lease = null;
         for (self.state.leases.items) |lease| if (eql(lease.id, &native.handle)) {
             held = lease;
@@ -4290,6 +9111,7 @@ pub const Engine = struct {
             .issued => unreachable,
         }
         native.status = next;
+        self.invalidateCatalogContexts();
         _ = if (native_ref) |reference| try self.requests.reportForOwner(application, handle, reference, evidence) else try self.requests.report(handle, evidence);
         if (next != .accepted) try self.releaseOutcome(credit_key);
         try self.persist(&.{});
@@ -4955,6 +9777,121 @@ test "native request audit exposes unknown and outstanding request credit withou
     try std.testing.expectError(error.AttemptBudgetExhausted, requests.checkIssue(intent));
 }
 
+test "custody observation rejects caller authority foreign channels and unavailable actor without restore" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var current: Engine = undefined;
+    current.poisoned = false;
+    // Refusals must not restore a database or read undefined key/authority.
+    var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\",\"params\":{\"authenticated\":true}}");
+    defer request.deinit();
+    try std.testing.expectError(error.WrongChannel, current.handleRequest(allocator, request, .adapter));
+    try std.testing.expectError(error.WrongChannel, current.handleRequest(allocator, request, .browser));
+    const refused = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\",\"params\":{\"authenticated\":true}}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, refused, "InvalidParams") != null);
+    current.poisoned = true;
+    const poisoned = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\"}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, poisoned, "CustodyUnavailable") != null);
+    current.poisoned = false;
+    current.vault_locked = true;
+    const unavailable = try current.execute(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\"}", .control);
+    try std.testing.expect(std.mem.indexOf(u8, unavailable, "CustodyUnavailable") != null);
+}
+
+test "actor custody observation returns exact schemas and no deployment or authentication claim" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const current = try Engine.openWithKey(io, allocator, path, @splat(67));
+    defer current.deinit();
+    const payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.observation\"}";
+    const first = try current.dispatch(allocator, payload, .control);
+    defer allocator.free(first);
+    const second = try current.dispatch(allocator, payload, .control);
+    defer allocator.free(second);
+    try std.testing.expectEqualStrings(first, second);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, first, .{});
+    defer parsed.deinit();
+    const result = control.get(parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+    try std.testing.expectEqualStrings("exact-committed-custody-v1", try control.string(result, "commitment_format"));
+    try std.testing.expectEqualStrings("release", try control.string(result, "channel"));
+    try std.testing.expectEqualStrings("default", try control.string(result, "instance"));
+    try std.testing.expectEqual(@as(i64, 3), control.get(result, "storage_schema").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), control.get(result, "snapshot_schema").?.integer);
+    try std.testing.expectEqual(@as(i64, envelope.format_version), control.get(result, "custody_format").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), control.get(result, "recovery_format").?.integer);
+    const commitment = try control.string(result, "preservation_commitment");
+    try std.testing.expectEqual(@as(usize, 64), commitment.len);
+    for (commitment) |byte| try std.testing.expect(std.ascii.isHex(byte));
+    try std.testing.expect(control.get(result, "authenticated") == null);
+    for ([_][]const u8{ "artifact_digest", "active_work", "update_fence" }) |name| try std.testing.expect(control.get(result, name).? == .null);
+    for ([_][]const u8{ "activation_authorized", "artifact_compatibility_available", "provider_request_initiated", "live_handoff_proven" }) |name| try std.testing.expect(!try control.boolean(result, name, true));
+    for ([_][]const u8{ "account_id", "grant_id", "key_id", "ciphertext", "snapshot_json", "installation" }) |name| try std.testing.expect(control.get(result, name) == null);
+}
+
+test "custody observation integrity rollback and preexisting store poison fence actor health readiness and subsequent admission" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]struct { mode: []const u8, expected: []const u8 }{
+        .{ .mode = "rollback", .expected = "DatabaseDenied" },
+        .{ .mode = "checkpoint", .expected = "RecoveryRollbackDetected" },
+        .{ .mode = "preexisting_poison", .expected = "CustodyUnavailable" },
+    }) |fault| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(path);
+        const current = try Engine.openWithKey(io, allocator, path, @splat(68));
+        defer current.deinit();
+        var before = try reopenTestReply(current, "custody.observation", .control);
+        defer before.deinit();
+        const prior_revision = control.get(control.get(before.value, "result").?, "revision").?.integer;
+        const capability = try current.capabilityForTest("enrollment");
+        const arm = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = "fixture.custodyObservationRollbackFault", .params = .{ .application = "enrollment", .capability = capability[0..], .mode = fault.mode } }, .{});
+        defer allocator.free(arm);
+        const armed = try current.dispatch(allocator, arm, .adapter);
+        defer allocator.free(armed);
+        var armed_json = try std.json.parseFromSlice(std.json.Value, allocator, armed, .{});
+        defer armed_json.deinit();
+        try std.testing.expect(control.get(armed_json.value, "result") != null);
+        var failed = try reopenTestReply(current, "custody.observation", .control);
+        defer failed.deinit();
+        try std.testing.expectEqualStrings(fault.expected, try control.string(control.get(failed.value, "error").?, "message"));
+        try std.testing.expect(current.db.?.poisoned and current.poisoned);
+        var health = try reopenTestReply(current, "system.health", .control);
+        defer health.deinit();
+        const health_result = control.get(health.value, "result").?;
+        try std.testing.expect(!try control.boolean(health_result, "custody_available", true));
+        try std.testing.expect(try control.boolean(health_result, "metadata_loaded", false));
+        try std.testing.expectEqualStrings("repair_required", try control.string(health_result, "status"));
+        try std.testing.expectEqual(prior_revision, control.get(health_result, "revision").?.integer);
+        var readiness = try reopenTestReply(current, "setup.readiness", .control);
+        defer readiness.deinit();
+        const readiness_result = control.get(readiness.value, "result").?;
+        try std.testing.expect(!try control.boolean(readiness_result, "ready", true));
+        var vault_unknown = false;
+        for (control.get(readiness_result, "findings").?.array.items) |finding| {
+            if (eql(try control.string(finding, "phase"), "vault") and eql(try control.string(finding, "reason"), "observation_unknown")) vault_unknown = true;
+        }
+        try std.testing.expect(vault_unknown);
+        for ([_]struct { method: []const u8, channel: Channel }{
+            .{ .method = "custody.observation", .channel = .control },
+            .{ .method = "source.connect", .channel = .control },
+            .{ .method = "adapter.materialize", .channel = .adapter },
+        }) |next| {
+            var denied = try reopenTestReply(current, next.method, next.channel);
+            defer denied.deinit();
+            try std.testing.expectEqualStrings("CustodyUnavailable", try control.string(control.get(denied.value, "error").?, "message"));
+        }
+    }
+}
+
 test "native audit RPC rejects adapter purpose, unknown selectors and poisoned custody without restore or mutation" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -4979,6 +9916,13 @@ const NativeDiscoveryThread = struct {
     attachment_generation: []const u8,
     native_ref: ?NativeRefWire = null,
 };
+const NativeDiscoverySourceContext = struct {
+    status: @FieldType(native_probe.SourceContextDeclaration, "status"),
+    source_context_id: ?[]const u8 = null,
+    source_context_generation: ?[]const u8 = null,
+    store_present: ?bool = null,
+    credential_acquisition_authorized: bool = false,
+};
 const NativeDiscoveryOwner = struct {
     owner_id: []const u8,
     process_nonce: []const u8,
@@ -4987,6 +9931,7 @@ const NativeDiscoveryOwner = struct {
     native_version: []const u8,
     support: codex.Support,
     threads: []NativeDiscoveryThread,
+    source_context: ?NativeDiscoverySourceContext = null,
 };
 const NativeDiscoveryResult = struct {
     adapter: []const u8 = "codex",
@@ -5018,6 +9963,17 @@ fn nativeDiscoveryResult(allocator: std.mem.Allocator, task: *const NativeTask, 
             .native_version = loaded.native_version,
             .support = loaded.support,
             .threads = threads,
+        };
+        for (task.source_contexts.items) |declaration| if (std.mem.eql(u8, &declaration.owner_id, &loaded.owner_id)) {
+            if (!std.mem.eql(u8, &declaration.native_nonce, &loaded.native_nonce) or declaration.endpoint_generation != loaded.endpoint_generation or
+                !peer.sameOriginal(declaration.witness, loaded.witness) or declaration.credential_acquisition_authorized) return error.NativeSourceContextMismatch;
+            if (output.source_context != null) return error.NativeOwnerAmbiguous;
+            var metadata: NativeDiscoverySourceContext = .{ .status = declaration.status, .store_present = declaration.store_present };
+            if (declaration.context) |context| {
+                metadata.source_context_id = try allocator.dupe(u8, &std.fmt.bytesToHex(context.id, .lower));
+                metadata.source_context_generation = try std.fmt.allocPrint(allocator, "{d}", .{context.generation});
+            }
+            output.source_context = metadata;
         };
         if (loaded.support == .compatible_hook) result.hook_compatible = true;
         for (loaded.threads, threads) |input, *thread| {
@@ -5055,6 +10011,7 @@ test "native discovery bounds the combined escaped owner response rather than ea
 test "compatible native discovery mechanism does not promote live support" {
     var task: NativeTask = undefined;
     task.discovered = .empty;
+    task.source_contexts = .empty;
     defer task.discovered.deinit(std.testing.allocator);
     task.scanned_entries = 1;
     task.ignored_stale_entries = 0;
@@ -5241,9 +10198,47 @@ fn maintenanceReservation(saved: Persisted) !usize {
         const actual = try snapshot_admission.countJson(measurements, reliability.max_lifecycle_checkpoint_bytes);
         reserve = try std.math.add(usize, reserve, try reliability_commit.remainingReservation(actual));
     }
+    if (saved.owned_siwc_pairs) |pairs| {
+        try siwc_pair.validate(pairs);
+        const range = try scalarRange(siwc_pair.Record);
+        const renewal_range = try scalarRange(?siwc_pair.Renewal);
+        // Preserve the exact established schema-2 reservation for old pairs.
+        // The new finite promise is admitted before their first refresh IO.
+        const old_span = range.maximum - range.minimum - (renewal_range.maximum - renewal_range.minimum);
+        reserve += old_span * pairs.records.len;
+        for (pairs.records) |pair| {
+            reserve -= (try scalarWidening(pair)) - (try scalarWidening(pair.renewal));
+            if (pair.renewal != null) {
+                const actual_renewal = try snapshot_admission.countJson(pair.renewal, 4096);
+                reserve = try std.math.add(usize, reserve, 4096 - actual_renewal);
+                // Current commitments change on a real successor. Only these
+                // fixed byte arrays need an extra numeric-width promise; no
+                // existing domain/snapshot reservation algorithm is broadened.
+                inline for (@typeInfo(siwc_pair.Record).@"struct".field_names, @typeInfo(siwc_pair.Record).@"struct".field_types) |name, field_type| {
+                    if (@typeInfo(field_type) == .array) {
+                        const value = @field(pair, name);
+                        const current_bytes = try snapshot_admission.countJson(value, storage.maximum_snapshot_bytes);
+                        const worst: field_type = @splat(255);
+                        const maximum_bytes = try snapshot_admission.countJson(worst, storage.maximum_snapshot_bytes);
+                        reserve = try std.math.add(usize, reserve, maximum_bytes - current_bytes);
+                    }
+                }
+            }
+        }
+    }
+    if (saved.fresh_oauth_authority) |enrollments| {
+        try oauth_enrollment.validate(enrollments);
+        const actual = try snapshot_admission.countJson(enrollments, oauth_enrollment.maximum_snapshot_bytes);
+        reserve = try std.math.add(usize, reserve, oauth_enrollment.maximum_snapshot_bytes - actual);
+    }
     if (saved.browser_attempt_authority) |attempts| {
         const actual = try snapshot_admission.countJson(attempts, browser_attempt.maximum_snapshot_bytes);
         reserve = try std.math.add(usize, reserve, browser_attempt.maximum_snapshot_bytes - actual);
+    }
+    if (saved.owned_renewal_accounting) |aggregate| {
+        try owned_renewal_accounting.validate(aggregate);
+        const actual = try snapshot_admission.countJson(aggregate, owned_renewal_accounting.maximum_snapshot_bytes);
+        reserve = try std.math.add(usize, reserve, owned_renewal_accounting.maximum_snapshot_bytes - actual);
     }
     return reserve;
 }
@@ -5267,6 +10262,13 @@ fn freeIntent(allocator: std.mem.Allocator, intent: OutcomeIntent) void {
     allocator.free(intent.source_id);
     allocator.free(intent.provider);
     allocator.free(intent.label);
+}
+
+// This actual SQL-aware gate runs after authenticated snapshot/key opening
+// and before Store can reserve recovery authority. It restores no ticket or IO.
+fn validateOwnedPairRecovery(store: *storage.Store, allocator: std.mem.Allocator, json: []const u8, revision: u64) !void {
+    try validatePersistedAdmission(allocator, json, revision);
+    try siwc_pair.validatePendingRecovery(store, json);
 }
 
 // Storage invokes this after key verification and before recovery authority or
@@ -5293,6 +10295,12 @@ fn validatePersistedAdmission(allocator: std.mem.Allocator, json: []const u8, cu
             strict.deinit();
         };
     };
+    if (control.get(raw.value, "owned_renewal_accounting")) |aggregate| if (aggregate != .null) {
+        if (aggregate != .object) return error.InvalidRenewalAccounting;
+        inline for (@typeInfo(owned_renewal_accounting.Snapshot).@"struct".field_names) |name| {
+            if (control.get(aggregate, name) == null) return error.InvalidRenewalAccounting;
+        }
+    };
     const parsed = try std.json.parseFromSlice(Persisted, allocator, json, .{});
     defer parsed.deinit();
     const saved = parsed.value;
@@ -5306,6 +10314,34 @@ fn validatePersistedAdmission(allocator: std.mem.Allocator, json: []const u8, cu
         var verified = try browser_attempt.Ledger.fromSnapshot(allocator, attempts);
         defer verified.deinit();
         _ = try snapshot_admission.countJson(attempts, browser_attempt.maximum_snapshot_bytes);
+    }
+    for (saved.source_descriptions) |description| if (description.native_authority) |authority| if (authority.rotation) |intent| {
+        const previous = authority.context orelse return error.InvalidNativeSourceAuthority;
+        try native_owner.validateOperation(intent.operation);
+        try checkNativeContextSuccessor(previous, intent.context);
+        const interval = std.math.sub(i64, intent.expires_at, intent.admitted_at) catch return error.InvalidNativeSourceAuthority;
+        if (previous.same(intent.context) or intent.job_generation == 0 or interval <= 0 or interval > 13 or intent.expires_at > authority.consent.expires_at) return error.InvalidNativeSourceAuthority;
+    };
+    if (saved.owned_siwc_pairs) |pairs| {
+        if (saved.schema_version != 2) return error.InvalidSiwcPair;
+        try siwc_pair.validate(pairs);
+    }
+    var accounted_issued: u64 = 0;
+    if (saved.owned_siwc_pairs) |pairs| for (pairs.records) |pair| if (pair.renewal) |renewal| {
+        if (renewal.accounting_admitted and renewal.accounting_capacity_unavailable) return error.InvalidRenewalAccounting;
+        if (!renewal.accounting_admitted) continue;
+        if (saved.owned_renewal_accounting == null) return error.InvalidRenewalAccounting;
+        if (renewal.state == .issued) accounted_issued += 1;
+    };
+    if (saved.owned_renewal_accounting) |aggregate| {
+        if (saved.schema_version != 2) return error.InvalidRenewalAccounting;
+        try owned_renewal_accounting.validate(aggregate);
+        if (aggregate.unresolved != accounted_issued) return error.InvalidRenewalAccounting;
+    }
+    if (saved.fresh_oauth_authority) |enrollments| {
+        if (saved.schema_version != 2) return error.InvalidOAuthEnrollment;
+        try oauth_enrollment.validate(enrollments);
+        _ = try snapshot_admission.countJson(enrollments, oauth_enrollment.maximum_snapshot_bytes);
     }
     var state = try domain.State.fromSnapshot(allocator, saved.state);
     defer state.deinit();
@@ -5539,6 +10575,20 @@ fn validateNativeAttribution(allocator: std.mem.Allocator, saved: Persisted, led
     }
 }
 
+fn finalRuntimeIdentityFence(io: std.Io, context: runtime_selection_producer.ActorContext, prepared: ?*const runtime_selection_writer.Prepared, inputs: ?*const runtime_deployment.OwnedInputs, installation: ?*const runtime_package_installation.OwnedInstallation, parent: std.c.fd_t, basename: ?[:0]const u8) !void {
+    try native_source_acquisition.deadline(io, context.deadline);
+    if (installation) |installed| try installed.recheck(io, context.deadline, parent, basename orelse return error.InvalidInstallationDestination);
+    if (inputs) |selected| try selected.recheckIdentity(io);
+    const selected = prepared orelse return error.InvalidRuntimeSelection;
+    try selected.recheckIdentity(io, context);
+    try native_source_acquisition.deadline(io, context.deadline);
+}
+
+fn copyQualifiedNativeRuntime(a: std.mem.Allocator, input: QualifiedNativeRuntime) !QualifiedNativeRuntime {
+    if (std.mem.allEqual(u8, &input.record_sha256, 0) or input.evidence.len == 0 or input.evidence.len > 32 * 1024) return error.InvalidRuntimeSelection;
+    return .{ .record_sha256 = input.record_sha256, .evidence = try a.dupe(u8, input.evidence), .channel = input.channel, .target = input.target, .adapter_epoch = input.adapter_epoch, .registry = input.registry };
+}
+
 fn copyDescription(allocator: std.mem.Allocator, input: SourceDescription) !SourceDescription {
     const source_id = try allocator.dupe(u8, input.source_id);
     errdefer allocator.free(source_id);
@@ -5547,7 +10597,9 @@ fn copyDescription(allocator: std.mem.Allocator, input: SourceDescription) !Sour
     const label = try allocator.dupe(u8, input.label);
     errdefer allocator.free(label);
     const path = try allocator.dupe(u8, input.path);
-    return .{ .source_id = source_id, .provider = provider, .label = label, .path = path };
+    errdefer allocator.free(path);
+    const native_endpoint = try allocator.dupe(u8, input.native_endpoint);
+    return .{ .source_id = source_id, .provider = provider, .label = label, .path = path, .native_authority = input.native_authority, .native_endpoint = native_endpoint };
 }
 
 fn freeDescription(allocator: std.mem.Allocator, input: SourceDescription) void {
@@ -5555,6 +10607,7 @@ fn freeDescription(allocator: std.mem.Allocator, input: SourceDescription) void 
     allocator.free(input.provider);
     allocator.free(input.label);
     allocator.free(input.path);
+    allocator.free(input.native_endpoint);
 }
 
 fn adapterIndex(application: []const u8) !usize {
@@ -5595,6 +10648,385 @@ fn bindingIdentityForOwner(application: []const u8, session: []const u8, externa
     return std.fmt.bytesToHex(digest, .lower);
 }
 
+test "public snapshots exclude retained native source authority and private locators" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = try allocator.dupe(u8, "/fixture/no-service"),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer {
+        current.release();
+        allocator.free(current.state_dir);
+    }
+    const witness: peer.Witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(1), .pidfs_device = 1, .pidfs_inode = 2, .user_namespace = .{ .device = 3, .inode = 4 }, .pid_namespace = .{ .device = 5, .inode = 6 }, .uid = 7, .gid = 8 };
+    try current.addDescription(.{ .source_id = "opaque-native-source", .provider = "codex", .native_endpoint = "/fixture/private-owner.sock", .native_authority = .{ .origin = @splat(0xAB), .consent = .{
+        .id = @splat(1),
+        .generation = 1,
+        .source_id = @splat(2),
+        .source_generation = 1,
+        .owner = .{ .id = @splat(3), .nonce = @splat(4), .endpoint_generation = 1, .witness = witness },
+        .expires_at = 1,
+        .purpose = .native_access_copy_for_identity_and_request,
+        .forget_epoch = 0,
+    } } });
+    try current.addDescription(.{ .source_id = "explicit-source", .provider = "codex", .path = "/fixture/declared-legacy" });
+    const bytes = try current.publicSnapshot(allocator, .null);
+    defer allocator.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "private-owner.sock") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "native_authority") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "native_endpoint") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+    const descriptions = control.get(control.get(parsed.value, "result").?, "source_descriptions").?;
+    try std.testing.expectEqual(@as(usize, 2), descriptions.array.items.len);
+    for (descriptions.array.items) |description| try std.testing.expectEqual(@as(usize, 4), description.object.count());
+    const native_path = control.get(descriptions.array.items[0], "path").?;
+    try std.testing.expect(native_path == .string);
+    try std.testing.expectEqualStrings("", native_path.string);
+    try std.testing.expectEqualStrings("/fixture/declared-legacy", try control.string(descriptions.array.items[1], "path"));
+}
+
+test "native import joins actual source lifecycle with retained consent and fresh context" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    // Threadless metadata model: no qualified image, descriptor, credential,
+    // provider request, encrypted grant adoption or normal vault is simulated.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = try allocator.dupe(u8, "/fixture/no-service"),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer {
+        current.release();
+        allocator.free(current.state_dir);
+    }
+    const source_handle: [32]u8 = @splat(2);
+    const source_id = std.fmt.bytesToHex(source_handle, .lower);
+    const witness: peer.Witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(1), .pidfs_device = 1, .pidfs_inode = 2, .user_namespace = .{ .device = 3, .inode = 4 }, .pid_namespace = .{ .device = 5, .inode = 6 }, .uid = 7, .gid = 8 };
+    const owner: native_source_consent.Owner = .{ .id = @splat(3), .nonce = @splat(4), .endpoint_generation = 1, .witness = witness };
+    const context: native_source_consent.Context = .{ .id = @splat(5), .generation = 1 };
+    const permission: native_source_consent.Consent = .{ .id = @splat(1), .generation = 1, .source_id = source_handle, .source_generation = 1, .owner = owner, .expires_at = current.now() + 3600, .purpose = .native_access_copy_for_identity_and_request, .forget_epoch = 0 };
+    const admission: native_source_consent.Admission = .{ .source_id = source_handle, .source_generation = 1, .consent_id = permission.id, .consent_generation = 1, .owner = owner, .context = context, .forget_epoch = 0, .allow_reenrollment = false, .cutoff = 100 };
+    _ = try current.state.connectSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex", .authorized_at = 0 });
+    _ = try current.importSourceGeneration(&source_id);
+    try current.addDescription(.{ .source_id = &source_id, .provider = "codex", .native_authority = .{ .origin = @splat(6), .consent = permission, .context = context } });
+    var pending: PendingImport = .{ .network_id = 0, .source_id = @constCast(&source_id), .provider = @constCast("codex"), .credential_kind = .oauth_access, .source_generation = 1, .credit_key = undefined, .forget_epoch = 0, .job_id = @constCast(""), .token = @constCast(""), .label = @constCast(""), .expires_at = null, .native_admission = admission };
+    var fresh: NativeImportFresh = .{ .origin = @splat(6), .selection_digest = @splat(0), .declaration = .{ .owner_id = owner.id, .native_nonce = owner.nonce, .endpoint_generation = 1, .witness = witness, .status = .available, .context = .{ .id = context.id, .generation = 1 }, .store_present = true, .credential_acquisition_authorized = false } };
+    try native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0);
+    // A durable successor intent alone cannot authorize either ordinary tuple.
+    const successor: native_source_consent.Context = .{ .id = @splat(8), .generation = 2 };
+    const operation: native_owner.OperationId = @splat('a');
+    const job = try current.state.reopenJob(.{ .id = "rotation-model", .kind = .enrollment, .status = .running });
+    var expected = current.descriptions.items[0].native_authority.?;
+    const admitted_wall = current.now();
+    const source_expiry = admitted_wall + 7;
+    current.state.sources.items[0].authorized_until = source_expiry;
+    expected.rotation = .{ .operation = operation, .context = successor, .job_generation = job.operation_generation, .admitted_at = admitted_wall, .expires_at = @min(@min(source_expiry, expected.consent.expires_at), admitted_wall + 13) };
+    current.descriptions.items[0].native_authority = expected;
+    try std.testing.expectError(error.NativeSourceOperationPending, current.nativeImportCurrent(pending, fresh));
+    var rotated = pending;
+    var successor_admission = admission;
+    successor_admission.context = successor;
+    rotated.native_admission = successor_admission;
+    rotated.native_expected_authority = expected;
+    rotated.native_expected_endpoint = @constCast("");
+    rotated.native_operation = operation;
+    rotated.job_id = @constCast("rotation-model");
+    rotated.job_generation = job.operation_generation;
+    // Exercise the production request constructor and actual authenticated
+    // encoding, not a simulated remote copy or cancellation. Source expiry is
+    // tighter than both saved consent and the new operation's 13-second budget.
+    const copy_request = try nativeRotationRequest(rotated, 1);
+    try std.testing.expectEqual(source_expiry, copy_request.consent_expires_at);
+    try std.testing.expectEqual(permission.expires_at, expected.consent.expires_at);
+    try std.testing.expect(copy_request.consent_expires_at < expected.consent.expires_at);
+    var request_arena = std.heap.ArenaAllocator.init(allocator);
+    defer request_arena.deinit();
+    const wire = try native_source_acquisition.fields(request_arena.allocator(), copy_request);
+    const encoded_expiry = try std.fmt.allocPrint(request_arena.allocator(), "{d}", .{source_expiry});
+    try std.testing.expectEqualStrings(encoded_expiry, wire.consentExpiresAt);
+    try std.testing.expectEqualStrings(encoded_expiry, wire.ordered()[10]);
+    const tightened_proof = try native_source_acquisition.requestProof(request_arena.allocator(), copy_request, @splat(11));
+    var longer_request = copy_request;
+    longer_request.consent_expires_at = expected.consent.expires_at;
+    const longer_proof = try native_source_acquisition.requestProof(request_arena.allocator(), longer_request, @splat(11));
+    try std.testing.expect(!std.mem.eql(u8, &tightened_proof, &longer_proof));
+    fresh.declaration.context = .{ .id = successor.id, .generation = successor.generation };
+    try native_source_consent.check(successor_admission, try current.nativeImportCurrent(rotated, fresh), current.now(), 0);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.context.?.same(context));
+    // Every old-owner/CAS dimension remains a refusal, including same-path
+    // replacement, altered consent, origin, job generation and lost owner.
+    current.descriptions.items[0].native_endpoint = try allocator.dupe(u8, "/fixture/replacement.sock");
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    allocator.free(current.descriptions.items[0].native_endpoint);
+    current.descriptions.items[0].native_endpoint = try allocator.dupe(u8, "");
+    current.descriptions.items[0].native_authority.?.consent.owner.nonce = @splat(9);
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    current.descriptions.items[0].native_authority = expected;
+    current.descriptions.items[0].native_authority.?.consent.generation += 1;
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    current.descriptions.items[0].native_authority = expected;
+    current.descriptions.items[0].native_authority.?.origin = @splat(9);
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    current.descriptions.items[0].native_authority = expected;
+    rotated.job_generation += 1;
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    rotated.job_generation = job.operation_generation;
+    current.state.jobs.items[0].status = .failed;
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(rotated, fresh));
+    current.state.jobs.items[0].status = .running;
+    current.descriptions.items[0].native_authority.?.rotation.?.expires_at = current.now();
+    rotated.native_expected_authority = current.descriptions.items[0].native_authority;
+    try std.testing.expectError(error.NativeSourceDeadline, current.nativeImportCurrent(rotated, fresh));
+    current.descriptions.items[0].native_authority = expected;
+    rotated.native_expected_authority = expected;
+    rotated.credit_key = creditKey(.import, rotated.job_id, rotated.job_generation);
+    // Known pre-issue cancellation retires only its original running owner;
+    // a stale callback cannot clear a later operation's durable intent.
+    var stale = rotated;
+    stale.job_generation += 1;
+    stale.credit_key = creditKey(.import, stale.job_id, stale.job_generation);
+    try current.failImportJobCause(stale, .operator_shutdown);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.rotation != null);
+    try current.failImportJobCause(rotated, .operator_shutdown);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.rotation == null);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.context.?.same(context));
+    try std.testing.expectEqual(.failed, current.state.jobs.items[0].status);
+    current.state.jobs.items[0].status = .running;
+    current.descriptions.items[0].native_authority = expected;
+    // Atomic staging is explicit; ordinary old admission cannot be resurrected.
+    try current.stageNativeContextRotation(rotated);
+    try std.testing.expect(current.descriptions.items[0].native_authority.?.rotation == null);
+    try std.testing.expectError(error.NativeSourceContextChanged, current.nativeImportCurrent(pending, fresh));
+    var ordinary_successor = pending;
+    ordinary_successor.native_admission = successor_admission;
+    try native_source_consent.check(successor_admission, try current.nativeImportCurrent(ordinary_successor, fresh), current.now(), 0);
+    // Cancellation closes a real task's owned pending strings and arena;
+    // no selected image/descriptor/provider effect is fabricated.
+    const canceled_task = try allocator.create(NativeSourceRotationTask);
+    const canceled_arena = try allocator.create(std.heap.ArenaAllocator);
+    canceled_arena.* = .init(allocator);
+    canceled_task.* = .{ .engine = &current, .arena = canceled_arena, .pending = try emptyNativeRotationImport(allocator, &source_id, "synthetic-cancel"), .options = .{ .state_dir = "/fixture", .home = "/fixture", .adapter = .codex, .capability = @splat('a'), .broker_socket = "/fixture/unused.sock", .omux_version = product.version, .key = @splat(1) }, .runtime_root = "", .selected = undefined, .endpoint = "/fixture/unused.sock", .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(13_000) }), .observed_at = current.now(), .custody_seconds = 1, .job = undefined };
+    NativeSourceRotationTask.run(canceled_task, true);
+    try std.testing.expectEqual(error.ServiceStopping, canceled_task.failure.?);
+    try std.testing.expect(!canceled_task.request_attempted);
+    try std.testing.expect(canceled_task.copy == null and canceled_task.image == null);
+    canceled_task.deinit();
+    // Restore fixture beforeimage; no qualified writer/provider is simulated.
+    current.descriptions.items[0].native_authority = expected;
+    current.descriptions.items[0].native_authority.?.rotation = null;
+    fresh.declaration.context = .{ .id = context.id, .generation = context.generation };
+    current.state.jobs.clearRetainingCapacity();
+    allocator.free(job.id);
+    allocator.free(job.account_id);
+    // Keep the pending admission and worker response unchanged while the saved
+    // source authority disappears or advances. Neither may authorize the old copy.
+    current.descriptions.items[0].native_authority.?.context = null;
+    try std.testing.expectError(error.NativeSourceFreshCheckRequired, current.nativeImportCurrent(pending, fresh));
+    current.descriptions.items[0].native_authority.?.context = context;
+    current.descriptions.items[0].native_authority.?.context.?.id = @splat(7);
+    try std.testing.expectError(error.NativeSourceContextChanged, current.nativeImportCurrent(pending, fresh));
+    current.descriptions.items[0].native_authority.?.context = context;
+    current.descriptions.items[0].native_authority.?.context.?.generation = 2;
+    try std.testing.expectError(error.NativeSourceContextChanged, current.nativeImportCurrent(pending, fresh));
+    // Even a fresh declaration matching that successor cannot upgrade an older
+    // admission; a future authenticated transition needs its own explicit CAS.
+    fresh.declaration.context.?.generation = 2;
+    try std.testing.expectError(error.NativeSourceContextChanged, current.nativeImportCurrent(pending, fresh));
+    fresh.declaration.context.?.generation = 1;
+    current.descriptions.items[0].native_authority.?.context = context;
+    try native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0);
+    try std.testing.expectEqual(@as(usize, 0), current.state.grants.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.state.jobs.items.len);
+    fresh.origin = @splat(7);
+    try std.testing.expectError(error.NativeSourceOriginChanged, current.nativeImportCurrent(pending, fresh));
+    fresh.origin = @splat(6);
+    fresh.declaration.context.?.generation = 2;
+    try std.testing.expectError(error.NativeSourceContextChanged, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    fresh.declaration.context.?.generation = 1;
+    pending.source_id = @constCast("different-opaque-source");
+    try std.testing.expectError(error.NativeSourceSuperseded, current.nativeImportCurrent(pending, fresh));
+    pending.source_id = @constCast(&source_id);
+    current.import_sources.items[0].generation = 2;
+    try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    current.import_sources.items[0].generation = 1;
+    current.import_forget_epoch = 1;
+    try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    current.import_forget_epoch = 0;
+    try current.state.detachSource(&source_id);
+    try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+    try current.state.disconnectSource(&source_id);
+    try std.testing.expectError(error.NativeSourceUnauthorized, native_source_consent.check(admission, try current.nativeImportCurrent(pending, fresh), current.now(), 0));
+}
+
+test "native successor context requires both a new opaque ID and increasing generation" {
+    const previous: native_source_consent.Context = .{ .id = @splat(1), .generation = 7 };
+    try checkNativeContextSuccessor(previous, previous);
+    try checkNativeContextSuccessor(previous, .{ .id = @splat(2), .generation = 8 });
+    for ([_]native_source_consent.Context{
+        .{ .id = @splat(2), .generation = 7 },
+        .{ .id = @splat(2), .generation = 6 },
+        .{ .id = previous.id, .generation = 8 },
+    }) |candidate| try std.testing.expectError(error.NativeSourceContextChanged, checkNativeContextSuccessor(previous, candidate));
+    try std.testing.expectError(error.InvalidNativeSourceAuthority, checkNativeContextSuccessor(previous, .{ .id = @splat(0), .generation = 8 }));
+    try std.testing.expectError(error.InvalidNativeSourceAuthority, checkNativeContextSuccessor(previous, .{ .id = @splat(2), .generation = 0 }));
+}
+
+test "native successor identical secret joins encrypted SQL owner identity and original expiry without renewal transfer" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]storage.RenewalOwner{ .external, .omux }) |sql_owner| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const prefix = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(prefix);
+        const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{prefix}, 0);
+        defer a.free(database);
+        var current: Engine = .{
+            .allocator = a,
+            .io = io,
+            .state_dir = try a.dupe(u8, prefix),
+            .state = domain.State.init(a),
+            .observers = observer.Coordinator.init(a),
+            .requests = request_authority.Ledger.init(a, 4096),
+            .mutations = try mutation_authority.Ledger.init(a, 4096),
+            .admission = snapshot_admission.Ledger.init(a),
+            .native_owners = native_owner.Ledger.init(a),
+            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+            .root_id = try a.dupeSentinel(u8, "fixture-root", 0),
+            .root_key = @splat(19),
+            .db = try storage.Store.openRoot(io, a, database, "fixture-root", @splat(19)),
+        };
+        defer {
+            current.db.?.close();
+            current.release();
+            a.free(current.state_dir);
+        }
+        const identity: domain.Identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-rotation-subject", .tenant = "synthetic-rotation-workspace", .verified = true };
+        _ = try current.state.connectSource(.{ .id = "synthetic-rotation-source", .kind = .native_store, .provider = "codex" });
+        _ = try current.state.enroll(.{ .account_id = "synthetic-rotation-account", .source_id = "synthetic-rotation-source", .identity = identity }, current.now());
+        _ = try current.state.addGrant(.{ .id = "synthetic-rotation-grant", .account_id = "synthetic-rotation-account", .source_id = "synthetic-rotation-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = identity.issuer, .provider_expires_at = current.now() + 30, .custody_expires_at = current.now() + 30 });
+        const context: envelope.Context = .{ .key_id = "fixture-root", .account_id = "synthetic-rotation-account", .grant_id = "synthetic-rotation-grant", .generation = 1, .purpose = "request", .scope = identity.issuer };
+        _ = try current.db.?.commit(0, "{}", &.{.{ .put = .{ .context = context, .plaintext = "{\"access_token\":\"synthetic-rotation-secret\"}", .renewal_owner = sql_owner } }});
+        const checkpoint = current.db.?.checkpoint;
+        var pending = try emptyNativeRotationImport(a, "synthetic-rotation-source", "");
+        defer pending.deinit(a);
+        a.free(pending.token);
+        pending.token = try a.dupe(u8, "synthetic-rotation-secret");
+        pending.expires_at = current.now() + 60;
+        pending.custody_expires_at = current.now() + 60;
+        if (sql_owner == .omux) {
+            try std.testing.expectError(error.RenewalOwnerConflict, current.nativeRotationSecretUnchanged(pending, identity));
+        } else {
+            try std.testing.expect(try current.nativeRotationSecretUnchanged(pending, identity));
+            var switched = identity;
+            switched.tenant = "synthetic-other-workspace";
+            try std.testing.expect(!try current.nativeRotationSecretUnchanged(pending, switched));
+            a.free(pending.token);
+            pending.token = try a.dupe(u8, "synthetic-replacement-secret");
+            try std.testing.expect(!try current.nativeRotationSecretUnchanged(pending, identity));
+            a.free(pending.token);
+            pending.token = try a.dupe(u8, "synthetic-rotation-secret");
+            pending.custody_expires_at = current.now() + 1;
+            try std.testing.expectError(error.NativeSourceUnchangedUnusable, current.nativeRotationSecretUnchanged(pending, identity));
+            pending.custody_expires_at = current.now() + 60;
+            current.state.grants.items[0].status = .quarantined;
+            try std.testing.expectError(error.NativeSourceUnchangedUnusable, current.nativeRotationSecretUnchanged(pending, identity));
+        }
+        try std.testing.expect(checkpoint.eql(current.db.?.checkpoint));
+        try std.testing.expectEqual(@as(u64, 1), current.state.grants.items[0].generation);
+        try std.testing.expectEqual(.external, current.state.grants.items[0].ownership);
+        const sql = (try current.db.?.readGrantStatus(context.account_id, context.grant_id)).?;
+        try std.testing.expectEqual(sql_owner, sql.renewal_owner);
+        try std.testing.expectEqual(@as(u64, 1), sql.generation);
+        try std.testing.expectEqual(@as(usize, 0), current.fixture_identity_submissions);
+    }
+}
+
+// Pure checked wall arithmetic. The caller binds this duration once to an
+// earlier awake entry; no in-flight observation or acquisition is extended.
+fn nativeRotationBudgetNs(wall_until: i64, wall_now_ns: i128) !u64 {
+    const expiry_ns = try std.math.mul(i128, wall_until, 1_000_000_000);
+    const available = try std.math.sub(i128, expiry_ns, wall_now_ns);
+    if (available <= 0) return error.NativeSourceUnauthorized;
+    return @intCast(@min(available, 13 * 1_000_000_000));
+}
+
+test "native successor acquisition clips fractional source expiry to original wall admission" {
+    const second: i128 = 1_000_000_000;
+    try std.testing.expectEqual(@as(u64, 13 * 1_000_000_000), try nativeRotationBudgetNs(100, 50 * second + 999_999_999));
+    try std.testing.expectEqual(@as(u64, 1), try nativeRotationBudgetNs(51, 50 * second + 999_999_999));
+    try std.testing.expectEqual(@as(u64, 12 * 1_000_000_000 + 1), try nativeRotationBudgetNs(63, 50 * second + 999_999_999));
+    try std.testing.expectError(error.NativeSourceUnauthorized, nativeRotationBudgetNs(51, 51 * second));
+    try std.testing.expectError(error.NativeSourceUnauthorized, nativeRotationBudgetNs(51, 51 * second + 1));
+    try std.testing.expectError(error.Overflow, nativeRotationBudgetNs(1, std.math.minInt(i128)));
+}
+
+fn sameVerifiedIdentity(previous: domain.Identity, candidate: domain.Identity) bool {
+    return previous.verified and candidate.verified and eql(previous.provider, candidate.provider) and eql(previous.issuer, candidate.issuer) and eql(previous.subject, candidate.subject) and eql(previous.tenant, candidate.tenant);
+}
+
+fn sameNativeSecret(previous: []const u8, candidate: []const u8) bool {
+    if (previous.len != candidate.len) return false;
+    var difference: u8 = 0;
+    for (previous, candidate) |a, b| difference |= a ^ b;
+    return difference == 0;
+}
+
+fn checkNativeContextSuccessor(previous: native_source_consent.Context, candidate: native_source_consent.Context) !void {
+    try previous.validate();
+    try candidate.validate();
+    if (previous.same(candidate)) return;
+    if (candidate.generation <= previous.generation or std.crypto.timing_safe.eql([32]u8, previous.id, candidate.id)) return error.NativeSourceContextChanged;
+}
+
+fn retainNativeOptions(a: std.mem.Allocator, input: setup.Options) !setup.Options {
+    var result = input;
+    result.state_dir = try a.dupe(u8, input.state_dir);
+    result.home = try a.dupe(u8, input.home);
+    result.xdg_config_home = if (input.xdg_config_home) |value| try a.dupe(u8, value) else null;
+    result.codex_home = if (input.codex_home) |value| try a.dupe(u8, value) else null;
+    result.config_path = if (input.config_path) |value| try a.dupe(u8, value) else null;
+    result.broker_socket = try a.dupe(u8, input.broker_socket);
+    result.native_socket = if (input.native_socket) |value| try a.dupe(u8, value) else null;
+    result.omux_version = try a.dupe(u8, input.omux_version);
+    return result;
+}
+
+fn emptyNativeRotationImport(a: std.mem.Allocator, source_id: []const u8, label: []const u8) !PendingImport {
+    const owned_id = try a.dupe(u8, source_id);
+    errdefer a.free(owned_id);
+    const provider = try a.dupe(u8, "codex");
+    errdefer a.free(provider);
+    const job = try std.fmt.allocPrint(a, "reconcile-{s}", .{source_id});
+    errdefer a.free(job);
+    const token = try a.dupe(u8, "");
+    errdefer a.free(token);
+    const owned_label = try a.dupe(u8, label);
+    return .{ .network_id = 0, .source_id = owned_id, .provider = provider, .credential_kind = .oauth_access, .allow_reenrollment = false, .source_generation = 0, .credit_key = undefined, .forget_epoch = 0, .job_id = job, .token = token, .label = owned_label, .expires_at = null };
+}
+
 fn sameOptionalNativeRef(a: ?native_owner.NativeRef, b: ?native_owner.NativeRef) bool {
     if (a) |first| return if (b) |second| first.same(second) else false;
     return b == null;
@@ -5632,7 +11064,7 @@ fn parseNativeRef(params: std.json.Value) !native_owner.NativeRef {
 
 pub fn mutationKind(method: []const u8) ?mutation_authority.Kind {
     if (builtin.is_test and eql(method, "fixture.externalEffect")) return .external;
-    for ([_][]const u8{ "policy.set", "account.pause", "account.resume", "account.drain", "account.forget", "operation.cancel" }) |candidate| if (eql(method, candidate)) return .local_atomic;
+    for ([_][]const u8{ "oauth.enrollment.prepare.v1", "oauth.enrollment.prepare.siwc.v1", "oauth.enrollment.retire.v1", "oauth.enrollment.withdraw.v1", "policy.set", "account.pause", "account.resume", "account.drain", "account.forget", "operation.cancel" }) |candidate| if (eql(method, candidate)) return .local_atomic;
     for ([_][]const u8{ "setup.refresh", "source.connect", "source.disconnect", "source.reconcile", "enrollment.start", "repair.start", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach" }) |candidate| if (eql(method, candidate)) return .external;
     return null;
 }
@@ -5716,6 +11148,741 @@ fn sameDemand(a: anytype, b: @TypeOf(a)) bool {
         for (b.scopes[0..index]) |previous| if (eql(scope, previous)) return false;
     }
     return true;
+}
+
+test "locked vault startup keeps bounded diagnostics and refuses all custody work" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, true, null);
+    defer current.deinit();
+    try std.testing.expect(current.vault_locked and current.poisoned);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    const cleared_key: envelope.Key = @splat(0);
+    try std.testing.expectEqualSlices(u8, &cleared_key, &current.root_key);
+    for ([_][]const u8{ "system.handshake", "system.health", "setup.readiness", "setup.evidence", "setup.plan" }) |method| {
+        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method }, .{});
+        defer allocator.free(request);
+        const reply = try current.dispatch(allocator, request, .control);
+        defer allocator.free(reply);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+        defer parsed.deinit();
+        const result = control.get(parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+        if (eql(method, "system.health")) {
+            try std.testing.expectEqualStrings("vault_locked", try control.string(result, "status"));
+            try std.testing.expect(!try control.boolean(result, "custody_available", true));
+            try std.testing.expect(!try control.boolean(result, "metadata_loaded", true));
+            try std.testing.expectEqualStrings("unlock_platform_vault_then_reopen_custody", try control.string(result, "recovery_action"));
+            try std.testing.expect(control.get(result, "account_count").? == .null);
+        }
+        if (eql(method, "setup.readiness")) {
+            try std.testing.expect(!try control.boolean(result, "ready", true));
+            const findings = control.get(result, "findings").?.array.items;
+            try std.testing.expectEqualStrings("observation_stale", try control.string(findings[2], "reason"));
+            try std.testing.expectEqualStrings("refresh_observation", try control.string(findings[2], "action"));
+            try std.testing.expectEqualStrings("observation_unknown", try control.string(findings[3], "reason"));
+        }
+    }
+    for (control.methods) |method| {
+        if (eql(method.name, "custody.reopen") or eql(method.name, "system.handshake") or eql(method.name, "system.health") or eql(method.name, "setup.readiness") or eql(method.name, "setup.evidence") or eql(method.name, "setup.plan")) continue;
+        // Absent params is a valid envelope. An empty Zig tuple serializes
+        // as [], which the control wire contract correctly refuses first.
+        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 2, .method = method.name }, .{});
+        defer allocator.free(request);
+        const reply = try current.dispatch(allocator, request, method.channel);
+        defer allocator.free(reply);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+        defer parsed.deinit();
+        if (eql(method.name, "oauth.enrollment.pending.v1") or eql(method.name, "oauth.enrollment.descriptor.v1")) {
+            try std.testing.expect(reply.len <= control.max_message);
+            try std.testing.expect(control.get(parsed.value, "error") == null);
+            const result = control.get(parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+            try std.testing.expectEqual(@as(i64, 1), (control.get(result, "schema_version") orelse return error.InvalidDiagnosticReply).integer);
+            try std.testing.expect(!try control.boolean(result, "custody_available", true));
+            if (eql(method.name, "oauth.enrollment.pending.v1")) {
+                try std.testing.expectEqualStrings("unknown", try control.string(result, "status"));
+                try std.testing.expect((control.get(result, "pending") orelse return error.InvalidDiagnosticReply) == .null);
+            } else {
+                try std.testing.expectEqualStrings(siwc_pair.request_profile, try control.string(result, "profile"));
+                try std.testing.expectEqualStrings(oauth_enrollment.oss_purpose, try control.string(result, "purpose"));
+                try std.testing.expect(!try control.boolean(result, "provider_proof", true));
+                try std.testing.expect(!try control.boolean(result, "native_support_proven", true));
+                try std.testing.expect(!try control.boolean(result, "live_handoff_proven", true));
+            }
+            continue;
+        }
+        if (eql(method.name, "oauth.enrollment.status.v1")) {
+            const failure = control.get(parsed.value, "error") orelse return error.UnexpectedRpcSuccess;
+            try std.testing.expectEqualStrings("InvalidParams", try control.string(failure, "message"));
+            const locked_transaction = std.fmt.bytesToHex(@as([32]u8, @splat(1)), .lower);
+            const status_request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 3, .method = method.name, .params = .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = locked_transaction[0..] } }, .{});
+            defer allocator.free(status_request);
+            const status_reply = try current.dispatch(allocator, status_request, .control);
+            defer allocator.free(status_reply);
+            const status_parsed = try std.json.parseFromSlice(std.json.Value, allocator, status_reply, .{});
+            defer status_parsed.deinit();
+            try std.testing.expect(status_reply.len <= control.max_message);
+            try std.testing.expect(control.get(status_parsed.value, "error") == null);
+            const result = control.get(status_parsed.value, "result") orelse return error.UnexpectedRpcFailure;
+            try std.testing.expectEqual(@as(i64, 1), (control.get(result, "schema_version") orelse return error.InvalidDiagnosticReply).integer);
+            try std.testing.expectEqualStrings(&locked_transaction, try control.string(result, "transaction_id"));
+            try std.testing.expectEqualStrings("unknown", try control.string(result, "status"));
+            try std.testing.expectEqualStrings("custody_unavailable", try control.string(result, "reason"));
+            try std.testing.expect(!try control.boolean(result, "custody_available", true));
+            for ([_][]const u8{ "phase", "paired_committed", "grant_ready" }) |field| {
+                try std.testing.expect((control.get(result, field) orelse return error.InvalidDiagnosticReply) == .null);
+            }
+            continue;
+        }
+        try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(parsed.value, "error") orelse return error.UnexpectedRpcSuccess, "message"));
+    }
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":[]}",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":true}",
+    }) |malformed| {
+        const refusal = try current.dispatch(allocator, malformed, .control);
+        defer allocator.free(refusal);
+        var result = try std.json.parseFromSlice(std.json.Value, allocator, refusal, .{});
+        defer result.deinit();
+        const failure = control.get(result.value, "error").?;
+        try std.testing.expectEqualStrings("InvalidRequest", try control.string(failure, "message"));
+        try std.testing.expectEqual(@as(i64, -32600), control.get(failure, "code").?.integer);
+    }
+    const native_handshake = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"system.handshake\"}", .adapter);
+    defer allocator.free(native_handshake);
+    var native_result = try std.json.parseFromSlice(std.json.Value, allocator, native_handshake, .{});
+    defer native_result.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(native_result.value, "error").?, "message"));
+    const browser_reply = try current.dispatch(allocator, "untrusted browser payload", .browser);
+    defer allocator.free(browser_reply);
+    var browser_result = try std.json.parseFromSlice(std.json.Value, allocator, browser_reply, .{});
+    defer browser_result.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(browser_result.value, "error").?, "code"));
+    try std.testing.expectEqual(@as(usize, 0), current.state.sources.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.mutations.snapshot().records.len);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expect(current.fresh_oauth == null);
+    try std.testing.expectEqualSlices(u8, &cleared_key, &current.root_key);
+    try std.testing.expectError(error.FileNotFound, directory.dir.statFile(io, "state.sqlite", .{ .follow_symlinks = false }));
+}
+
+test "locked existing custody retains its original database and key across explicit restart" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const key: envelope.Key = @splat(0x63);
+    const original = try Engine.openWithKey(io, allocator, path, key);
+    original.deinit();
+    const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    const authority_before = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_before);
+    const locked = try Engine.createConfigured(io, allocator, path, null, .default, null, true, null);
+    try std.testing.expect(locked.vault_locked and locked.db == null);
+    locked.deinit();
+    const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    const authority_after = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    try std.testing.expectEqualSlices(u8, authority_before, authority_after);
+    try std.testing.expectError(error.WrongKey, Engine.openWithKey(io, allocator, path, @splat(0x64)));
+    const reopened = try Engine.openWithKey(io, allocator, path, key);
+    defer reopened.deinit();
+    try std.testing.expect(!reopened.vault_locked and !reopened.poisoned);
+    try std.testing.expect(reopened.db != null);
+    // Synthetic supplied key only: this is not a real platform unlock proof.
+}
+
+const ReopenVaultFixture = struct {
+    mode: std.atomic.Value(u8) = .init(0),
+    loads: std.atomic.Value(usize) = .init(0),
+    creates: std.atomic.Value(usize) = .init(0),
+    allow_first_create: bool = false,
+    fn load(context: ?*anyopaque, _: [:0]const u8) vault.VaultError!vault.Key {
+        const self: *ReopenVaultFixture = @ptrCast(@alignCast(context.?));
+        _ = self.loads.fetchAdd(1, .seq_cst);
+        return switch (self.mode.load(.seq_cst)) {
+            0 => error.Locked,
+            1 => @splat(0x63),
+            2 => error.Missing,
+            3 => @splat(0x64),
+            4 => error.InvalidKey,
+            5 => error.Unavailable,
+            6 => error.Denied,
+            7 => error.Cancelled,
+            8 => error.BackendFailure,
+            9 => error.Conflict,
+            else => error.InvalidRoot,
+        };
+    }
+    fn create(context: ?*anyopaque, _: [:0]const u8) vault.VaultError!vault.Key {
+        const self: *ReopenVaultFixture = @ptrCast(@alignCast(context.?));
+        _ = self.creates.fetchAdd(1, .seq_cst);
+        if (self.allow_first_create) {
+            self.mode.store(1, .seq_cst);
+            return @splat(0x63);
+        }
+        return error.Denied;
+    }
+    fn backend(self: *ReopenVaultFixture) vault.Backend {
+        return .{ .context = self, .load_fn = load, .create_fn = create };
+    }
+};
+
+fn reopenTestReply(current: *Engine, method: []const u8, channel: Channel) !std.json.Parsed(std.json.Value) {
+    const allocator = std.testing.allocator;
+    const payload = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method }, .{});
+    defer allocator.free(payload);
+    const reply = try current.dispatch(allocator, payload, channel);
+    defer allocator.free(reply);
+    return std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
+}
+
+test "typed initial vault failures preserve encrypted history and reopen the same actor with the original key" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const failures = [_]struct { mode: u8, failure: vault.VaultError, reason: []const u8, action: []const u8 }{
+        .{ .mode = 2, .failure = error.Missing, .reason = "vault_key_unavailable", .action = "restore_original_vault_key" },
+        .{ .mode = 4, .failure = error.InvalidKey, .reason = "vault_key_unavailable", .action = "restore_original_vault_key" },
+        .{ .mode = 5, .failure = error.Unavailable, .reason = "vault_unavailable", .action = "restore_vault_access" },
+        .{ .mode = 6, .failure = error.Denied, .reason = "vault_access_denied", .action = "restore_vault_access" },
+        .{ .mode = 7, .failure = error.Cancelled, .reason = "vault_access_denied", .action = "restore_vault_access" },
+        .{ .mode = 8, .failure = error.BackendFailure, .reason = "vault_unavailable", .action = "restore_vault_access" },
+        .{ .mode = 9, .failure = error.Conflict, .reason = "vault_unavailable", .action = "restore_vault_access" },
+        .{ .mode = 10, .failure = error.InvalidRoot, .reason = "vault_unavailable", .action = "restore_vault_access" },
+    };
+    for (failures) |selected| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(path);
+        const database = try std.fmt.allocPrintSentinel(allocator, "{s}/state.sqlite", .{path}, 0);
+        defer allocator.free(database);
+        var model = domain.State.init(allocator);
+        defer model.deinit();
+        _ = try model.connectSource(.{ .id = "fixture-vault-source", .kind = .explicit, .provider = "github" });
+        _ = try model.enroll(.{ .account_id = "fixture-vault-account", .source_id = "fixture-vault-source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "fixture-vault-subject", .verified = true } }, 1);
+        const metadata = try std.json.Stringify.valueAlloc(allocator, Persisted{ .state = model.snapshot() }, .{});
+        defer allocator.free(metadata);
+        const context: envelope.Context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "fixture-vault-account", .grant_id = "fixture-vault-grant", .generation = 1, .purpose = "request", .scope = "fixture" };
+        const plaintext = "synthetic-vault-custody-payload";
+        {
+            var store = try storage.Store.openRootWithSnapshotValidator(io, allocator, database, context.key_id, @splat(0x63), validatePersistedAdmission);
+            defer store.close();
+            _ = try store.commit(0, metadata, &.{.{ .put = .{ .context = context, .plaintext = plaintext, .renewal_owner = .external } }});
+        }
+        const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+        defer allocator.free(before);
+        const authority_before = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+        defer allocator.free(authority_before);
+        try std.testing.expect(std.mem.indexOf(u8, before, plaintext) == null);
+        var backend: ReopenVaultFixture = .{ .mode = .init(selected.mode) };
+        const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+        var live = true;
+        defer if (live) current.deinit();
+        const actor_id = current.thread.?.getHandle();
+        try std.testing.expect(current.vault_locked and current.poisoned);
+        try std.testing.expectEqual(selected.failure, current.startup_vault_failure.?);
+        try std.testing.expect(current.root_id == null and current.db == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+        const loads = backend.loads.load(.seq_cst);
+        var health = try reopenTestReply(current, "system.health", .control);
+        defer health.deinit();
+        const result = control.get(health.value, "result").?;
+        try std.testing.expectEqualStrings("vault_unavailable", try control.string(result, "status"));
+        try std.testing.expectEqualStrings(@errorName(selected.failure), try control.string(result, "custody_error"));
+        try std.testing.expectEqualStrings("existing", try control.string(result, "custody_origin"));
+        try std.testing.expectEqualStrings(Engine.vaultRecoveryAction(selected.failure), try control.string(result, "recovery_action"));
+        try std.testing.expect(control.get(result, "account_count").? == .null);
+        try std.testing.expect(!try control.boolean(result, "metadata_loaded", true));
+        try std.testing.expect(!try control.boolean(result, "custody_available", true));
+        try std.testing.expect(!try control.boolean(result, "provider_access", true));
+        var readiness = try reopenTestReply(current, "setup.readiness", .control);
+        defer readiness.deinit();
+        const report = control.get(readiness.value, "result").?;
+        const findings = control.get(report, "findings").?.array.items;
+        try std.testing.expect(!try control.boolean(report, "ready", true));
+        try std.testing.expectEqualStrings(selected.reason, try control.string(findings[2], "reason"));
+        try std.testing.expectEqualStrings(selected.action, try control.string(findings[2], "action"));
+        try std.testing.expectEqualStrings("observation_unknown", try control.string(findings[4], "reason"));
+        for ([_][]const u8{ "source.connect", "accounts.list", "integrations.launch", "undeclared.method" }) |method| {
+            var refused = try reopenTestReply(current, method, .control);
+            defer refused.deinit();
+            try std.testing.expectEqualStrings("VaultUnavailable", try control.string(control.get(refused.value, "error").?, "message"));
+        }
+        var foreign = try reopenTestReply(current, "custody.reopen", .adapter);
+        defer foreign.deinit();
+        try std.testing.expectEqualStrings("VaultUnavailable", try control.string(control.get(foreign.value, "error").?, "message"));
+        const browser_reply = try current.dispatch(allocator, "untrusted browser payload", .browser);
+        defer allocator.free(browser_reply);
+        var browser_result = try std.json.parseFromSlice(std.json.Value, allocator, browser_reply, .{});
+        defer browser_result.deinit();
+        try std.testing.expectEqualStrings("VaultUnavailable", try control.string(control.get(browser_result.value, "error").?, "code"));
+        const bad = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\",\"params\":{\"key\":\"synthetic-invalid-authority\"}}", .control);
+        defer allocator.free(bad);
+        var bad_result = try std.json.parseFromSlice(std.json.Value, allocator, bad, .{});
+        defer bad_result.deinit();
+        try std.testing.expectEqualStrings("InvalidParams", try control.string(control.get(bad_result.value, "error").?, "message"));
+        try std.testing.expectError(error.Timeout, current.dispatchUntil(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\"}", .control, .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) })));
+        try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+        var failed_retry = try reopenTestReply(current, "custody.reopen", .control);
+        defer failed_retry.deinit();
+        try std.testing.expectEqualStrings(@errorName(selected.failure), try control.string(control.get(failed_retry.value, "error").?, "message"));
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+        const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+        defer allocator.free(after);
+        const authority_after = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+        defer allocator.free(authority_after);
+        try std.testing.expectEqualSlices(u8, before, after);
+        try std.testing.expectEqualSlices(u8, authority_before, authority_after);
+        backend.mode.store(1, .seq_cst);
+        var restored = try reopenTestReply(current, "custody.reopen", .control);
+        defer restored.deinit();
+        const restored_result = control.get(restored.value, "result").?;
+        try std.testing.expect(try control.boolean(restored_result, "reopened", false));
+        try std.testing.expectEqual(@as(i64, 1), control.get(restored_result, "account_count").?.integer);
+        try std.testing.expect(!try control.boolean(restored_result, "provider_request_initiated", true));
+        try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+        try std.testing.expect(current.startup_vault_failure == null and !current.vault_locked);
+        const restored_loads = backend.loads.load(.seq_cst);
+        const workers = current.native_workers;
+        var repeated = try reopenTestReply(current, "custody.reopen", .control);
+        defer repeated.deinit();
+        try std.testing.expect(!try control.boolean(control.get(repeated.value, "result").?, "reopened", true));
+        try std.testing.expectEqual(restored_loads, backend.loads.load(.seq_cst));
+        try std.testing.expect(workers == current.native_workers);
+        try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+        current.deinit();
+        live = false;
+        var retained = try storage.Store.openRoot(io, allocator, database, context.key_id, @splat(0x63));
+        defer retained.close();
+        var secret = try retained.loadGrant(context);
+        defer secret.deinit();
+        try std.testing.expectEqualStrings(plaintext, secret.bytes);
+    }
+}
+
+test "fresh locked installation explicitly creates its first key once in its unchanged namespace" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var backend: ReopenVaultFixture = .{ .allow_first_create = true };
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    try std.testing.expect(current.startup_custody_namespace.?.database == null);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+    const actor_id = current.thread.?.getHandle();
+    backend.mode.store(2, .seq_cst);
+    var first = try reopenTestReply(current, "custody.reopen", .control);
+    defer first.deinit();
+    try std.testing.expect(try control.boolean(control.get(first.value, "result").?, "reopened", false));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+    const loads = backend.loads.load(.seq_cst);
+    var repeated = try reopenTestReply(current, "custody.reopen", .control);
+    defer repeated.deinit();
+    try std.testing.expect(!try control.boolean(control.get(repeated.value, "result").?, "reopened", true));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+}
+
+test "fresh first key creation survives later staged failure then retries its own database load-only" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var backend: ReopenVaultFixture = .{ .allow_first_create = true };
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const actor_id = current.thread.?.getHandle();
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .database_open;
+    current.mutex.unlock(io);
+    backend.mode.store(2, .seq_cst);
+    var failed = try reopenTestReply(current, "custody.reopen", .control);
+    defer failed.deinit();
+    try std.testing.expectEqualStrings("CustodyStageFailure", try control.string(control.get(failed.value, "error").?, "message"));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    try std.testing.expect(current.startup_custody_namespace.?.database != null);
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    const authority_before = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_before);
+    // Missing original first key must not become another creation attempt.
+    backend.mode.store(2, .seq_cst);
+    var missing = try reopenTestReply(current, "custody.reopen", .control);
+    defer missing.deinit();
+    try std.testing.expectEqualStrings("Missing", try control.string(control.get(missing.value, "error").?, "message"));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    const authority_after = try directory.dir.readFileAlloc(io, "state.sqlite.authority", allocator, .limited(1024));
+    defer allocator.free(authority_after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    try std.testing.expectEqualSlices(u8, authority_before, authority_after);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .supervisor_ready;
+    current.mutex.unlock(io);
+    backend.mode.store(1, .seq_cst);
+    var late = try reopenTestReply(current, "custody.reopen", .control);
+    defer late.deinit();
+    try std.testing.expectEqualStrings("CustodyStageFailure", try control.string(control.get(late.value, "error").?, "message"));
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    try std.testing.expect(try control.boolean(control.get(reopened.value, "result").?, "reopened", false));
+    try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+}
+
+test "fresh first creation retains its own database when supervisor preparation is the first failed stage" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var backend: ReopenVaultFixture = .{ .allow_first_create = true };
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const actor_id = current.thread.?.getHandle();
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .supervisor_ready;
+    current.mutex.unlock(io);
+    backend.mode.store(2, .seq_cst);
+    var failed = try reopenTestReply(current, "custody.reopen", .control);
+    defer failed.deinit();
+    try std.testing.expectEqualStrings("CustodyStageFailure", try control.string(control.get(failed.value, "error").?, "message"));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    try std.testing.expect(current.startup_custody_namespace.?.database != null);
+    const owned = current.startup_custody_namespace.?;
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    // The original first key is now absent: the existing DB forbids create2.
+    backend.mode.store(2, .seq_cst);
+    var missing = try reopenTestReply(current, "custody.reopen", .control);
+    defer missing.deinit();
+    try std.testing.expectEqualStrings("Missing", try control.string(control.get(missing.value, "error").?, "message"));
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    try std.testing.expectEqualDeep(owned, current.startup_custody_namespace.?);
+    backend.mode.store(1, .seq_cst);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    try std.testing.expect(try control.boolean(control.get(reopened.value, "result").?, "reopened", false));
+    try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+    try std.testing.expectEqualDeep(owned, current.startup_custody_namespace.?);
+    try std.testing.expectEqual(@as(usize, 1), backend.creates.load(.seq_cst));
+    const loads = backend.loads.load(.seq_cst);
+    var repeated = try reopenTestReply(current, "custody.reopen", .control);
+    defer repeated.deinit();
+    try std.testing.expect(!try control.boolean(control.get(repeated.value, "result").?, "reopened", true));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+}
+
+test "existing unavailable custody refuses disappearance or inode replacement before vault IO" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |replace| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(path);
+        const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+        seed.deinit();
+        const original = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+        defer allocator.free(original);
+        var backend: ReopenVaultFixture = .{ .mode = .init(6), .allow_first_create = true };
+        const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+        defer current.deinit();
+        const loads = backend.loads.load(.seq_cst);
+        try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(directory.dir.handle, "state.sqlite", directory.dir.handle, "original.sqlite"));
+        if (replace) {
+            try directory.dir.writeFile(io, .{ .sub_path = "state.sqlite", .data = original, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+        } else {
+            try std.testing.expectEqual(@as(c_int, 0), std.c.unlinkat(directory.dir.handle, "state.sqlite.authority", 0));
+            try std.testing.expectEqual(@as(c_int, 0), std.c.unlinkat(directory.dir.handle, "state.sqlite.authority.lock", 0));
+        }
+        backend.mode.store(2, .seq_cst);
+        var refused = try reopenTestReply(current, "custody.reopen", .control);
+        defer refused.deinit();
+        try std.testing.expectEqualStrings(if (replace) "RecoveryDatabaseChanged" else "RecoveryDatabaseMissing", try control.string(control.get(refused.value, "error").?, "message"));
+        try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+        try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+        try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    }
+}
+
+test "successful vault load with a wrong database key remains a fatal database startup error" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{ .mode = .init(3) };
+    try std.testing.expectError(error.WrongKey, Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend()));
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+}
+
+test "explicit custody reopen uses actual staged SQLite and preserves the actor through eventual unlock" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const actor_id = current.thread.?.getHandle();
+    var health = try reopenTestReply(current, "system.health", .control);
+    defer health.deinit();
+    try std.testing.expect(control.get(control.get(health.value, "result").?, "account_count").? == .null);
+    var refused = try reopenTestReply(current, "custody.reopen", .control);
+    defer refused.deinit();
+    try std.testing.expectEqualStrings("Locked", try control.string(control.get(refused.value, "error").?, "message"));
+    try std.testing.expect(current.db == null and current.network == null and current.native_workers == null);
+    backend.mode.store(1, .seq_cst);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    const result = control.get(reopened.value, "result").?;
+    try std.testing.expect(try control.boolean(result, "reopened", false));
+    try std.testing.expectEqual(@as(i64, 0), control.get(result, "account_count").?.integer);
+    try std.testing.expect(!try control.boolean(result, "provider_request_initiated", true));
+    try std.testing.expectEqual(actor_id, current.thread.?.getHandle());
+    const workers = current.native_workers;
+    const loads = backend.loads.load(.seq_cst);
+    var repeated = try reopenTestReply(current, "custody.reopen", .control);
+    defer repeated.deinit();
+    try std.testing.expect(!try control.boolean(control.get(repeated.value, "result").?, "reopened", true));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+    try std.testing.expect(workers == current.native_workers);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+    var accounts = try reopenTestReply(current, "accounts.list", .control);
+    defer accounts.deinit();
+    try std.testing.expectEqual(@as(usize, 0), control.get(control.get(accounts.value, "result").?, "accounts").?.array.items.len);
+}
+
+test "missing corrupt and unavailable existing wrapping keys refuse without regeneration or partial adoption" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    const before = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    for ([_]u8{ 2, 3, 4, 5 }) |mode| {
+        backend.mode.store(mode, .seq_cst);
+        var reply = try reopenTestReply(current, "custody.reopen", .control);
+        defer reply.deinit();
+        try std.testing.expect(control.get(reply.value, "error") != null);
+        try std.testing.expect(current.vault_locked and current.poisoned);
+        try std.testing.expect(current.root_id == null and current.db == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+        try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+    }
+    const after = try directory.dir.readFileAlloc(io, "state.sqlite", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    backend.mode.store(1, .seq_cst);
+    var successful = try reopenTestReply(current, "custody.reopen", .control);
+    defer successful.deinit();
+    try std.testing.expect(control.get(successful.value, "result") != null);
+}
+
+test "custody reopen rejects asserted secret authority foreign channels and expired admission" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const loads = backend.loads.load(.seq_cst);
+    const bad = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\",\"params\":{\"key\":\"synthetic-public-invalid\"}}", .control);
+    defer allocator.free(bad);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bad, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("InvalidParams", try control.string(control.get(parsed.value, "error").?, "message"));
+    var foreign = try reopenTestReply(current, "custody.reopen", .adapter);
+    defer foreign.deinit();
+    try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(foreign.value, "error").?, "message"));
+    try std.testing.expectError(error.Timeout, current.dispatchUntil(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"custody.reopen\"}", .control, .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) })));
+    try std.testing.expectEqual(loads, backend.loads.load(.seq_cst));
+}
+
+test "failed custody stage closes real database and permits a clean later retry" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    backend.mode.store(1, .seq_cst);
+    for ([_]@TypeOf(current.fixture_custody_stage_failure){ .database_open, .supervisor_ready }) |fault| {
+        current.mutex.lockUncancelable(io);
+        current.fixture_custody_stage_failure = fault;
+        current.mutex.unlock(io);
+        var failed = try reopenTestReply(current, "custody.reopen", .control);
+        defer failed.deinit();
+        try std.testing.expectEqualStrings("CustodyStageFailure", try control.string(control.get(failed.value, "error").?, "message"));
+        try std.testing.expect(current.db == null and current.root_id == null and current.network == null and current.native_workers == null);
+        try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    }
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    var successful = try reopenTestReply(current, "custody.reopen", .control);
+    defer successful.deinit();
+    try std.testing.expect(control.get(successful.value, "result") != null);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+}
+
+const ReopenCaller = struct {
+    engine: *Engine,
+    reopened: bool = false,
+    failure: ?anyerror = null,
+    fn run(self: *ReopenCaller) void {
+        self.call() catch |err| {
+            self.failure = err;
+        };
+    }
+    fn call(self: *ReopenCaller) !void {
+        var reply = try reopenTestReply(self.engine, "custody.reopen", .control);
+        defer reply.deinit();
+        const result = control.get(reply.value, "result") orelse return error.UnexpectedRpcFailure;
+        self.reopened = try control.boolean(result, "reopened", false);
+    }
+};
+
+test "concurrent explicit reopen requests adopt one custody owner and one supervisor" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const seed = try Engine.openWithKey(io, allocator, path, @splat(0x63));
+    seed.deinit();
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    const loads = backend.loads.load(.seq_cst);
+    backend.mode.store(1, .seq_cst);
+    var first: ReopenCaller = .{ .engine = current };
+    var second: ReopenCaller = .{ .engine = current };
+    const one = try std.Thread.spawn(.{}, ReopenCaller.run, .{&first});
+    const two = std.Thread.spawn(.{}, ReopenCaller.run, .{&second}) catch |err| {
+        one.join();
+        return err;
+    };
+    one.join();
+    two.join();
+    try std.testing.expect(first.failure == null and second.failure == null);
+    try std.testing.expect(first.reopened != second.reopened);
+    try std.testing.expectEqual(loads + 1, backend.loads.load(.seq_cst));
+    try std.testing.expect(current.native_workers != null and current.db != null);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
+}
+
+test "reopened status counts genuinely retained accounts rather than treating unloaded metadata as zero" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var model = domain.State.init(allocator);
+    defer model.deinit();
+    _ = try model.connectSource(.{ .id = "fixture-count-source", .kind = .explicit, .provider = "github" });
+    _ = try model.enroll(.{ .account_id = "fixture-count-account", .source_id = "fixture-count-source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "fixture-count-subject", .verified = true } }, 1);
+    const metadata = try std.json.Stringify.valueAlloc(allocator, Persisted{ .state = model.snapshot() }, .{});
+    defer allocator.free(metadata);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/state.sqlite", .{path}, 0);
+    defer allocator.free(database);
+    {
+        var store = try storage.Store.openRootWithSnapshotValidator(io, allocator, database, instance.Selection.default.vaultRoot(), @splat(0x63), validatePersistedAdmission);
+        defer store.close();
+        _ = try store.commit(0, metadata, &.{});
+    }
+    var backend: ReopenVaultFixture = .{};
+    const current = try Engine.createConfigured(io, allocator, path, null, .default, null, false, backend.backend());
+    defer current.deinit();
+    var initial = try reopenTestReply(current, "system.health", .control);
+    defer initial.deinit();
+    try std.testing.expect(control.get(control.get(initial.value, "result").?, "account_count").? == .null);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .state_allocation;
+    current.mutex.unlock(io);
+    backend.mode.store(1, .seq_cst);
+    var refused = try reopenTestReply(current, "custody.reopen", .control);
+    defer refused.deinit();
+    try std.testing.expectEqualStrings("OutOfMemory", try control.string(control.get(refused.value, "error").?, "message"));
+    try std.testing.expect(current.vault_locked and current.db == null and current.root_id == null and current.native_workers == null);
+    try std.testing.expectEqualSlices(u8, &(@as(envelope.Key, @splat(0))), &current.root_key);
+    current.mutex.lockUncancelable(io);
+    current.fixture_custody_stage_failure = .none;
+    current.mutex.unlock(io);
+    var reopened = try reopenTestReply(current, "custody.reopen", .control);
+    defer reopened.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(control.get(reopened.value, "result").?, "account_count").?.integer);
+    var health = try reopenTestReply(current, "system.health", .control);
+    defer health.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(control.get(health.value, "result").?, "account_count").?.integer);
+    try std.testing.expectEqual(@as(usize, 0), backend.creates.load(.seq_cst));
 }
 
 test "snapshot maintenance float reserve covers decimal smallest subnormals" {
@@ -5860,6 +12027,155 @@ test "actor state survives restart and control cannot materialize credentials" {
     try std.testing.expect(std.mem.indexOf(u8, snapshot, "access_token") == null);
 }
 
+test "public account identity exposes only provider and actual verification truth" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ true, false }) |verified| {
+        // Threadless DTO model reports the stored identity bit. The same
+        // projector is used by the actor's actual publicSnapshot serializer.
+        const account: domain.Account = .{
+            .id = "public-account-model",
+            .identity = .{
+                .provider = "codex",
+                .issuer = "private-issuer-model",
+                .subject = "private-subject-model",
+                .tenant = "private-tenant-model",
+                .verified = verified,
+            },
+            .source_ids = &.{"public-source-model"},
+        };
+        const raw = try std.json.Stringify.valueAlloc(allocator, publicAccountView(account), .{});
+        defer allocator.free(raw);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+        defer parsed.deinit();
+        const identity = control.get(parsed.value, "identity").?;
+        try std.testing.expectEqual(@as(usize, 2), identity.object.count());
+        try std.testing.expectEqualStrings("codex", try control.string(identity, "provider"));
+        try std.testing.expectEqual(verified, control.get(identity, "verified").?.bool);
+        for ([_][]const u8{ "issuer", "subject", "tenant" }) |field| try std.testing.expect(control.get(identity, field) == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-issuer-model") == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-subject-model") == null);
+        try std.testing.expect(std.mem.indexOf(u8, raw, "private-tenant-model") == null);
+    }
+}
+
+test "setup usable authority follows its own source authorization and actual routing" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    // Threadless synthetic state: direct model mutations have one owner.
+    // No actor maintenance, database, platform-vault or provider work exists.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    try std.testing.expect(current.thread == null and current.db == null and current.network == null);
+    const timestamp = current.now();
+    _ = try current.state.connectSource(.{ .id = "first-source", .kind = .native_store, .provider = "codex", .authorized_at = 0, .authorized_until = timestamp + 3600 });
+    _ = try current.state.connectSource(.{ .id = "unrelated-source", .kind = .native_store, .provider = "codex", .authorized_at = 0 });
+    _ = try current.state.enroll(.{ .account_id = "first-account", .source_id = "first-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "fixture-subject", .verified = true } }, timestamp);
+    _ = try current.state.addGrant(.{ .id = "first-grant", .account_id = "first-account", .source_id = "first-source", .credential_kind = .oauth_access, .purposes = &.{.request}, .audience = "https://chatgpt.com", .provider_expires_at = timestamp + 7200, .custody_expires_at = timestamp + 7200, .generation = 7 });
+    const demand: domain.Demand = .{ .provider = "codex", .audience = "https://chatgpt.com", .resource = .{ .kind = "model", .target = "fixture" }, .now = timestamp };
+    try std.testing.expectEqual(onboarding.State.ready, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectEqual(@as(u64, 7), (try current.state.select(demand, null)).generation);
+    // Detachment does not revoke independent, still-authorized access authority.
+    current.state.sources.items[0].status = .detached;
+    try std.testing.expectEqual(onboarding.State.ready, current.setupSnapshot(.{}, false).grant.state);
+    _ = try current.state.select(demand, null);
+    // A different connected source cannot renew this grant's expired lineage.
+    current.state.sources.items[0].authorized_until = timestamp;
+    const expired = current.setupSnapshot(.{}, false);
+    try std.testing.expectEqual(onboarding.State.ready, expired.source.state);
+    try std.testing.expectEqual(onboarding.State.ready, expired.identity.state);
+    try std.testing.expectEqual(onboarding.State.missing, expired.grant.state);
+    try std.testing.expect(!onboarding.assess(expired).ready);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    // Future authorization and explicit disconnection use the same routing fence.
+    current.state.sources.items[0].authorized_at = timestamp + 3600;
+    current.state.sources.items[0].authorized_until = timestamp + 7200;
+    try std.testing.expectEqual(onboarding.State.missing, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    current.state.sources.items[0].authorized_at = 0;
+    current.state.sources.items[0].status = .disconnected;
+    try std.testing.expectEqual(onboarding.State.missing, current.setupSnapshot(.{}, false).grant.state);
+    try std.testing.expectError(error.NoEligibleAccount, current.state.select(demand, null));
+    try std.testing.expectEqual(@as(u64, 7), current.state.grants.items[0].generation);
+}
+
+test "shared setup readiness distinguishes absent configuration from unverified native capability" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    // Threadless actor-owned metadata; the production control handler runs
+    // without acquisition, native probing, database or provider work.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    const SharedReport = struct {
+        fn expect(actor: *Engine, reason: onboarding.Reason, action: onboarding.Action) !void {
+            var request = try control.parse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"setup.readiness\",\"params\":null}");
+            defer request.deinit();
+            const bytes = try actor.handleRequest(std.testing.allocator, request, .control);
+            defer std.testing.allocator.free(bytes);
+            const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{});
+            defer parsed.deinit();
+            const result = control.get(parsed.value, "result") orelse return error.MissingReadiness;
+            try std.testing.expect(!control.get(result, "ready").?.bool);
+            try std.testing.expect(!control.get(result, "seamless_handoff_proven").?.bool);
+            const findings = control.get(result, "findings").?.array.items;
+            try std.testing.expectEqual(@as(usize, 7), findings.len);
+            try std.testing.expectEqualStrings("native", try control.string(findings[6], "phase"));
+            try std.testing.expectEqualStrings(@tagName(reason), try control.string(findings[6], "reason"));
+            try std.testing.expectEqualStrings(@tagName(action), try control.string(findings[6], "action"));
+            const verified = try setup_verification.makeCompleted("native-readiness-fixture", 1, actor.now(), onboarding.assess(actor.setupSnapshot(.{}, false)), null);
+            try std.testing.expectEqual(reason, verified.phases[6].reason);
+            try std.testing.expectEqual(setup_verification.classify(reason), verified.phases[6].outcome);
+        }
+    };
+    const revision = current.revision;
+    try SharedReport.expect(&current, .missing, .install_native_adapter);
+    try current.installed.ensureUnusedCapacity(allocator, 1);
+    current.installed.appendAssumeCapacity(try allocator.dupe(u8, "codex"));
+    try SharedReport.expect(&current, .native_evidence_missing, .verify_native_capability);
+    // Untrusted or unloaded retained configuration cannot become a native fact.
+    current.poisoned = true;
+    try SharedReport.expect(&current, .observation_unknown, .refresh_observation);
+    current.poisoned = false;
+    current.vault_locked = true;
+    try SharedReport.expect(&current, .observation_unknown, .refresh_observation);
+    current.vault_locked = false;
+    try SharedReport.expect(&current, .native_evidence_missing, .verify_native_capability);
+    try std.testing.expectEqual(revision, current.revision);
+    try std.testing.expectEqual(@as(usize, 0), current.requests.records.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.mutations.snapshot().records.len);
+    try std.testing.expect(current.thread == null and current.db == null and current.network == null);
+}
+
 test "Git route cache retires oldest idle context while preserving native and leased routes" {
     const allocator = std.testing.allocator;
     var state = domain.State.init(allocator);
@@ -5983,6 +12299,38 @@ test "external source removal counts terminal completion once and skips telemetr
         } else {
             const windows = try current.?.lifecycle_measurements.?.window(current.?.now());
             try std.testing.expectEqual(@as(u64, 1), windows[@backingInt(reliability.Phase.remove)][@backingInt(reliability.LifecycleOutcome.success)].count);
+            const cell = windows[@backingInt(reliability.Phase.remove)][@backingInt(reliability.LifecycleOutcome.success)];
+            try std.testing.expectEqual(@as(u128, 1), cell.local.timedOpportunities());
+            try std.testing.expectEqual(@as(u64, 1), cell.total.missing_latency);
+            try std.testing.expectEqual(@as(u64, 1), cell.user_provider_wait.missing_latency);
+            const summary = reliability.lifecycleSummary(windows);
+            try std.testing.expectEqual(@as(u64, 1), summary[@backingInt(reliability.Phase.remove)].successful_user_outcomes);
+            try std.testing.expect(summary[@backingInt(reliability.Phase.remove)].supported_user_demands == null);
+            // The actual endpoint must still expose its retained diagnostics
+            // when only the new derived window is unavailable.
+            const recorded_at = current.?.lifecycle_measurements.?.last_recorded_at;
+            current.?.lifecycle_measurements.?.last_recorded_at = current.?.now() + 86_400;
+            var diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", null);
+            defer diagnostic.deinit();
+            const exported = control.get(diagnostic.value, "result").?;
+            try std.testing.expect(control.get(exported, "phase_outcomes").? == .null);
+            try std.testing.expectEqualStrings("clock_anomaly", try control.string(exported, "phase_outcomes_unavailable_reason"));
+            try std.testing.expect(control.get(exported, "measurements").? == .object);
+            try std.testing.expect(control.get(exported, "source_disconnect_timing") != null);
+            try std.testing.expect(control.get(exported, "terminal_adapter_setup") != null);
+            current.?.lifecycle_measurements.?.last_recorded_at = recorded_at;
+            // Model a prepared, uncommitted outcome left after a failed final
+            // writer call. The poisoned endpoint must not call it durable.
+            try current.?.lifecycle_measurements.?.record(current.?.now(), .{ .operation_correlation = 99, .phase = .enroll, .outcome = .success });
+            current.?.poisoned = true;
+            var poisoned_diagnostic = try Rpc.call(current.?, .control, "reliability.lifecycle", null);
+            defer poisoned_diagnostic.deinit();
+            const unavailable = control.get(poisoned_diagnostic.value, "result").?;
+            try std.testing.expect(control.get(unavailable, "phase_outcomes").? == .null);
+            try std.testing.expectEqualStrings("custody_unavailable", try control.string(unavailable, "phase_outcomes_unavailable_reason"));
+            try std.testing.expect(control.get(unavailable, "measurements").? == .object);
+            try std.testing.expect(control.get(unavailable, "terminal_adapter_setup") != null);
+            current.?.poisoned = false;
         }
     }
 }
@@ -6214,7 +12562,8 @@ test "identified setup refresh terminal authority replay busy uncertainty and di
     defer timeout_fact.deinit();
     try std.testing.expectEqual(setup_verification.Outcome.safe_refusal, timeout_fact.value.outcome);
     try std.testing.expectEqual(setup_verification.Refusal.collection_timed_out, timeout_fact.value.refusal.?);
-    try std.testing.expect(timeout_fact.value.elapsed_ns == null);
+    try std.testing.expectEqual(@as(u8, 2), timeout_fact.value.schema_version);
+    try std.testing.expect(timeout_fact.value.elapsed_ns != null);
     const after_timeout = try setup_verification.summarize(allocator, current.mutations.snapshot(), current.now());
     try std.testing.expectEqual(before_timeout.verification_completed, after_timeout.verification_completed);
     try std.testing.expectEqual(before_timeout.collection_timed_out_refusals + 1, after_timeout.collection_timed_out_refusals);
@@ -6276,4 +12625,4616 @@ test "identified setup refresh terminal authority replay busy uncertainty and di
     try std.testing.expect((try current.mutations.lookup(failed_params.operation_id)).?.state != .completed);
     const summary_after = try setup_verification.summarize(allocator, current.mutations.snapshot(), current.now());
     try std.testing.expectEqual(summary_before.verification_completed, summary_after.verification_completed);
+}
+
+test "source enrollment generation reply stays bound to the admitted job and preserves legacy shape" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/enrollment-generation.sqlite", .{path}, 0);
+    defer allocator.free(database);
+    // Threadless synthetic writer: the Store and all direct model mutations
+    // have the same real thread owner, as in the setup-refresh fixture above.
+    // Opening an actor would give its Store to a different owner thread.
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .root_key = @splat(0x51),
+        .test_key = @splat(0x51),
+        .db = try storage.Store.open(io, allocator, database, @splat(0x51)),
+    };
+    defer {
+        current.db.?.close();
+        current.release();
+    }
+    try std.testing.expect(current.thread == null and current.network == null and current.native_workers == null);
+    try std.testing.expectEqual(std.Thread.getCurrentId(), current.db.?.owner_thread);
+    const engine = &current;
+    _ = try engine.state.putJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .running, .operation_generation = 7 });
+    try engine.persist(&.{});
+    const admitted = try engine.sourceReconcileReply(allocator, .{ .integer = 1 }, "reconcile-fixture-source", true);
+    defer allocator.free(admitted);
+    var reply = try std.json.parseFromSlice(std.json.Value, allocator, admitted, .{});
+    defer reply.deinit();
+    const result = control.get(reply.value, "result").?;
+    try std.testing.expectEqual(@as(i64, 7), control.get(result, "operation_generation").?.integer);
+    const admitted_revision = control.get(result, "admitted_revision").?.integer;
+    try std.testing.expectEqual(@as(u64, @intCast(admitted_revision)), engine.revision);
+    _ = try engine.state.putJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .completed, .operation_generation = 7 });
+    _ = try engine.state.reopenJob(.{ .id = "reconcile-fixture-source", .kind = .enrollment, .status = .running, .operation_generation = 7 });
+    try engine.persist(&.{});
+    // The immutable original result retains generation7 despite later state.
+    try std.testing.expectEqual(@as(i64, 7), control.get(result, "operation_generation").?.integer);
+    const legacy = try engine.sourceReconcileReply(allocator, .{ .integer = 2 }, "reconcile-fixture-source", false);
+    defer allocator.free(legacy);
+    var old = try std.json.parseFromSlice(std.json.Value, allocator, legacy, .{});
+    defer old.deinit();
+    try std.testing.expectEqual(@as(usize, 2), control.get(old.value, "result").?.object.count());
+    var malformed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"source_id\":\"fixture-source\",\"include_operation_generation\":1}", .{});
+    defer malformed.deinit();
+    const before = engine.revision;
+    try std.testing.expectError(error.InvalidParams, engine.preflightMutationResult(allocator, "enrollment.start", malformed.value));
+    try std.testing.expectEqual(before, engine.revision);
+    try std.testing.expectError(error.NotFound, engine.sourceReconcileReply(allocator, .{ .integer = 3 }, "missing-job", true));
+}
+
+const NativeMaintenanceTest = struct {
+    const source_id = std.fmt.bytesToHex(@as([32]u8, @splat(0x41)), .lower);
+    const key: envelope.Key = @splat(0x67);
+
+    fn seed(path: []const u8, endpoint: []const u8, consent_owner: native_source_consent.Owner, expires_at: i64, legacy: bool) !void {
+        const a = std.testing.allocator;
+        var state = domain.State.init(a);
+        defer state.deinit();
+        _ = try state.connectSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex" });
+        _ = try state.connectSource(.{ .id = "maintenance-independent-source", .kind = .explicit, .provider = "codex" });
+        _ = try state.enroll(.{ .account_id = "maintenance-account", .source_id = &source_id, .label = "synthetic-maintenance-label", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-maintenance-subject", .tenant = "synthetic-maintenance-tenant", .verified = true } }, 1);
+        _ = try state.enroll(.{ .account_id = "unused-deduplicated-account", .source_id = "maintenance-independent-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-maintenance-subject", .tenant = "synthetic-maintenance-tenant", .verified = true } }, 1);
+        try state.pause("maintenance-account", true);
+        _ = try state.enroll(.{ .account_id = "maintenance-forgotten", .source_id = "maintenance-independent-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-forgotten-subject", .verified = true } }, 1);
+        try state.forget("maintenance-forgotten");
+        _ = try state.addGrant(.{ .id = "maintenance-native-grant", .account_id = "maintenance-account", .source_id = &source_id, .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        _ = try state.addGrant(.{ .id = "maintenance-independent-grant", .account_id = "maintenance-account", .source_id = "maintenance-independent-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        var seeded: Persisted = .{
+            .state = state.snapshot(),
+            .policy = .{ .warm_alternatives = false },
+            .import_source_authority = &.{.{ .source_id = @constCast(&source_id), .generation = 1 }},
+        };
+        const authority: NativeSourceAuthority = .{
+            .origin = @splat(0xbb),
+            .context = if (legacy) null else .{ .id = @splat(0xaa), .generation = 1 },
+            .consent = .{ .id = @splat(0x42), .generation = 1, .source_id = @splat(0x41), .source_generation = 1, .owner = consent_owner, .expires_at = expires_at, .purpose = .native_access_copy_for_identity_and_request, .forget_epoch = seeded.import_forget_epoch },
+        };
+        seeded.source_descriptions = &.{.{ .source_id = &source_id, .provider = "codex", .native_endpoint = endpoint, .native_authority = authority }};
+        const metadata = try std.json.Stringify.valueAlloc(a, seeded, .{});
+        defer a.free(metadata);
+        const without_context: ?[]u8 = if (legacy) blk: {
+            // Persist an actual pre-context record, rather than a new-format
+            // null field. The typed decoder must supply its safe default.
+            const field = ",\"context\":null";
+            const at = std.mem.indexOf(u8, metadata, field) orelse return error.LegacyContextFieldMissing;
+            const old = try a.alloc(u8, metadata.len - field.len);
+            @memcpy(old[0..at], metadata[0..at]);
+            @memcpy(old[at..], metadata[at + field.len ..]);
+            break :blk old;
+        } else null;
+        defer if (without_context) |old| a.free(old);
+        const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+        defer a.free(database);
+        var store = try storage.Store.openRootWithSnapshotValidator(std.testing.io, a, database, instance.Selection.default.vaultRoot(), key, validatePersistedAdmission);
+        defer store.close();
+        _ = try store.commit(0, without_context orelse metadata, &.{
+            .{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "maintenance-account", .grant_id = "maintenance-native-grant", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-native-maintenance-payload", .renewal_owner = .external } },
+            .{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "maintenance-account", .grant_id = "maintenance-independent-grant", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-independent-maintenance-payload", .renewal_owner = .external } },
+        });
+    }
+
+    fn owner(fixture: *@import("native_owner_fixture.zig").Fixture) !native_source_consent.Owner {
+        const info = try native_probe.inspectOwnerWithDeadline(std.testing.io, std.testing.allocator, fixture.endpoint, "fixture", .fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) }));
+        defer info.deinit(std.testing.allocator);
+        return .{ .id = info.owner_id, .nonce = info.native_nonce, .endpoint_generation = info.endpoint_generation, .witness = info.witness };
+    }
+
+    fn wait(current: *Engine, wanted: []const u8) !std.json.Parsed(std.json.Value) {
+        const until: std.Io.Clock.Timestamp = .fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromMilliseconds(5000) });
+        while (until.durationFromNow(std.testing.io).raw.toMilliseconds() > 0) {
+            var snapshot = try reopenTestReply(current, "state.snapshot", .control);
+            const result = control.get(snapshot.value, "result") orelse {
+                snapshot.deinit();
+                return error.MaintenanceSnapshotRefused;
+            };
+            const observed = control.get(result, "native_source_maintenance").?;
+            if (observed == .object and eql(try control.string(observed, "state"), wanted)) return snapshot;
+            snapshot.deinit();
+            try std.testing.io.sleep(.fromMilliseconds(10), .awake);
+        }
+        return error.MaintenanceFixtureTimeout;
+    }
+
+    fn retained(result: std.json.Value, status: []const u8) !void {
+        const sources = control.get(result, "sources").?.array.items;
+        try std.testing.expectEqual(@as(usize, 2), sources.len);
+        try std.testing.expectEqualStrings(status, try control.string(sources[0], "status"));
+        try std.testing.expectEqualStrings("connected", try control.string(sources[1], "status"));
+        const accounts = control.get(result, "accounts").?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), accounts.len);
+        try std.testing.expectEqualStrings("paused", try control.string(accounts[0], "lifecycle"));
+        try std.testing.expectEqualStrings("synthetic-maintenance-label", try control.string(accounts[0], "label"));
+        const grants = control.get(result, "grants").?.array.items;
+        try std.testing.expectEqual(@as(usize, 2), grants.len);
+        for (grants) |grant| {
+            try std.testing.expectEqualStrings("ready", try control.string(grant, "status"));
+            try std.testing.expectEqualStrings("external", try control.string(grant, "ownership"));
+            try std.testing.expectEqual(@as(i64, 1), control.get(grant, "generation").?.integer);
+        }
+    }
+};
+
+test "native issued successor intent survives actual encrypted store restart without copy or replay" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const fixture = try @import("native_owner_fixture.zig").Fixture.create(io, a);
+    defer fixture.destroy();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3600, false);
+    var generation: u64 = 0;
+    const candidate: native_source_consent.Context = .{ .id = @splat(0xab), .generation = 2 };
+    {
+        var current: Engine = .{
+            .allocator = a,
+            .io = io,
+            .state_dir = try a.dupe(u8, path),
+            .state = domain.State.init(a),
+            .observers = observer.Coordinator.init(a),
+            .requests = request_authority.Ledger.init(a, 4096),
+            .mutations = try mutation_authority.Ledger.init(a, 4096),
+            .admission = snapshot_admission.Ledger.init(a),
+            .native_owners = native_owner.Ledger.init(a),
+            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+            .test_key = NativeMaintenanceTest.key,
+        };
+        defer {
+            if (current.network) |network| network.deinit();
+            if (current.db) |*database| database.close();
+            current.release();
+            a.free(current.state_dir);
+        }
+        try current.bootstrap();
+        var pending = try emptyNativeRotationImport(a, &NativeMaintenanceTest.source_id, "");
+        defer pending.deinit(a);
+        pending.source_generation = 1;
+        pending.job_generation = (try current.state.reopenJob(.{ .id = pending.job_id, .kind = .enrollment, .status = .running })).operation_generation;
+        generation = pending.job_generation;
+        pending.native_operation = @splat('a');
+        var authority = current.descriptions.items[0].native_authority.?;
+        authority.rotation = .{ .operation = pending.native_operation.?, .context = candidate, .job_generation = generation, .admitted_at = current.now(), .expires_at = current.now() + 13 };
+        pending.native_expected_authority = authority;
+        pending.native_expected_endpoint = try a.dupe(u8, fixture.endpoint);
+        pending.native_admission = .{ .source_id = authority.consent.source_id, .source_generation = 1, .consent_id = authority.consent.id, .consent_generation = 1, .owner = authority.consent.owner, .context = candidate, .forget_epoch = 0, .allow_reenrollment = false, .cutoff = 13_000_000_000 };
+        pending.credit_key = creditKey(.import, pending.job_id, generation);
+        const growth = try domain.importGrowth("codex", &NativeMaintenanceTest.source_id, "");
+        try current.reserveOutcome(.{ .key = pending.credit_key, .owner_id = pending.job_id, .secondary_id = &NativeMaintenanceTest.source_id, .source_id = &NativeMaintenanceTest.source_id, .source_generation = 1, .provider = "codex", .plan_bytes = growth.bytes + 8192, .plan_counts = growth.counts() });
+        current.descriptions.items[0].native_authority = authority;
+        try current.persist(&.{});
+        const before = current.revision;
+        // Exercise the real actor completion's lost-reply branch, not a fake
+        // successful descriptor/image. It may not retire or advance authority.
+        var task: NativeSourceRotationTask = .{ .engine = &current, .arena = undefined, .pending = pending, .options = undefined, .runtime_root = "", .selected = undefined, .endpoint = fixture.endpoint, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(13_000) }), .observed_at = current.now(), .custody_seconds = 1, .job = undefined, .request_attempted = true, .failure = error.PeerConnectionClosed };
+        try current.completeNativeSourceRotation(&task);
+        try std.testing.expectEqual(before, current.revision);
+        try std.testing.expect(current.importJobRunning(pending));
+        try std.testing.expect(current.admission.lookup(pending.credit_key) != null);
+        try std.testing.expect(current.descriptions.items[0].native_authority.?.context.?.generation == 1);
+        try std.testing.expectEqual(@as(usize, 0), current.fixture_identity_submissions);
+    }
+    const restored = try Engine.openWithKey(io, a, path, NativeMaintenanceTest.key);
+    defer restored.deinit();
+    var enabled = try reopenTestReply(restored, "fixture.nativeSourceMaintenance", .control);
+    defer enabled.deinit();
+    var observed = try NativeMaintenanceTest.wait(restored, "unverified");
+    defer observed.deinit();
+    const result = control.get(observed.value, "result").?;
+    try NativeMaintenanceTest.retained(result, "connected");
+    try std.testing.expectEqualStrings("NativeSourceOperationIndeterminateReconnectRequired", try control.string(control.get(result, "native_source_maintenance").?, "reason"));
+    try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.source_context));
+    // Read authenticated persisted state through the actual snapshot API: the
+    // actor did not mint a new clock, operation generation or copy owner.
+    const jobs = control.get(result, "jobs").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), jobs.len);
+    try std.testing.expectEqualStrings("running", try control.string(jobs[0], "status"));
+    try std.testing.expectEqual(@as(i64, @intCast(generation)), control.get(jobs[0], "operation_generation").?.integer);
+}
+
+test "native maintenance actor clock expires fileless consent without warming or owner IO and retains independent custody" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const fixture = try fixture_mod.Fixture.create(io, a);
+    defer fixture.destroy();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    // Legacy metadata has no context pin. The clock still expires consent;
+    // no new declaration can fill its missing authority or reset the deadline.
+    try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3, true);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, NativeMaintenanceTest.key);
+    defer if (current) |engine| engine.deinit();
+    var enabled = try reopenTestReply(current.?, "fixture.nativeSourceMaintenance", .control);
+    defer enabled.deinit();
+    var unverified = try NativeMaintenanceTest.wait(current.?, "unverified");
+    defer unverified.deinit();
+    try std.testing.expectEqualStrings("NativeSourceFreshCheckRequired", try control.string(control.get(control.get(unverified.value, "result").?, "native_source_maintenance").?, "reason"));
+    var detached = try NativeMaintenanceTest.wait(current.?, "detached");
+    defer detached.deinit();
+    try NativeMaintenanceTest.retained(control.get(detached.value, "result").?, "detached");
+    try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.source_context));
+    current.?.deinit();
+    current = null;
+    const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(database);
+    var store = try storage.Store.openRoot(io, a, database, instance.Selection.default.vaultRoot(), NativeMaintenanceTest.key);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    var metadata = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+    defer metadata.deinit();
+    try std.testing.expectEqual(@as(u64, 2), metadata.value.import_source_authority[0].generation);
+    try std.testing.expectEqual(@as(u64, 1), metadata.value.source_descriptions[0].native_authority.?.consent.source_generation);
+    try std.testing.expect(metadata.value.source_descriptions[0].native_authority.?.context == null);
+    try std.testing.expectEqualStrings("synthetic-maintenance-tenant", metadata.value.state.accounts[0].identity.tenant);
+    try std.testing.expectEqual(@as(usize, 1), metadata.value.state.tombstones.len);
+    const retained = try store.readGrantStatus("maintenance-account", "maintenance-independent-grant");
+    try std.testing.expectEqual(.ready, retained.?.state);
+}
+
+test "native maintenance actual worker reports unqualified owner context changes without image authority or custody mutation" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]u8{ 0, 1, 2, 3, 4, 5 }) |case| {
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, a, .{ .source_store_present = true, .source_context_eof = case == 5, .source_context_mode = switch (case) {
+            0, 5 => .available,
+            1 => .rotated_context,
+            2 => .unavailable,
+            3 => .wrong_owner,
+            4 => .unknown_status,
+            else => unreachable,
+        } });
+        defer fixture.destroy();
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3600, false);
+        const current = try Engine.openWithKey(io, a, path, NativeMaintenanceTest.key);
+        defer current.deinit();
+        var enabled = try reopenTestReply(current, "fixture.nativeSourceMaintenance", .control);
+        defer enabled.deinit();
+        var snapshot = try NativeMaintenanceTest.wait(current, "unverified");
+        defer snapshot.deinit();
+        const result = control.get(snapshot.value, "result").?;
+        try NativeMaintenanceTest.retained(result, "connected");
+        const maintenance = control.get(result, "native_source_maintenance").?;
+        const reason: []const u8 = switch (case) {
+            0 => "NativeImageUnavailable",
+            1 => "NativeSourceContextMismatch",
+            2 => "NativeSourceUnavailable",
+            3 => "NativeOwnerIdentityMismatch",
+            4 => "InvalidNativeSourceContext",
+            5 => "PeerConnectionClosed",
+            else => unreachable,
+        };
+        try std.testing.expectEqualStrings(reason, try control.string(maintenance, "reason"));
+        try std.testing.expectEqualStrings("historical_observation", try control.string(maintenance, "freshness"));
+        try std.testing.expectEqual(false, control.get(maintenance, "acquisition_authority_granted").?.bool);
+        try std.testing.expect(fixture.methodCount(.source_context) >= 1);
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
+        // There is no credential copy/import call or provider submission on
+        // this path, including the apparently available metadata case.
+        var capability = try current.capabilityForTest("enrollment");
+        defer std.crypto.secureZero(u8, &capability);
+        const request = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "fixture.providerSubmissions", .params = .{ .application = "enrollment", .capability = capability[0..] } }, .{});
+        defer a.free(request);
+        const response = try current.dispatch(a, request, .adapter);
+        defer a.free(response);
+        var submissions = try std.json.parseFromSlice(std.json.Value, a, response, .{});
+        defer submissions.deinit();
+        const submitted = control.get(submissions.value, "result").?;
+        try std.testing.expectEqual(@as(i64, 0), control.get(submitted, "identity_submissions").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(submitted, "observation_submissions").?.integer);
+    }
+}
+
+test "native maintenance completed worker cannot publish a negative observation past original cutoff" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const fixture = try fixture_mod.Fixture.createWithOptions(io, a, .{ .source_store_present = true, .source_context_mode = .rotated_context });
+    defer fixture.destroy();
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3600, false);
+    // An actual SQLite writer and supervised socket worker, with actor
+    // consumption deliberately held. No fake image qualification is supplied.
+    var current: Engine = .{
+        .allocator = a,
+        .io = io,
+        .state_dir = try a.dupe(u8, path),
+        .state = domain.State.init(a),
+        .observers = observer.Coordinator.init(a),
+        .requests = request_authority.Ledger.init(a, 4096),
+        .mutations = try mutation_authority.Ledger.init(a, 4096),
+        .admission = snapshot_admission.Ledger.init(a),
+        .native_owners = native_owner.Ledger.init(a),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .test_key = NativeMaintenanceTest.key,
+        .fixture_native_maintenance_enabled = true,
+    };
+    defer {
+        if (current.native_workers) |workers| {
+            current.stopping = true;
+            workers.stop();
+            while (current.native_source_maintenance != null) {
+                current.completeNativeWork();
+                io.sleep(.fromMilliseconds(1), .awake) catch @panic("owned worker join interrupted");
+            }
+            workers.deinit();
+        }
+        if (current.network) |network| network.deinit();
+        if (current.db) |*database| database.close();
+        current.release();
+        a.free(current.state_dir);
+    }
+    try current.bootstrap();
+    const Quiet = struct {
+        fn signal(_: *anyopaque) void {}
+    };
+    current.native_workers = try native_work.Supervisor.create(io, a, .{ .context = &current, .signal = Quiet.signal });
+    try current.pollNativeSources();
+    const task = current.native_source_maintenance orelse return error.MaintenanceNotScheduled;
+    const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) });
+    while (!current.native_workers.?.hasCompleted()) {
+        if (until.durationFromNow(io).raw.toMilliseconds() <= 0) return error.MaintenanceFixtureTimeout;
+        try io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try std.testing.expectEqual(@as(usize, 1), fixture.methodCount(.source_context));
+    // Keep the original task cutoff unchanged and delay only consumption.
+    while (task.until.durationFromNow(io).raw.toMilliseconds() >= 0) try io.sleep(.fromMilliseconds(10), .awake);
+    const before = current.revision;
+    current.completeNativeWork();
+    try std.testing.expect(current.native_source_maintenance == null);
+    try std.testing.expectEqual(error.NativeSourceDeadline, current.native_source_maintenance_result.?.reason.?);
+    try std.testing.expectEqual(.unverified, current.native_source_maintenance_result.?.state);
+    try std.testing.expectEqual(.connected, current.state.sources.items[0].status);
+    try std.testing.expectEqual(before, current.revision);
+    try std.testing.expectEqual(@as(u64, 1), current.import_sources.items[0].generation);
+}
+
+test "native maintenance late worker cannot supersede explicit disconnect or forget" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |forget| {
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, a, .{ .source_store_present = true, .source_context_mode = .rotated_context, .source_context_delay_ms = 1000 });
+        defer fixture.destroy();
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try NativeMaintenanceTest.seed(path, fixture.endpoint, try NativeMaintenanceTest.owner(fixture), std.Io.Clock.real.now(io).toSeconds() + 3600, false);
+        var current: ?*Engine = try Engine.openWithKey(io, a, path, NativeMaintenanceTest.key);
+        defer if (current) |engine| engine.deinit();
+        var enabled = try reopenTestReply(current.?, "fixture.nativeSourceMaintenance", .control);
+        defer enabled.deinit();
+        const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(2000) });
+        while (fixture.methodCount(.source_context) == 0) {
+            if (until.durationFromNow(io).raw.toMilliseconds() <= 0) return error.MaintenanceFixtureTimeout;
+            try io.sleep(.fromMilliseconds(1), .awake);
+        }
+        var health = try reopenTestReply(current.?, "system.health", .control);
+        defer health.deinit();
+        const revision = control.get(control.get(health.value, "result").?, "revision").?;
+        const params = if (forget)
+            try std.json.Stringify.valueAlloc(a, .{ .operation_id = "maintenance-forget", .expected_revision = revision, .account_id = "maintenance-account" }, .{})
+        else
+            try std.json.Stringify.valueAlloc(a, .{ .operation_id = "maintenance-disconnect", .expected_revision = revision, .source_id = NativeMaintenanceTest.source_id[0..] }, .{});
+        defer a.free(params);
+        const payload = try std.fmt.allocPrint(a, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{s}\",\"params\":{s}}}", .{ if (forget) "account.forget" else "source.disconnect", params });
+        defer a.free(payload);
+        const reply = try current.?.dispatch(a, payload, .control);
+        defer a.free(reply);
+        var changed = try std.json.parseFromSlice(std.json.Value, a, reply, .{});
+        defer changed.deinit();
+        try std.testing.expect(control.get(changed.value, "result") != null);
+        // Let the actor consume the real negative completion while running;
+        // the source/forget fence, rather than shutdown, must reject it.
+        const completed_until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) });
+        while (true) {
+            var status = try reopenTestReply(current.?, "fixture.nativeSourceMaintenanceStatus", .control);
+            defer status.deinit();
+            if (!control.get(control.get(status.value, "result").?, "in_flight").?.bool) break;
+            if (completed_until.durationFromNow(io).raw.toMilliseconds() <= 0) return error.MaintenanceFixtureTimeout;
+            try io.sleep(.fromMilliseconds(10), .awake);
+        }
+        var after = try reopenTestReply(current.?, "state.snapshot", .control);
+        defer after.deinit();
+        const observed = control.get(control.get(after.value, "result").?, "native_source_maintenance").?;
+        if (observed != .null) {
+            // A later pass can truthfully report the now-stale forget consent;
+            // neither it nor the old worker may detach or regain authority.
+            try std.testing.expect(forget);
+            try std.testing.expectEqualStrings("unverified", try control.string(observed, "state"));
+            try std.testing.expectEqualStrings("NativeSourceFreshCheckRequired", try control.string(observed, "reason"));
+        }
+        current.?.deinit();
+        current = null;
+        const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+        defer a.free(database);
+        var store = try storage.Store.openRoot(io, a, database, instance.Selection.default.vaultRoot(), NativeMaintenanceTest.key);
+        defer store.close();
+        var saved = try store.readSnapshot();
+        defer saved.deinit();
+        var metadata = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+        defer metadata.deinit();
+        try std.testing.expectEqual(if (forget) domain.SourceStatus.connected else .disconnected, metadata.value.state.sources[0].status);
+        try std.testing.expectEqual(@as(u64, if (forget) 1 else 2), metadata.value.import_source_authority[0].generation);
+        try std.testing.expectEqual(@as(usize, if (forget) 0 else 1), metadata.value.state.accounts.len);
+        try std.testing.expectEqual(@as(usize, if (forget) 3 else 1), metadata.value.state.tombstones.len);
+        try std.testing.expectEqual(@as(u64, if (forget) 1 else 0), metadata.value.import_forget_epoch);
+    }
+}
+
+test "native context engine joins actual hint and peer metadata without source or credential admission" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |unavailable| {
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, allocator, .{ .source_context_mode = if (unavailable) .unavailable else .available });
+        defer fixture.destroy();
+        const runtime = try std.fmt.allocPrintSentinel(allocator, "{s}/runtime", .{fixture.root}, 0);
+        defer allocator.free(runtime);
+        if (std.c.mkdir(runtime.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        defer std.Io.Dir.cwd().deleteTree(io, runtime) catch @panic("owned context runtime cleanup failed");
+        const registry = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ runtime, native_source_context.registry_name }, 0);
+        defer allocator.free(registry);
+        if (std.c.mkdir(registry.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+        defer allocator.free(hint_path);
+        const owner_hex = std.fmt.bytesToHex(fixture.owner_id, .lower);
+        const nonce_hex = std.fmt.bytesToHex(fixture.native_nonce, .lower);
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .contextGeneration = "1", .ownerId = owner_hex[0..], .processNonce = nonce_hex[0..], .endpointGeneration = "1", .ownerEndpoint = fixture.endpoint[0..fixture.endpoint.len] }, .{});
+        defer allocator.free(raw);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = hint_path, .data = raw, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+        var engine: Engine = undefined;
+        engine.io = io;
+        engine.allocator = allocator;
+        engine.revision = 77;
+        engine.state = domain.State.init(allocator);
+        defer engine.state.deinit();
+        engine.db = null;
+        engine.network = null;
+        var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.discover\",\"params\":{}}");
+        defer request.deinit();
+        var task: NativeTask = undefined;
+        task.engine = &engine;
+        task.request = request;
+        task.discovered = .empty;
+        defer {
+            for (task.discovered.items) |loaded| loaded.deinit(allocator);
+            task.discovered.deinit(allocator);
+        }
+        task.source_contexts = .empty;
+        defer task.source_contexts.deinit(allocator);
+        task.source_context_runtime = runtime;
+        task.scanned_entries = 0;
+        task.ignored_stale_entries = 0;
+        var budget = try native_inventory.Budget.init(io, null);
+        try task.discoverSourceContexts(&budget);
+        try std.testing.expectEqual(@as(usize, 1), task.discovered.items.len);
+        try std.testing.expectEqual(@as(usize, 1), task.source_contexts.items.len);
+        try std.testing.expectEqual(@as(usize, 1), fixture.methodCount(.source_context));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
+        try std.testing.expectEqual(@as(usize, 0), engine.state.sources.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.state.accounts.items.len);
+        try std.testing.expectEqual(@as(u64, 77), engine.revision);
+        try std.testing.expect(engine.db == null and engine.network == null);
+        var arena: std.heap.ArenaAllocator = .init(allocator);
+        defer arena.deinit();
+        const result = try nativeDiscoveryResult(arena.allocator(), &task, null, false);
+        try std.testing.expect(!result.native_support);
+        const context = result.owners[0].source_context.?;
+        try std.testing.expect(!context.credential_acquisition_authorized);
+        if (unavailable) {
+            try std.testing.expectEqual(.unavailable, context.status);
+            try std.testing.expect(context.source_context_id == null and context.source_context_generation == null and context.store_present == null);
+        } else {
+            try std.testing.expectEqual(.available, context.status);
+            try std.testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", context.source_context_id.?);
+            try std.testing.expectEqualStrings("1", context.source_context_generation.?);
+            try std.testing.expectEqual(false, context.store_present.?);
+        }
+        const encoded = try std.json.Stringify.valueAlloc(allocator, context, .{});
+        defer allocator.free(encoded);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "auth.json") == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, fixture.home) == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "access_token") == null);
+    }
+}
+
+test "native discovery perform refuses unsafe homes and permits only absent implicit home fallback" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]u8{ 0, 1, 2, 3 }) |mode| {
+        const unavailable = false;
+        const fixture = try fixture_mod.Fixture.createWithOptions(io, allocator, .{ .source_context_mode = if (mode == 3) .rotated_context else .available });
+        defer fixture.destroy();
+        const runtime = try std.fmt.allocPrintSentinel(allocator, "{s}/runtime", .{fixture.root}, 0);
+        defer allocator.free(runtime);
+        if (std.c.mkdir(runtime.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        defer std.Io.Dir.cwd().deleteTree(io, runtime) catch @panic("owned context runtime cleanup failed");
+        const registry = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ runtime, native_source_context.registry_name }, 0);
+        defer allocator.free(registry);
+        if (std.c.mkdir(registry.ptr, 0o700) != 0) return error.FixtureDirectoryFailed;
+        const hint_path = try std.fmt.allocPrint(allocator, "{s}/{s}.json", .{ registry, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+        defer allocator.free(hint_path);
+        const owner_hex = std.fmt.bytesToHex(fixture.owner_id, .lower);
+        const nonce_hex = std.fmt.bytesToHex(fixture.native_nonce, .lower);
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .protocolVersion = 1, .contextId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .contextGeneration = "1", .ownerId = owner_hex[0..], .processNonce = nonce_hex[0..], .endpointGeneration = "1", .ownerEndpoint = fixture.endpoint[0..fixture.endpoint.len] }, .{});
+        defer allocator.free(raw);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = hint_path, .data = raw, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+        var engine: Engine = undefined;
+        engine.io = io;
+        engine.allocator = allocator;
+        engine.revision = 77;
+        engine.state = domain.State.init(allocator);
+        defer engine.state.deinit();
+        engine.db = null;
+        engine.network = null;
+        var request = try control.parse(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.discover\",\"params\":{}}");
+        defer request.deinit();
+        var task: NativeTask = undefined;
+        task.engine = &engine;
+        task.request = request;
+        task.discovered = .empty;
+        defer {
+            for (task.discovered.items) |loaded| loaded.deinit(allocator);
+            task.discovered.deinit(allocator);
+        }
+        task.source_contexts = .empty;
+        defer task.source_contexts.deinit(allocator);
+        task.source_context_runtime = runtime;
+        task.scanned_entries = 0;
+        task.ignored_stale_entries = 0;
+        const selected = try std.fmt.allocPrintSentinel(allocator, "{s}/selected-home", .{fixture.root}, 0);
+        defer allocator.free(selected);
+        if (mode == 1) {
+            if (std.c.symlink(fixture.home.ptr, selected.ptr) != 0) return error.FixtureDirectoryFailed;
+        }
+        defer if (mode == 1) {
+            _ = std.c.unlink(selected.ptr);
+        };
+        var invocation: Invocation = undefined;
+        invocation.until = std.Io.Clock.Timestamp.fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) });
+        task.invocation = &invocation;
+        task.stage = .discovery;
+        task.endpoint = @constCast("");
+        task.discovery_options = .{ .state_dir = runtime, .home = fixture.root, .codex_home = selected, .codex_home_explicit = mode == 2, .adapter = .codex, .capability = @splat('a'), .broker_socket = "unused", .omux_version = product.version, .key = @splat(0) };
+        if (mode == 1 or mode == 2) {
+            if (mode == 1) try std.testing.expectError(error.PathOpenFailed, task.perform()) else try std.testing.expectError(error.NativeContextMissing, task.perform());
+            try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.source_context));
+            try std.testing.expectEqual(@as(usize, 0), task.discovered.items.len);
+            try std.testing.expectEqual(@as(usize, 0), engine.state.sources.items.len);
+            try std.testing.expectEqual(@as(u64, 77), engine.revision);
+            continue;
+        }
+        try task.perform();
+        try std.testing.expectEqual(@as(usize, 1), task.discovered.items.len);
+        try std.testing.expectEqual(@as(usize, 1), task.source_contexts.items.len);
+        try std.testing.expectEqual(@as(usize, 1), fixture.methodCount(.source_context));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.register));
+        try std.testing.expectEqual(@as(usize, 0), fixture.methodCount(.announce));
+        try std.testing.expectEqual(@as(usize, 0), engine.state.sources.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.state.accounts.items.len);
+        try std.testing.expectEqual(@as(u64, 77), engine.revision);
+        try std.testing.expect(engine.db == null and engine.network == null);
+        var arena: std.heap.ArenaAllocator = .init(allocator);
+        defer arena.deinit();
+        const result = try nativeDiscoveryResult(arena.allocator(), &task, null, false);
+        try std.testing.expect(!result.native_support);
+        const context = result.owners[0].source_context.?;
+        try std.testing.expect(!context.credential_acquisition_authorized);
+        if (unavailable) {
+            try std.testing.expectEqual(.unavailable, context.status);
+            try std.testing.expect(context.source_context_id == null and context.source_context_generation == null and context.store_present == null);
+        } else {
+            try std.testing.expectEqual(.available, context.status);
+            try std.testing.expectEqualStrings(if (mode == 3) "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" else "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", context.source_context_id.?);
+            try std.testing.expectEqualStrings(if (mode == 3) "2" else "1", context.source_context_generation.?);
+            try std.testing.expectEqual(false, context.store_present.?);
+        }
+        const encoded = try std.json.Stringify.valueAlloc(allocator, context, .{});
+        defer allocator.free(encoded);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "auth.json") == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, fixture.home) == null);
+        try std.testing.expect(std.mem.indexOf(u8, encoded, "access_token") == null);
+    }
+}
+
+test "configured native installation completion rejects failures and locked custody before package IO" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var engine: Engine = undefined;
+    engine.io = io;
+    engine.allocator = allocator;
+    engine.native_deployment_selection = .{ .registered_package_root = "/model-unavailable/package", .installation_root = "/model-unavailable/native" };
+    engine.stopping = false;
+    engine.vault_locked = true;
+    engine.runtime_installation = null;
+    var invocation: Invocation = .{ .allocator = allocator, .channel = .control, .payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.install\",\"params\":{\"adapter\":\"codex\"}}", .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) }) };
+    const failed = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"FixtureRefusal\"}}");
+    defer allocator.free(failed);
+    try std.testing.expect(!try engine.startConfiguredRuntimeInstall(&invocation, failed));
+    const completed = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
+    defer allocator.free(completed);
+    invocation.channel = .browser;
+    try std.testing.expect(!try engine.startConfiguredRuntimeInstall(&invocation, completed));
+    invocation.channel = .control;
+    try std.testing.expectError(error.Locked, engine.startConfiguredRuntimeInstall(&invocation, completed));
+    try std.testing.expect(engine.runtime_installation == null);
+    engine.native_deployment_selection = null;
+    try std.testing.expect(!try engine.startConfiguredRuntimeInstall(&invocation, completed));
+}
+
+test "actual runtime commit refuses installation namespace replacement after worker handoff" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const prefix = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(prefix);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/handoff.sqlite", .{prefix}, 0);
+    defer allocator.free(database);
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = try allocator.dupe(u8, prefix),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .root_key = @splat(73),
+        .test_key = @splat(73),
+        .db = try storage.Store.open(io, allocator, database, @splat(73)),
+    };
+    defer {
+        current.db.?.close();
+        current.release();
+        allocator.free(current.state_dir);
+    }
+    current.native_registry = .{ .phase = .installed, .transaction = @splat(1), .capability_digest = @splat(2) };
+    current.adapter_epochs[0] = 1;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(directory.dir.handle, "selected", 0o700));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(directory.dir.handle, "replacement", 0o700));
+    const selected = std.c.openat(directory.dir.handle, "selected", .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
+    try std.testing.expect(selected >= 0);
+    defer _ = std.c.close(selected);
+    var invocation: Invocation = .{ .allocator = allocator, .payload = "", .channel = .control, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(3000) }) };
+    // This refusal-only model supplies real captured installation metadata, not
+    // a fabricated Prepared or producer authority. An intact name still cannot
+    // commit without genuine preparation. Replacement must fail even earlier.
+    var task: NativeRuntimeCommitTask = .{
+        .engine = &current,
+        .invocation = &invocation,
+        .candidate = null,
+        .arena = undefined,
+        .registry = current.native_registry,
+        .epoch = 1,
+        .job = undefined,
+        .handoff_ready = true,
+        .context = .{ .selection = current.instance_selection, .deadline = invocation.until, .options = .{ .state_dir = prefix, .home = prefix, .adapter = .codex, .capability = @splat('a'), .broker_socket = "fixture-unused", .omux_version = product.version, .key = @splat(73), .deadline = invocation.until } },
+        .parent = directory.dir.handle,
+        .basename = "selected",
+        .installation = .{ .directory = selected, .witness = try @import("platform/file_metadata.zig").statFd(selected), .created = true },
+    };
+    // Commit a real baseline first. The following runtime-fenced attempts run
+    // actual snapshot sizing/serialization but must never enter the DB writer.
+    try current.persist(&.{});
+    const before_revision = current.revision;
+    const before_rows = current.state.grants.items.len;
+    task.handoff_ready = false;
+    try std.testing.expectError(error.RuntimeSelectionNotReady, current.commitNativeRuntimePrepared(&task));
+    task.handoff_ready = true;
+    try std.testing.expectError(error.InvalidRuntimeSelection, current.commitNativeRuntimePrepared(&task));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(directory.dir.handle, "selected", directory.dir.handle, "retained"));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(directory.dir.handle, "replacement", directory.dir.handle, "selected"));
+    try std.testing.expectError(error.RuntimeSelectionDrift, current.commitNativeRuntimePrepared(&task));
+    current.runtime_installation = &task;
+    defer current.runtime_installation = null;
+    // This calls the actual persistence path; its fence is after admission,
+    // nonledger sizing and full JSON allocation immediately before db.commit.
+    // No fabricated Prepared is needed for a replaced-name refusal.
+    try std.testing.expectError(error.RuntimeSelectionDrift, current.persistWithRuntimeFence(&.{}, &task));
+    const expired: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
+    task.invocation.until = expired;
+    task.context.deadline = expired;
+    try std.testing.expectError(error.NativeSourceDeadline, current.persistWithRuntimeFence(&.{}, &task));
+    try std.testing.expect(current.qualified_native_runtime == null);
+    try std.testing.expectEqual(before_revision, current.revision);
+    try std.testing.expectEqual(before_rows, current.state.grants.items.len);
+    const fresh = std.c.openat(directory.dir.handle, "selected", .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
+    try std.testing.expect(fresh >= 0);
+    defer _ = std.c.close(fresh);
+    try std.testing.expect((try @import("platform/file_metadata.zig").statFd(fresh)).ino != task.installation.?.witness.ino);
+}
+
+test "SIWC actor refuses ready verified owner rows without opaque paired activation" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    const database = try std.fmt.allocPrintSentinel(allocator, "{s}/siwc.sqlite", .{path}, 0);
+    defer allocator.free(database);
+    var current: Engine = .{
+        .allocator = allocator,
+        .io = io,
+        .state_dir = @constCast(path),
+        .state = domain.State.init(allocator),
+        .observers = observer.Coordinator.init(allocator),
+        .requests = request_authority.Ledger.init(allocator, 4096),
+        .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+        .admission = snapshot_admission.Ledger.init(allocator),
+        .native_owners = native_owner.Ledger.init(allocator),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        .db = try storage.Store.open(io, allocator, database, @splat(0x61)),
+    };
+    defer {
+        current.db.?.close();
+        current.release();
+    }
+    const expires = current.now() + 3600;
+    _ = try current.state.connectSource(.{ .id = "synthetic-siwc-source", .kind = .oauth, .provider = siwc_route.provider });
+    _ = try current.state.enroll(.{ .account_id = "synthetic-siwc-account", .source_id = "synthetic-siwc-source", .identity = .{ .provider = siwc_route.provider, .issuer = siwc_route.issuer, .subject = "synthetic-registration-scoped-subject", .verified = true } }, current.now());
+    const grant = try current.state.addGrant(.{ .id = "synthetic-access-grant", .account_id = "synthetic-siwc-account", .source_id = "synthetic-siwc-source", .credential_kind = .oauth_access, .ownership = .omux, .purposes = &.{.request}, .audience = siwc_route.audience, .provider_expires_at = expires });
+    const snapshot = try std.json.Stringify.valueAlloc(allocator, .{ .schema_version = @as(u32, 2), .state = current.state.snapshot() }, .{});
+    defer allocator.free(snapshot);
+    const revision = try current.db.?.commit(0, snapshot, &.{.{ .put = .{ .context = .{ .account_id = grant.account_id, .grant_id = grant.id, .generation = grant.generation, .purpose = "request", .scope = siwc_route.audience }, .plaintext = "{\"access_token\":\"synthetic-not-activated-access\"}", .renewal_owner = .omux } }});
+    const row = (try current.db.?.readGrantStatus(grant.account_id, grant.id)).?;
+    try std.testing.expect(row.state == .ready and row.generation == grant.generation and row.renewal_owner == .omux);
+    // Actual encrypted ready SQL + verified public identity + Omux owner is
+    // still no signed OIDC/issued-client/paired activation or writer registry.
+    try std.testing.expectError(error.SiwcPairUnavailable, current.currentSiwcStamp(grant));
+    try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().records.len);
+    var retained = try current.db.?.readSnapshot();
+    defer retained.deinit();
+    try std.testing.expectEqual(revision, retained.revision);
+    try std.testing.expectEqualStrings(snapshot, retained.json);
+    for ([_][]const u8{ "adapter.siwcReject", "adapter.siwcAcquireReplacement" }) |method| {
+        const raw = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method }, .{});
+        defer allocator.free(raw);
+        var request = try control.parse(allocator, raw);
+        defer request.deinit();
+        try std.testing.expectError(error.WrongChannel, current.handleRequest(allocator, request, .control));
+    }
+    const readiness_raw = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 1, .method = "setup.applicationReadiness", .params = .{
+        .application = "codex",
+        .account_id = grant.account_id,
+        .expected_revision = current.revision,
+        .demand = .{ .provider = siwc_route.provider, .audience = siwc_route.audience, .resource = .{ .kind = "model", .target = "synthetic-model", .unit = "tokens" } },
+    } }, .{});
+    defer allocator.free(readiness_raw);
+    var readiness = try control.parse(allocator, readiness_raw);
+    defer readiness.deinit();
+    try std.testing.expectError(error.SiwcReadinessProfileRequired, current.applicationReadiness(allocator, readiness));
+}
+
+// Offline signed issuer fixtures exercise actual actor ownership and SQL joins.
+// They do not establish real provider, native Codex or installed/live support.
+const SiwcActorTest = struct {
+    const Json = std.json.Parsed(std.json.Value);
+    const Pair = struct { account_id: [64]u8, source_id: [64]u8, access_grant_id: [64]u8, refresh_grant_id: [64]u8 };
+    const Producer = @import("native_owner_fixture.zig").Fixture;
+
+    fn dispose(value: *Json) void {
+        control.wipeJson(value.value);
+        value.deinit();
+    }
+    fn call(producer: *Producer, current: *Engine, method: []const u8, params: anytype, channel: Channel) !Json {
+        const a = std.testing.allocator;
+        const wire = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
+        defer {
+            std.crypto.secureZero(u8, wire);
+            a.free(wire);
+        }
+        const reply = try producer.dispatch(current, a, wire, channel);
+        defer {
+            std.crypto.secureZero(u8, reply);
+            a.free(reply);
+        }
+        return std.json.parseFromSlice(std.json.Value, a, reply, .{ .allocate = .alloc_always });
+    }
+    fn result(value: *const Json) !std.json.Value {
+        return control.get(value.value, "result") orelse return error.FixtureExpectedSuccess;
+    }
+    fn refusal(value: *const Json, expected: []const u8) !void {
+        try std.testing.expect(control.get(value.value, "result") == null);
+        const rejected = control.get(value.value, "error") orelse return error.FixtureExpectedRefusal;
+        try std.testing.expectEqualStrings(expected, try control.string(rejected, "message"));
+    }
+    fn admit(producer: *Producer, current: *Engine, subject: []const u8) !Pair {
+        var capability = try current.capabilityForTest("enrollment");
+        defer std.crypto.secureZero(u8, &capability);
+        var reply = try call(producer, current, "fixture.admitSignedOssPair", .{ .application = "enrollment", .capability = capability[0..], .subject = subject }, .adapter);
+        defer dispose(&reply);
+        const value = try result(&reply);
+        if (value != .object or value.object.count() != 4) return error.FixtureInvalidPair;
+        var pair: Pair = undefined;
+        inline for (.{ "account_id", "source_id", "access_grant_id", "refresh_grant_id" }) |field| {
+            const bytes = try control.string(value, field);
+            if (bytes.len != 64) return error.FixtureInvalidPair;
+            for (bytes) |byte| if (!std.ascii.isHex(byte)) return error.FixtureInvalidPair;
+            @memcpy(&@field(pair, field), bytes);
+        }
+        return pair;
+    }
+    fn native(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, method: []const u8, params: anytype) !Json {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const raw = try std.json.Stringify.valueAlloc(a, params, .{});
+        var parsed = try std.json.parseFromSlice(std.json.Value, a, raw, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.FixtureInvalidRequest;
+        var capability = try current.capabilityForTest("codex");
+        defer std.crypto.secureZero(u8, &capability);
+        try parsed.value.object.put(a, "application", .{ .string = "codex" });
+        try parsed.value.object.put(a, "capability", .{ .string = capability[0..] });
+        try parsed.value.object.put(a, "native_ref", try @import("native_owner_fixture.zig").referenceValue(a, reference));
+        return call(producer, current, method, parsed.value, .adapter);
+    }
+    fn acquire(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, request_id: []const u8) !Json {
+        return native(producer, current, reference, "adapter.acquire", .{
+            .session_id = "synthetic-siwc-thread",
+            .binding_id = "synthetic-route",
+            .request_id = request_id,
+            .request_profile = siwc_route.profile,
+            .demand = .{ .provider = siwc_route.provider, .audience = siwc_route.audience, .purpose = "request", .resource = .{ .kind = "model", .target = "synthetic-model", .unit = "tokens", .scope = "" }, .required = 1 },
+        });
+    }
+    fn handle(value: *const Json) ![64]u8 {
+        const bytes = try control.string(try result(value), "lease_handle");
+        if (bytes.len != 64) return error.FixtureInvalidLease;
+        var out: [64]u8 = undefined;
+        @memcpy(&out, bytes);
+        return out;
+    }
+    fn materialize(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, lease: [64]u8) !Json {
+        return native(producer, current, reference, "adapter.materialize", .{ .lease_handle = lease[0..], .request_profile = siwc_route.profile });
+    }
+    fn checkMaterialization(value: *const Json, generation: u64, grant_expiry: i64) !void {
+        const body = try result(value);
+        try std.testing.expect(body == .object and body.object.count() == 7);
+        try std.testing.expectEqualStrings(siwc_route.profile, try control.string(body, "request_profile"));
+        try std.testing.expectEqualStrings(siwc_route.issuer, try control.string(body, "issuer"));
+        try std.testing.expectEqualStrings(siwc_route.audience, try control.string(body, "audience"));
+        try std.testing.expectEqualStrings(siwc_route.auth_mode, try control.string(body, "auth_mode"));
+        try std.testing.expect((try control.string(body, "access_token")).len != 0);
+        try std.testing.expect(control.get(body, "provider_account_id") == null and control.get(body, "refresh_token") == null);
+        try std.testing.expectEqual(generation, @as(u64, @intCast(control.get(body, "route_generation").?.integer)));
+        try std.testing.expect(control.get(body, "expires_at").?.integer <= grant_expiry);
+    }
+    fn report(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, lease: [64]u8, event: []const u8) !Json {
+        return native(producer, current, reference, "adapter.report", .{ .lease_handle = lease[0..], .event = event });
+    }
+    fn reject(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, lease: [64]u8, status: u16, code: []const u8) !Json {
+        return rejectMethod(producer, current, reference, lease, "adapter.siwcReject", status, code);
+    }
+    fn rejectMethod(producer: *Producer, current: *Engine, reference: native_owner.NativeRef, lease: [64]u8, method: []const u8, status: u16, code: []const u8) !Json {
+        return native(producer, current, reference, method, .{
+            .lease_handle = lease[0..],
+            .request_profile = siwc_route.profile,
+            .status = status,
+            .error_code = code,
+            .error_param = @as(?[]const u8, "model"),
+            .provider_request_id = @as(?[]const u8, "req_synthetic_actor"),
+            .pre_acceptance = true,
+            .response_started = false,
+        });
+    }
+};
+
+test "signed owned single-account SIWC actor materializes only current paired access and stops provider errors without refresh or replay" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const producer = try fixture_mod.Fixture.create(std.testing.io, a);
+    defer producer.destroy();
+    const actor = try fixture_mod.ActorFixture.create(std.testing.io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const pair = try SiwcActorTest.admit(producer, current, "single-account");
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    const original = current.state.grant(&pair.access_grant_id).?;
+    const refresh_before = current.state.grant(&pair.refresh_grant_id).?;
+    const cases = [_]struct { status: u16, code: []const u8, request_id: []const u8 }{
+        .{ .status = 401, .code = "subscription_sharing_invalid_user", .request_id = "siwc-credential-stop" },
+        .{ .status = 403, .code = "unsupported_country_region_territory", .request_id = "siwc-policy-stop" },
+        .{ .status = 429, .code = "subscription_sharing_usage_limit_exceeded", .request_id = "siwc-usage-stop" },
+        .{ .status = 502, .code = "unknown", .request_id = "siwc-unknown-stop" },
+    };
+    for (cases) |case| {
+        var acquired = try SiwcActorTest.acquire(producer, current, reference, case.request_id);
+        defer SiwcActorTest.dispose(&acquired);
+        try std.testing.expectEqualStrings(&pair.account_id, try control.string(try SiwcActorTest.result(&acquired), "account_id"));
+        const lease = try SiwcActorTest.handle(&acquired);
+        var credential = try SiwcActorTest.materialize(producer, current, reference, lease);
+        defer SiwcActorTest.dispose(&credential);
+        try SiwcActorTest.checkMaterialization(&credential, 1, original.provider_expires_at.?);
+        var rejected = try SiwcActorTest.reject(producer, current, reference, lease, case.status, case.code);
+        defer SiwcActorTest.dispose(&rejected);
+        const receipt = try SiwcActorTest.result(&rejected);
+        try std.testing.expect(receipt == .object and receipt.object.count() == 6);
+        try std.testing.expect(try control.boolean(receipt, "recorded", false));
+        try std.testing.expectEqualStrings(siwc_route.profile, try control.string(receipt, "request_profile"));
+        try std.testing.expectEqualStrings(&lease, try control.string(receipt, "rejected_lease_handle"));
+        try std.testing.expectEqual(@as(i64, 1), control.get(receipt, "rejected_route_generation").?.integer);
+        try std.testing.expectEqualStrings("stop", try control.string(receipt, "disposition"));
+        try std.testing.expect(control.get(receipt, "replacement").? == .null);
+        try std.testing.expect(current.requests.attempt("codex", &lease).?.state == .abandoned);
+        var replay = try SiwcActorTest.acquire(producer, current, reference, case.request_id);
+        defer SiwcActorTest.dispose(&replay);
+        try SiwcActorTest.refusal(&replay, "AttemptBudgetExhausted");
+        try std.testing.expectEqual(@as(usize, 0), current.state.leases.items.len);
+        try std.testing.expectEqual(@as(usize, 0), current.state.observations.items.len);
+        const access_after = current.state.grant(&pair.access_grant_id).?;
+        const refresh_after = current.state.grant(&pair.refresh_grant_id).?;
+        try std.testing.expect(access_after.status == .ready and access_after.generation == original.generation);
+        try std.testing.expect(refresh_after.status == .ready and refresh_after.ownership == .omux and refresh_after.generation == refresh_before.generation);
+        try std.testing.expect(current.state.account(&pair.account_id).?.lifecycle == .active);
+    }
+    const fake_ticket: [64]u8 = @splat('a');
+    var replacement = try SiwcActorTest.native(producer, current, reference, "adapter.siwcAcquireReplacement", .{ .request_profile = siwc_route.profile, .request_id = "siwc-usage-stop", .replacement_ticket = fake_ticket[0..] });
+    defer SiwcActorTest.dispose(&replacement);
+    try SiwcActorTest.refusal(&replacement, "SiwcReplacementAuthorityUnavailable");
+    // A fresh independent request rechecks actual paired SQL state on the actor
+    // writer after the final error. Test callers never read actor-owned SQLite.
+    var fresh = try SiwcActorTest.acquire(producer, current, reference, "siwc-after-stops");
+    defer SiwcActorTest.dispose(&fresh);
+    const fresh_lease = try SiwcActorTest.handle(&fresh);
+    const generic_rejection_revision = current.revision;
+    var generic_rejection = try SiwcActorTest.native(producer, current, reference, "adapter.report", .{ .lease_handle = fresh_lease[0..], .event = "rejected", .status = 429, .pre_acceptance = true, .response_started = false });
+    defer SiwcActorTest.dispose(&generic_rejection);
+    try SiwcActorTest.refusal(&generic_rejection, "SiwcStructuredRejectionRequired");
+    try std.testing.expectEqual(generic_rejection_revision, current.revision);
+    try std.testing.expect(current.requests.attempt("codex", &fresh_lease).?.state == .issued);
+    var fresh_auth = try SiwcActorTest.materialize(producer, current, reference, fresh_lease);
+    defer SiwcActorTest.dispose(&fresh_auth);
+    try SiwcActorTest.checkMaterialization(&fresh_auth, 1, original.provider_expires_at.?);
+    var finished = try SiwcActorTest.report(producer, current, reference, fresh_lease, "abandoned");
+    defer SiwcActorTest.dispose(&finished);
+    _ = try SiwcActorTest.result(&finished);
+    var fault_work = try SiwcActorTest.acquire(producer, current, reference, "siwc-commit-fault-work");
+    defer SiwcActorTest.dispose(&fault_work);
+    const fault_lease = try SiwcActorTest.handle(&fault_work);
+    const fault_revision = current.revision;
+    const fault_checkpoint = current.db.?.checkpoint;
+    var failed_stop = try SiwcActorTest.rejectMethod(producer, current, reference, fault_lease, "fixture.siwcRejectCommitFault", 429, "subscription_sharing_usage_limit_exceeded");
+    defer SiwcActorTest.dispose(&failed_stop);
+    try SiwcActorTest.refusal(&failed_stop, "DatabaseDenied");
+    // Query-only denies a transaction/write before finishMutation can
+    // reserve recovery authority. Store rollback is safe, but persist still
+    // poisons the ACTOR; restoring fixture control cannot undo that fence.
+    try std.testing.expect(current.poisoned and !current.db.?.poisoned);
+    try std.testing.expectEqual(fault_revision, current.revision);
+    try std.testing.expect(std.meta.eql(fault_checkpoint, current.db.?.checkpoint));
+    try std.testing.expect(current.requests.attempt("codex", &fault_lease).?.state == .issued);
+    var native_issued = false;
+    for (current.native_leases.items) |held| if (eql(&held.handle, &fault_lease)) {
+        native_issued = held.status == .issued;
+    };
+    try std.testing.expect(native_issued);
+    try std.testing.expectEqual(@as(usize, 1), current.state.leases.items.len);
+    var fenced_cleanup = try SiwcActorTest.report(producer, current, reference, fault_lease, "abandoned");
+    defer SiwcActorTest.dispose(&fenced_cleanup);
+    try SiwcActorTest.refusal(&fenced_cleanup, "CustodyUnavailable");
+    // A real close/reopen validates the untouched recovery checkpoint. No
+    // fixture clears poison, reconstructs acceptance or restores retry budget.
+    try actor.restart();
+    const reopened = actor.engine.?;
+    try std.testing.expect(!reopened.poisoned);
+    try std.testing.expectEqual(@as(usize, 0), reopened.native_leases.items.len);
+    try std.testing.expectEqual(@as(usize, 1), reopened.state.leases.items.len);
+    try std.testing.expect(reopened.requests.attempt("codex", &fault_lease).?.state == .unknown);
+    const retained_intent = reopened.requests.intentForHandle("codex", &fault_lease).?;
+    try std.testing.expectError(error.AttemptBudgetExhausted, reopened.requests.checkIssue(retained_intent.*));
+    var terminal_cleanup = try SiwcActorTest.report(producer, reopened, reference, fault_lease, "abandoned");
+    defer SiwcActorTest.dispose(&terminal_cleanup);
+    _ = try SiwcActorTest.result(&terminal_cleanup);
+    try std.testing.expectEqual(@as(usize, 0), reopened.state.leases.items.len);
+    try std.testing.expect(reopened.requests.attempt("codex", &fault_lease).?.state == .abandoned);
+    try std.testing.expectError(error.AttemptBudgetExhausted, reopened.requests.checkIssue(retained_intent.*));
+}
+
+test "two genuinely signed owned SIWC pairs hand off only on a new request after explicit pause and preserve accepted work fences" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const producer = try fixture_mod.Fixture.create(std.testing.io, a);
+    defer producer.destroy();
+    const actor = try fixture_mod.ActorFixture.create(std.testing.io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const first_pair = try SiwcActorTest.admit(producer, current, "first-account");
+    const other_pair = try SiwcActorTest.admit(producer, current, "other-account");
+    try std.testing.expect(!eql(&first_pair.account_id, &other_pair.account_id));
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    var first = try SiwcActorTest.acquire(producer, current, reference, "siwc-accepted-work");
+    defer SiwcActorTest.dispose(&first);
+    const first_result = try SiwcActorTest.result(&first);
+    try std.testing.expectEqualStrings(&first_pair.account_id, try control.string(first_result, "account_id"));
+    const first_lease = try SiwcActorTest.handle(&first);
+    var initial_auth = try SiwcActorTest.materialize(producer, current, reference, first_lease);
+    defer SiwcActorTest.dispose(&initial_auth);
+    try SiwcActorTest.checkMaterialization(&initial_auth, 1, current.state.grant(&first_pair.access_grant_id).?.provider_expires_at.?);
+    var accepted = try SiwcActorTest.report(producer, current, reference, first_lease, "accepted");
+    defer SiwcActorTest.dispose(&accepted);
+    _ = try SiwcActorTest.result(&accepted);
+    var pause = try SiwcActorTest.call(producer, current, "account.pause", .{ .account_id = first_pair.account_id[0..], .operation_id = "siwc-explicit-pause", .expected_revision = current.revision }, .control);
+    defer SiwcActorTest.dispose(&pause);
+    _ = try SiwcActorTest.result(&pause);
+    var overlap = try SiwcActorTest.acquire(producer, current, reference, "siwc-next-independent-work");
+    defer SiwcActorTest.dispose(&overlap);
+    try SiwcActorTest.refusal(&overlap, "InFlight");
+    var late_rejection = try SiwcActorTest.reject(producer, current, reference, first_lease, 429, "subscription_sharing_usage_limit_exceeded");
+    defer SiwcActorTest.dispose(&late_rejection);
+    try SiwcActorTest.refusal(&late_rejection, "UnsafeReplay");
+    try std.testing.expect(current.requests.attempt("codex", &first_lease).?.state == .accepted);
+    var complete = try SiwcActorTest.report(producer, current, reference, first_lease, "completed");
+    defer SiwcActorTest.dispose(&complete);
+    _ = try SiwcActorTest.result(&complete);
+    var same_work = try SiwcActorTest.acquire(producer, current, reference, "siwc-accepted-work");
+    defer SiwcActorTest.dispose(&same_work);
+    try SiwcActorTest.refusal(&same_work, "AttemptBudgetExhausted");
+    var next = try SiwcActorTest.acquire(producer, current, reference, "siwc-next-independent-work");
+    defer SiwcActorTest.dispose(&next);
+    const next_result = try SiwcActorTest.result(&next);
+    try std.testing.expectEqualStrings(&other_pair.account_id, try control.string(next_result, "account_id"));
+    try std.testing.expectEqual(@as(i64, 2), control.get(next_result, "route_generation").?.integer);
+    const next_lease = try SiwcActorTest.handle(&next);
+    var next_auth = try SiwcActorTest.materialize(producer, current, reference, next_lease);
+    defer SiwcActorTest.dispose(&next_auth);
+    try SiwcActorTest.checkMaterialization(&next_auth, 2, current.state.grant(&other_pair.access_grant_id).?.provider_expires_at.?);
+    try std.testing.expect(!eql(try control.string(try SiwcActorTest.result(&initial_auth), "access_token"), try control.string(try SiwcActorTest.result(&next_auth), "access_token")));
+    try std.testing.expectEqual(@as(usize, 1), current.state.bindings.items.len);
+    try std.testing.expectEqualStrings("synthetic-siwc-thread", current.state.bindings.items[0].session_id);
+    try std.testing.expect(current.state.bindings.items[0].native_ref.?.same(reference));
+    try std.testing.expectEqual(@as(usize, 0), current.state.observations.items.len);
+    var abandon = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned");
+    defer SiwcActorTest.dispose(&abandon);
+    _ = try SiwcActorTest.result(&abandon);
+}
+
+test "actual native peer SIWC acquire refuses withdrawn paired source authority without adopting a lease" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture_mod = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture_mod.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture_mod.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const pair = try SiwcActorTest.admit(producer, current, "withdrawn-account");
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    // Source withdrawal executes on the real actor writer. Retained identity
+    // metadata and the original native owner cannot restore grant authority.
+    var disconnect = try SiwcActorTest.call(producer, current, "source.disconnect", .{ .source_id = pair.source_id[0..], .operation_id = "siwc-disconnect-source", .expected_revision = current.revision }, .control);
+    defer SiwcActorTest.dispose(&disconnect);
+    _ = try SiwcActorTest.result(&disconnect);
+    const before_revision = current.revision;
+    const before = try std.json.Stringify.valueAlloc(a, current.state.snapshot(), .{});
+    defer a.free(before);
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var capability = try current.capabilityForTest("codex");
+    defer std.crypto.secureZero(u8, &capability);
+    const wire_ref = try fixture_mod.referenceValue(scratch, reference);
+    const request = try std.json.Stringify.valueAlloc(scratch, .{ .jsonrpc = "2.0", .id = 1, .method = "adapter.acquire", .params = .{
+        .application = "codex",
+        .capability = capability[0..],
+        .native_ref = wire_ref,
+        .session_id = "synthetic-siwc-thread",
+        .binding_id = "synthetic-route",
+        .request_id = "synthetic-new-request",
+        .request_profile = siwc_route.profile,
+        .demand = .{ .provider = siwc_route.provider, .audience = siwc_route.audience, .purpose = "request", .resource = .{ .kind = "model", .target = "synthetic-model", .unit = "tokens", .scope = "" }, .required = 1 },
+    } }, .{});
+    defer std.crypto.secureZero(u8, request);
+    const response = try producer.dispatch(current, scratch, request, .adapter);
+    defer std.crypto.secureZero(u8, response);
+    const parsed = try std.json.parseFromSlice(std.json.Value, scratch, response, .{});
+    defer parsed.deinit();
+    try std.testing.expect(control.get(parsed.value, "result") == null);
+    const refused = control.get(parsed.value, "error") orelse return error.FixtureExpectedRefusal;
+    try std.testing.expectEqualStrings("SiwcPairUnavailable", try control.string(refused, "message"));
+    // Even the same authenticated owner cannot submit a public activation bit
+    // or native-copy consent as a substitute for actual paired authority.
+    var forged = try std.json.parseFromSlice(std.json.Value, scratch, request, .{});
+    defer forged.deinit();
+    var forged_params = control.get(forged.value, "params") orelse return error.FixtureInvalidRequest;
+    try forged_params.object.put(scratch, "verified", .{ .bool = true });
+    try forged.value.object.put(scratch, "params", forged_params);
+    const forged_wire = try std.json.Stringify.valueAlloc(scratch, forged.value, .{});
+    defer std.crypto.secureZero(u8, forged_wire);
+    const forged_response = try producer.dispatch(current, scratch, forged_wire, .adapter);
+    defer std.crypto.secureZero(u8, forged_response);
+    const forged_result = try std.json.parseFromSlice(std.json.Value, scratch, forged_response, .{});
+    defer forged_result.deinit();
+    try std.testing.expect(control.get(forged_result.value, "result") == null);
+    const forged_error = control.get(forged_result.value, "error") orelse return error.FixtureExpectedRefusal;
+    try std.testing.expectEqualStrings("InvalidSiwcParams", try control.string(forged_error, "message"));
+    try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().records.len);
+    try std.testing.expectEqual(@as(usize, 0), current.state.leases.items.len);
+    const after = try std.json.Stringify.valueAlloc(a, current.state.snapshot(), .{});
+    defer a.free(after);
+    try std.testing.expectEqual(before_revision, current.revision);
+    try std.testing.expectEqualStrings(before, after);
+}
+
+test "actual acquisition refuses exhausted route generation before request or lease adoption" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |account_change| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(path);
+        const database = try std.fmt.allocPrintSentinel(allocator, "{s}/route.sqlite", .{path}, 0);
+        defer allocator.free(database);
+        var current: Engine = .{
+            .allocator = allocator,
+            .io = io,
+            .state_dir = @constCast(path),
+            .state = domain.State.init(allocator),
+            .observers = observer.Coordinator.init(allocator),
+            .requests = request_authority.Ledger.init(allocator, 4096),
+            .mutations = try mutation_authority.Ledger.init(allocator, 4096),
+            .admission = snapshot_admission.Ledger.init(allocator),
+            .native_owners = native_owner.Ledger.init(allocator),
+            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+            .db = try storage.Store.open(io, allocator, database, @splat(0x61)),
+        };
+        defer {
+            current.db.?.close();
+            current.release();
+        }
+        _ = try current.state.connectSource(.{ .id = "source", .kind = .explicit, .provider = "github" });
+        _ = try current.state.enroll(.{ .account_id = "account-a", .source_id = "source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "route-fixture-a", .verified = true } }, 0);
+        _ = try current.state.addGrant(.{ .id = "grant-a", .account_id = "account-a", .source_id = "source", .credential_kind = .oauth_access, .ownership = .external, .audience = "https://github.com", .purposes = &.{.request}, .generation = 1 });
+        const binding_id = bindingIdentityForOwner("git", "session", "session", null);
+        _ = try current.state.bind(.{ .id = &binding_id, .application = "git", .session_id = "session", .account_id = "account-a", .grant_id = "grant-a", .grant_generation = 1, .route_generation = std.math.maxInt(u64) });
+        const initial = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
+        defer allocator.free(initial);
+        const initial_revision = try current.db.?.commit(0, initial, &.{.{ .put = .{ .context = .{ .account_id = "account-a", .grant_id = "grant-a", .generation = 1, .purpose = "request", .scope = "https://github.com" }, .plaintext = "synthetic-initial-route-payload", .renewal_owner = .external } }});
+        const selected_account: []const u8 = if (account_change) "account-b" else "account-a";
+        const selected_grant: []const u8 = if (account_change) "grant-b" else "grant-a";
+        const generation: u64 = if (account_change) 1 else 2;
+        if (account_change) {
+            _ = try current.state.enroll(.{ .account_id = selected_account, .source_id = "source", .identity = .{ .provider = "github", .issuer = "https://github.com", .subject = "route-fixture-b", .verified = true } }, 0);
+            try current.state.pause("account-a", true);
+        }
+        _ = try current.state.addGrant(.{ .id = selected_grant, .account_id = selected_account, .source_id = "source", .credential_kind = .oauth_access, .ownership = .external, .audience = "https://github.com", .purposes = &.{.request}, .generation = generation });
+        const before = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
+        defer allocator.free(before);
+        const baseline_revision = try current.db.?.commit(initial_revision, before, &.{.{ .put = .{ .context = .{ .account_id = selected_account, .grant_id = selected_grant, .generation = generation, .purpose = "request", .scope = "https://github.com" }, .plaintext = "synthetic-route-payload", .renewal_owner = .external } }});
+        const demand: domain.Demand = .{ .allowed_account_ids = &.{ "account-a", "account-b" }, .provider = "github", .audience = "https://github.com", .resource = .{ .kind = "requests" }, .now = current.now() };
+        const selected = try current.state.select(demand, &binding_id);
+        try std.testing.expectEqualStrings(selected_grant, selected.grant_id);
+        try std.testing.expect(!selected.sticky);
+        const params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"application\":\"git\",\"session_id\":\"session\",\"request_id\":\"fresh-request\",\"demand\":{\"provider\":\"github\",\"audience\":\"https://github.com\",\"resource\":{\"kind\":\"requests\"}}}", .{});
+        defer params.deinit();
+        try std.testing.expectError(error.GenerationConflict, current.acquire(allocator, .null, params.value));
+        const after = try std.json.Stringify.valueAlloc(allocator, current.state.snapshot(), .{});
+        defer allocator.free(after);
+        try std.testing.expectEqualStrings(before, after);
+        try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
+        try std.testing.expectEqual(@as(usize, 0), current.requests.snapshot().records.len);
+        try std.testing.expectEqual(std.math.maxInt(u64), current.state.binding(&binding_id).?.route_generation);
+        var stored = try current.db.?.readSnapshot();
+        defer stored.deinit();
+        try std.testing.expectEqual(baseline_revision, stored.revision);
+        try std.testing.expectEqualStrings(before, stored.json);
+    }
+}
+
+// These exercise the actual control refusal before any issuer exists. Synthetic
+// retained copy facts are never native manager, home, writer-set or provider proof.
+const NativeFileCoordinationRefusalTest = struct {
+    const source_handle: [32]u8 = @splat(2);
+    const source_id = std.fmt.bytesToHex(source_handle, .lower);
+    const account_id = "coordination-fixture-account";
+    const identity: domain.Identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-private-coordination-user", .tenant = "synthetic-private-coordination-workspace", .verified = true };
+
+    fn init() !Engine {
+        const a = std.testing.allocator;
+        var current: Engine = .{
+            .allocator = a,
+            .io = std.testing.io,
+            .state_dir = @constCast("/fixture/coordination-no-service"),
+            .state = domain.State.init(a),
+            .observers = observer.Coordinator.init(a),
+            .requests = request_authority.Ledger.init(a, 4096),
+            .mutations = try mutation_authority.Ledger.init(a, 4096),
+            .admission = snapshot_admission.Ledger.init(a),
+            .native_owners = native_owner.Ledger.init(a),
+            .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+        };
+        errdefer current.release();
+        _ = try current.state.connectSource(.{ .id = &source_id, .kind = .native_store, .provider = "codex", .authorized_at = 0 });
+        _ = try current.state.connectSource(.{ .id = "coordination-independent-source", .kind = .explicit, .provider = "codex" });
+        _ = try current.state.enroll(.{ .account_id = account_id, .source_id = &source_id, .identity = identity, .label = "synthetic private coordination label" }, current.now());
+        _ = try current.state.enroll(.{ .account_id = "duplicate-candidate", .source_id = "coordination-independent-source", .identity = identity }, current.now());
+        _ = try current.state.addGrant(.{ .id = "coordination-source-grant", .account_id = account_id, .source_id = &source_id, .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        _ = try current.state.addGrant(.{ .id = "coordination-independent-grant", .account_id = account_id, .source_id = "coordination-independent-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        const witness: peer.Witness = .{ .profile = .linux_pidfs64_v1, .boot_id = @splat(1), .pidfs_device = 1, .pidfs_inode = 2, .user_namespace = .{ .device = 3, .inode = 4 }, .pid_namespace = .{ .device = 5, .inode = 6 }, .uid = 7, .gid = 8 };
+        const owner: native_source_consent.Owner = .{ .id = @splat(3), .nonce = @splat(4), .endpoint_generation = 1, .witness = witness };
+        const permission: native_source_consent.Consent = .{ .id = @splat(1), .generation = 1, .source_id = source_handle, .source_generation = 1, .owner = owner, .expires_at = current.now() + 3600, .purpose = .native_access_copy_for_identity_and_request, .forget_epoch = current.import_forget_epoch };
+        _ = try current.importSourceGeneration(&source_id);
+        try current.addDescription(.{ .source_id = &source_id, .provider = "codex", .native_authority = .{ .origin = @splat(6), .consent = permission, .context = .{ .id = @splat(5), .generation = 1 } } });
+        return current;
+    }
+
+    fn payload(a: std.mem.Allocator, purpose: []const u8, seconds: i64) ![]u8 {
+        return std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "integrations.nativeFileCoordinationReadiness", .params = .{ .source_id = source_id[0..], .account_id = account_id, .purpose = purpose, .consent_seconds = seconds } }, .{});
+    }
+
+    fn expect(actor: *Engine, reason: []const u8) !void {
+        const a = std.testing.allocator;
+        const before = try std.json.Stringify.valueAlloc(a, .{ .state = actor.state.snapshot(), .descriptions = actor.descriptions.items, .import_sources = actor.import_sources.items, .forget_epoch = actor.import_forget_epoch }, .{});
+        defer a.free(before);
+        const revision = actor.revision;
+        const key = actor.root_key;
+        const bytes = try payload(a, "native_file_coordination_only", 120);
+        defer a.free(bytes);
+        const reply = try actor.execute(a, bytes, .control);
+        defer a.free(reply);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, reply, .{});
+        defer parsed.deinit();
+        const result = control.get(parsed.value, "result") orelse return error.MissingCoordinationRefusal;
+        try std.testing.expectEqualStrings("unsupported", try control.string(result, "status"));
+        try std.testing.expectEqualStrings("unknown", try control.string(result, "registry_status"));
+        try std.testing.expectEqualStrings(reason, try control.string(result, "reason"));
+        try std.testing.expectEqual(@as(usize, 4), control.get(result, "missing_predicates").?.array.items.len);
+        inline for (.{ "consent_recorded", "enrollment_issued", "native_writer_activated", "provider_request_initiated" }) |field| try std.testing.expect(!control.get(result, field).?.bool);
+        for ([_][]const u8{ identity.subject, identity.tenant, "synthetic private coordination label", "proof", "root_key", "writer-capability", "expectedHomeWitness" }) |private| try std.testing.expect(std.mem.indexOf(u8, reply, private) == null);
+        const after = try std.json.Stringify.valueAlloc(a, .{ .state = actor.state.snapshot(), .descriptions = actor.descriptions.items, .import_sources = actor.import_sources.items, .forget_epoch = actor.import_forget_epoch }, .{});
+        defer a.free(after);
+        try std.testing.expectEqualStrings(before, after);
+        try std.testing.expectEqual(revision, actor.revision);
+        try std.testing.expectEqualSlices(u8, &key, &actor.root_key);
+        try std.testing.expectEqual(@as(usize, 0), actor.requests.snapshot().records.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.mutations.snapshot().records.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.native_tasks.items.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.native_import_tasks.items.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.pending_imports.items.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.fixture_identity_submissions);
+        try std.testing.expectEqual(@as(usize, 0), actor.fixture_observation_submissions);
+        try std.testing.expect(actor.db == null and actor.network == null and actor.thread == null);
+    }
+
+    fn expectExecuteError(actor: *Engine, bytes: []const u8, channel: Channel, expected_error: []const u8) !void {
+        const a = std.testing.allocator;
+        const before = try std.json.Stringify.valueAlloc(a, .{ .state = actor.state.snapshot(), .descriptions = actor.descriptions.items, .import_sources = actor.import_sources.items, .forget_epoch = actor.import_forget_epoch }, .{});
+        defer a.free(before);
+        const revision = actor.revision;
+        const key = actor.root_key;
+        // db=null is deliberate: generic error restoration would dereference
+        // absent custody. This must exercise the actual non-restoring execute
+        // error route rather than only the otherwise conservative handler.
+        const reply = try actor.execute(a, bytes, channel);
+        defer a.free(reply);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, reply, .{});
+        defer parsed.deinit();
+        const failure = control.get(parsed.value, "error") orelse return error.MissingCoordinationError;
+        try std.testing.expectEqualStrings(expected_error, try control.string(failure, "message"));
+        const after = try std.json.Stringify.valueAlloc(a, .{ .state = actor.state.snapshot(), .descriptions = actor.descriptions.items, .import_sources = actor.import_sources.items, .forget_epoch = actor.import_forget_epoch }, .{});
+        defer a.free(after);
+        try std.testing.expectEqualStrings(before, after);
+        try std.testing.expectEqual(revision, actor.revision);
+        try std.testing.expectEqualSlices(u8, &key, &actor.root_key);
+        try std.testing.expect(!actor.poisoned);
+        try std.testing.expect(actor.db == null and actor.network == null and actor.thread == null);
+        try std.testing.expectEqual(@as(usize, 0), actor.requests.snapshot().records.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.mutations.snapshot().records.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.native_tasks.items.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.native_import_tasks.items.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.pending_imports.items.len);
+        try std.testing.expectEqual(@as(usize, 0), actor.fixture_identity_submissions);
+        try std.testing.expectEqual(@as(usize, 0), actor.fixture_observation_submissions);
+    }
+};
+
+test "native File coordination consent request never promotes complete copy authority or the vault key" {
+    var current = try NativeFileCoordinationRefusalTest.init();
+    defer current.release();
+    current.root_key = @splat(0x91);
+    try NativeFileCoordinationRefusalTest.expect(&current, if (builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) "coordination_trust_unavailable" else "unsupported_platform");
+    try std.testing.expectEqual(domain.RenewalOwnership.external, current.state.grant("coordination-source-grant").?.ownership);
+    try std.testing.expectEqual(domain.RenewalOwnership.external, current.state.grant("coordination-independent-grant").?.ownership);
+    try std.testing.expectEqual(.native_access_copy_for_identity_and_request, current.descriptions.items[0].native_authority.?.consent.purpose);
+}
+
+test "native File coordination request rejects copy refresh aliases channels and unbounded consent" {
+    const a = std.testing.allocator;
+    var current = try NativeFileCoordinationRefusalTest.init();
+    defer current.release();
+    const bytes = try NativeFileCoordinationRefusalTest.payload(a, "native_file_coordination_only", 120);
+    defer a.free(bytes);
+    var request = try control.parse(a, bytes);
+    defer request.deinit();
+    try std.testing.expectError(error.WrongChannel, current.handleRequest(a, request, .adapter));
+    try std.testing.expectError(error.WrongChannel, current.handleRequest(a, request, .browser));
+    for ([_][]const u8{ "native_access_copy_for_identity_and_request", "native_file_refresh", "renewal" }) |purpose| {
+        const wrong = try NativeFileCoordinationRefusalTest.payload(a, purpose, 120);
+        defer a.free(wrong);
+        var parsed = try control.parse(a, wrong);
+        defer parsed.deinit();
+        try std.testing.expectError(error.WrongPurpose, current.handleRequest(a, parsed, .control));
+    }
+    for ([_]i64{ 0, -1, 3601, std.math.maxInt(i64) }) |seconds| {
+        const wrong = try NativeFileCoordinationRefusalTest.payload(a, "native_file_coordination_only", seconds);
+        defer a.free(wrong);
+        var parsed = try control.parse(a, wrong);
+        defer parsed.deinit();
+        try std.testing.expectError(error.InvalidParams, current.handleRequest(a, parsed, .control));
+    }
+    const extra = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "integrations.nativeFileCoordinationReadiness", .params = .{ .source_id = NativeFileCoordinationRefusalTest.source_id[0..], .account_id = NativeFileCoordinationRefusalTest.account_id, .purpose = "native_file_coordination_only", .consent_seconds = 120, .profile_scope_certificate = true } }, .{});
+    defer a.free(extra);
+    var extra_request = try control.parse(a, extra);
+    defer extra_request.deinit();
+    try std.testing.expectError(error.InvalidParams, current.handleRequest(a, extra_request, .control));
+    const duplicate = try std.fmt.allocPrint(a, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeFileCoordinationReadiness\",\"params\":{{\"source_id\":\"{s}\",\"account_id\":\"{s}\",\"purpose\":\"native_file_coordination_only\",\"purpose\":\"native_access_copy_for_identity_and_request\",\"consent_seconds\":120}}}}", .{ NativeFileCoordinationRefusalTest.source_id, NativeFileCoordinationRefusalTest.account_id });
+    defer a.free(duplicate);
+    if (control.parse(a, duplicate)) |accepted| {
+        var parsed = accepted;
+        parsed.deinit();
+        return error.DuplicateCoordinationPurposeAccepted;
+    } else |_| {}
+    current.poisoned = true;
+    try std.testing.expectError(error.CustodyUnavailable, current.handleRequest(a, request, .control));
+    current.poisoned = false;
+    current.vault_locked = true;
+    const locked = try current.lockedRequest(a, bytes, .control);
+    defer a.free(locked);
+    try std.testing.expect(std.mem.indexOf(u8, locked, "VaultLocked") != null);
+    try std.testing.expect(current.db == null and current.network == null);
+    try std.testing.expectEqual(@as(usize, 0), current.mutations.snapshot().records.len);
+}
+
+test "native File coordination refusal respects copy consent retirement and source generation" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    var current = try NativeFileCoordinationRefusalTest.init();
+    defer current.release();
+    current.descriptions.items[0].native_authority.?.consent.expires_at = current.now();
+    try NativeFileCoordinationRefusalTest.expect(&current, "native_copy_scope_retired");
+    current.descriptions.items[0].native_authority.?.consent.expires_at = current.now() + 3600;
+    current.import_sources.items[0].generation = 2;
+    try NativeFileCoordinationRefusalTest.expect(&current, "native_copy_scope_retired");
+    current.import_sources.items[0].generation = 1;
+    current.import_forget_epoch = 1;
+    try NativeFileCoordinationRefusalTest.expect(&current, "native_copy_scope_retired");
+    try std.testing.expectEqual(@as(u64, 0), current.descriptions.items[0].native_authority.?.consent.forget_epoch);
+    try std.testing.expectEqual(domain.GrantStatus.ready, current.state.grant("coordination-independent-grant").?.status);
+}
+
+test "native File coordination request cannot undo pause drain source detach disconnect or forget" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    var current = try NativeFileCoordinationRefusalTest.init();
+    defer current.release();
+    try current.state.pause(NativeFileCoordinationRefusalTest.account_id, true);
+    try NativeFileCoordinationRefusalTest.expect(&current, "account_inactive");
+    try current.state.pause(NativeFileCoordinationRefusalTest.account_id, false);
+    try current.state.drain(NativeFileCoordinationRefusalTest.account_id);
+    try NativeFileCoordinationRefusalTest.expect(&current, "account_inactive");
+    try current.state.pause(NativeFileCoordinationRefusalTest.account_id, false);
+    try current.state.detachSource(&NativeFileCoordinationRefusalTest.source_id);
+    try NativeFileCoordinationRefusalTest.expect(&current, "source_unavailable");
+    _ = try current.state.connectSource(.{ .id = &NativeFileCoordinationRefusalTest.source_id, .kind = .native_store, .provider = "codex" });
+    try current.state.disconnectSource(&NativeFileCoordinationRefusalTest.source_id);
+    try NativeFileCoordinationRefusalTest.expect(&current, "source_unavailable");
+    try std.testing.expectEqual(domain.GrantStatus.ready, current.state.grant("coordination-independent-grant").?.status);
+    _ = try current.state.connectSource(.{ .id = &NativeFileCoordinationRefusalTest.source_id, .kind = .native_store, .provider = "codex" });
+    try current.state.forget(NativeFileCoordinationRefusalTest.account_id);
+    current.import_forget_epoch += 1;
+    try NativeFileCoordinationRefusalTest.expect(&current, "account_unavailable");
+    const reenroll = try current.state.enroll(.{ .account_id = NativeFileCoordinationRefusalTest.account_id, .source_id = &NativeFileCoordinationRefusalTest.source_id, .identity = NativeFileCoordinationRefusalTest.identity }, current.now());
+    try std.testing.expectEqual(.tombstoned, reenroll.status);
+    try NativeFileCoordinationRefusalTest.expect(&current, "account_unavailable");
+}
+
+test "native File coordination execute errors never enter committed custody restoration" {
+    const a = std.testing.allocator;
+    var current = try NativeFileCoordinationRefusalTest.init();
+    defer current.release();
+    current.revision = 73;
+    current.root_key = @splat(0x91);
+    const valid = try NativeFileCoordinationRefusalTest.payload(a, "native_file_coordination_only", 120);
+    defer a.free(valid);
+    try NativeFileCoordinationRefusalTest.expectExecuteError(&current, valid, .adapter, "WrongChannel");
+    const copy = try NativeFileCoordinationRefusalTest.payload(a, "native_access_copy_for_identity_and_request", 120);
+    defer a.free(copy);
+    try NativeFileCoordinationRefusalTest.expectExecuteError(&current, copy, .control, "WrongPurpose");
+    const overflow = try NativeFileCoordinationRefusalTest.payload(a, "native_file_coordination_only", std.math.maxInt(i64));
+    defer a.free(overflow);
+    try NativeFileCoordinationRefusalTest.expectExecuteError(&current, overflow, .control, "InvalidParams");
+    const unknown = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "integrations.nativeFileCoordinationReadiness", .params = .{ .source_id = NativeFileCoordinationRefusalTest.source_id[0..], .account_id = NativeFileCoordinationRefusalTest.account_id, .purpose = "native_file_coordination_only", .consent_seconds = 120, .profile_scope_certificate = true } }, .{});
+    defer a.free(unknown);
+    try NativeFileCoordinationRefusalTest.expectExecuteError(&current, unknown, .control, "InvalidParams");
+    const mutation_claim = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "integrations.nativeFileCoordinationReadiness", .params = .{ .source_id = NativeFileCoordinationRefusalTest.source_id[0..], .account_id = NativeFileCoordinationRefusalTest.account_id, .purpose = "native_file_coordination_only", .consent_seconds = 120, .operation_id = "synthetic-coordination-operation", .expected_revision = current.revision } }, .{});
+    defer a.free(mutation_claim);
+    try NativeFileCoordinationRefusalTest.expectExecuteError(&current, mutation_claim, .control, "InvalidParams");
+    var catalogued = false;
+    for (control.methods) |method| if (eql(method.name, "integrations.nativeFileCoordinationReadiness")) {
+        catalogued = true;
+        break;
+    };
+    try std.testing.expect(catalogued);
+    try std.testing.expect(!control.hasOperationAuthority("integrations.nativeFileCoordinationReadiness", .null));
+    try std.testing.expect(mutationKind("integrations.nativeFileCoordinationReadiness") == null);
+}
+
+test "fresh OAuth intent uses actual actor SQLite ciphertext custody and preserves external writer" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const Rpc = struct {
+        fn call(current: *Engine, method: []const u8, params: anytype) !std.json.Parsed(std.json.Value) {
+            const payload = try std.json.Stringify.valueAlloc(std.testing.allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
+            defer std.testing.allocator.free(payload);
+            const bytes = try current.dispatch(std.testing.allocator, payload, .control);
+            defer std.testing.allocator.free(bytes);
+            return std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{ .allocate = .alloc_always });
+        }
+    };
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    const key: envelope.Key = @splat(0x58);
+    const database = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(database);
+    {
+        var state = domain.State.init(a);
+        defer state.deinit();
+        _ = try state.connectSource(.{ .id = "synthetic-fresh-existing-source", .kind = .explicit, .provider = "codex" });
+        _ = try state.enroll(.{ .account_id = "synthetic-fresh-existing-account", .source_id = "synthetic-fresh-existing-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-fresh-existing-subject", .tenant = "synthetic-fresh-existing-tenant", .verified = true } }, 1);
+        try state.pause("synthetic-fresh-existing-account", true);
+        _ = try state.addGrant(.{ .id = "synthetic-fresh-external-grant", .account_id = "synthetic-fresh-existing-account", .source_id = "synthetic-fresh-existing-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        var seeded: Persisted = .{ .schema_version = 2, .state = state.snapshot() };
+        seeded.maintenance_growth_bytes = try maintenanceReservation(seeded);
+        const metadata = try std.json.Stringify.valueAlloc(a, seeded, .{});
+        defer a.free(metadata);
+        var store = try storage.Store.openRootWithSnapshotValidator(io, a, database, instance.Selection.default.vaultRoot(), key, validatePersistedAdmission);
+        defer store.close();
+        _ = try store.commit(0, metadata, &.{.{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "synthetic-fresh-existing-account", .grant_id = "synthetic-fresh-external-grant", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-independent-external-payload", .renewal_owner = .external } }});
+    }
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, key);
+    defer if (current) |live| live.deinit();
+    const before = current.?.revision;
+    const prepare = .{ .operation_id = "fresh-intent-one", .expected_revision = before, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 };
+    var prepared = try Rpc.call(current.?, "oauth.enrollment.prepare.v1", prepare);
+    defer prepared.deinit();
+    const result = control.get(prepared.value, "result") orelse return error.FreshIntentFailed;
+    const transaction = try control.string(result, "transaction_id");
+    try std.testing.expect(try control.boolean(result, "consent_recorded", false));
+    try std.testing.expect(!try control.boolean(result, "provider_request_initiated", true));
+    try std.testing.expect(!try control.boolean(result, "grant_activated", true));
+    try std.testing.expectEqualStrings("unqualified", try control.string(result, "registration"));
+    var replay = try Rpc.call(current.?, "oauth.enrollment.prepare.v1", prepare);
+    defer replay.deinit();
+    try std.testing.expectEqualStrings(transaction, try control.string(control.get(replay.value, "result").?, "transaction_id"));
+    try std.testing.expectEqual(before + 1, current.?.revision);
+    try std.testing.expectEqual(@as(usize, 1), current.?.fresh_oauth.?.records.items.len);
+    try std.testing.expectEqual(@as(usize, 1), current.?.state.accounts.items.len);
+    try std.testing.expectEqual(@as(usize, 1), current.?.state.grants.items.len);
+    try std.testing.expectEqual(domain.RenewalOwnership.external, current.?.state.grants.items[0].ownership);
+    var refused = try Rpc.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = "fresh-no-copy", .expected_revision = current.?.revision, .provider = "codex", .purpose = "native_access_copy_for_identity_and_request", .consent_seconds = 60 });
+    defer refused.deinit();
+    try std.testing.expect(control.get(refused.value, "error") != null);
+    try std.testing.expectEqual(before + 1, current.?.revision);
+    try std.testing.expectEqual(@as(usize, 1), current.?.fresh_oauth.?.records.items.len);
+    var caller_profile = try Rpc.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = "fresh-no-caller-profile", .expected_revision = current.?.revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60, .registration_profile_sha256 = "synthetic-not-authority" });
+    defer caller_profile.deinit();
+    try std.testing.expect(control.get(caller_profile.value, "error") != null);
+    try std.testing.expectEqual(before + 1, current.?.revision);
+    try std.testing.expectEqual(@as(usize, 1), current.?.fresh_oauth.?.records.items.len);
+    current.?.deinit();
+    current = null;
+    {
+        var store = try storage.Store.openRootWithSnapshotValidator(io, a, database, instance.Selection.default.vaultRoot(), key, validatePersistedAdmission);
+        defer store.close();
+        var retained = try store.readSnapshot();
+        defer retained.deinit();
+        const saved = try std.json.parseFromSlice(Persisted, a, retained.json, .{});
+        defer saved.deinit();
+        const record = saved.value.fresh_oauth_authority.?.records[0];
+        try std.testing.expectEqual(oauth_enrollment.Phase.prepared, record.phase);
+        try std.testing.expectEqual(@as(usize, 134), record.verifier_capsule.len);
+        try std.testing.expect(record.registration_profile_sha256 == null);
+        const status = (try store.readGrantStatus("synthetic-fresh-existing-account", "synthetic-fresh-external-grant")).?;
+        try std.testing.expectEqual(storage.RenewalOwner.external, status.renewal_owner);
+        try std.testing.expectEqual(@as(u64, 1), status.generation);
+    }
+    current = try Engine.openWithKey(io, a, path, key);
+    try std.testing.expectEqual(oauth_enrollment.Phase.retired, current.?.fresh_oauth.?.records.items[0].phase);
+    try std.testing.expectEqual(@as(usize, 0), current.?.fresh_oauth.?.records.items[0].verifier_capsule.len);
+    try std.testing.expectEqual(domain.AccountLifecycle.paused, current.?.state.accounts.items[0].lifecycle);
+    var retired = try Rpc.call(current.?, "oauth.enrollment.retire.v1", .{ .operation_id = "fresh-retire-one", .expected_revision = current.?.revision, .purpose = oauth_enrollment.purpose, .transaction_id = transaction });
+    defer retired.deinit();
+    try std.testing.expect(control.get(retired.value, "result") != null);
+    try std.testing.expectEqual(@as(usize, 1), current.?.state.grants.items.len);
+    var second = try Rpc.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = "fresh-intent-two", .expected_revision = current.?.revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 });
+    defer second.deinit();
+    try std.testing.expect(control.get(second.value, "result") != null);
+    var forgotten = try Rpc.call(current.?, "account.forget", .{ .operation_id = "fresh-account-forget", .expected_revision = current.?.revision, .account_id = "synthetic-fresh-existing-account" });
+    defer forgotten.deinit();
+    try std.testing.expect(control.get(forgotten.value, "result") != null);
+    try std.testing.expectEqual(@as(u64, 1), current.?.import_forget_epoch);
+    try std.testing.expectEqual(oauth_enrollment.Phase.retired, current.?.fresh_oauth.?.records.items[1].phase);
+    try std.testing.expectEqual(@as(usize, 0), current.?.fresh_oauth.?.records.items[1].verifier_capsule.len);
+    try std.testing.expectEqual(@as(usize, 1), current.?.state.tombstones.items.len);
+    var third = try Rpc.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = "fresh-intent-three", .expected_revision = current.?.revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 });
+    defer third.deinit();
+    try std.testing.expect(control.get(third.value, "result") != null);
+    try std.testing.expectEqual(@as(u64, 1), current.?.fresh_oauth.?.records.items[2].binding.forget_epoch);
+    try std.testing.expectEqual(@as(usize, 0), current.?.state.accounts.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.?.state.grants.items.len);
+    try std.testing.expectEqual(@as(usize, 1), current.?.state.tombstones.items.len);
+}
+
+test "queued malformed control ingress preserves committed actor custody and completes allocator failures" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const Diag = struct {
+        fn check(case_index: usize, stage: []const u8, field: []const u8, accepted: bool) !void {
+            if (!accepted) {
+                std.debug.print("queued-ingress case={d} stage={s} field={s} accepted=false error=TestUnexpectedResult\n", .{ case_index, stage, field });
+                return error.TestUnexpectedResult;
+            }
+        }
+        fn failure(case_index: usize, stage: []const u8, err: anyerror) anyerror {
+            std.debug.print("queued-ingress case={d} stage={s} error={s}\n", .{ case_index, stage, @errorName(err) });
+            return err;
+        }
+    };
+    var active_case: usize = 0;
+    var stage: []const u8 = "setup";
+    const Gate = struct {
+        parent: std.mem.Allocator,
+        blocked: std.atomic.Value(u8) = .init(0),
+        rejected: std.atomic.Value(usize) = .init(0),
+        actor_thread: ?std.Thread.Id = null,
+        caller_allowed: std.atomic.Value(usize) = .init(0),
+
+        fn allocator(self: *@This()) std.mem.Allocator {
+            return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+        }
+        fn alloc(context: *anyopaque, length: usize, alignment: std.mem.Alignment, address: usize) ?[*]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.blocked.load(.seq_cst) != 0) {
+                if (self.actor_thread != null and self.actor_thread.? == std.Thread.getCurrentId()) {
+                    // Fail one actual actor allocation, then immediately disarm.
+                    // Caller wake cannot leave independent maintenance gated.
+                    if (self.blocked.cmpxchgStrong(1, 0, .seq_cst, .seq_cst) == null) {
+                        _ = self.rejected.fetchAdd(1, .seq_cst);
+                        return null;
+                    }
+                } else {
+                    _ = self.caller_allowed.fetchAdd(1, .seq_cst);
+                }
+            }
+            return self.parent.rawAlloc(length, alignment, address);
+        }
+        fn resize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
+            return false;
+        }
+        fn remap(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
+            return null;
+        }
+        fn free(context: *anyopaque, bytes: []u8, alignment: std.mem.Alignment, address: usize) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.parent.rawFree(bytes, alignment, address);
+        }
+    };
+    const SqlWitness = struct {
+        reads: std.atomic.Value(usize) = .init(0),
+        writes: std.atomic.Value(usize) = .init(0),
+        fn authorize(raw: ?*anyopaque, action: c_int, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8) callconv(.c) c_int {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            if (action == sql_api.SQLITE_READ) _ = self.reads.fetchAdd(1, .seq_cst);
+            if (action == sql_api.SQLITE_INSERT or action == sql_api.SQLITE_UPDATE or action == sql_api.SQLITE_DELETE) _ = self.writes.fetchAdd(1, .seq_cst);
+            return sql_api.SQLITE_OK;
+        }
+    };
+    const Rpc = struct {
+        fn call(current: *Engine, method: []const u8, params: anytype) !std.json.Parsed(std.json.Value) {
+            const payload = try std.json.Stringify.valueAlloc(std.testing.allocator, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
+            defer std.testing.allocator.free(payload);
+            if (eql(method, "system.health")) {
+                var wire = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload, .{});
+                defer wire.deinit();
+                const wire_params = control.get(wire.value, "params");
+                if (wire_params == null or wire_params.? != .null) return error.HealthBarrierParamsNotNull;
+            }
+            const bytes = try current.dispatch(std.testing.allocator, payload, .control);
+            defer std.testing.allocator.free(bytes);
+            return std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{ .allocate = .alloc_always });
+        }
+        fn barrier(current: *Engine, case_index: usize) !void {
+            var reply = try call(current, "system.health", @as(?u8, null));
+            defer reply.deinit();
+            try Diag.check(case_index, "barrier", "health-result", control.get(reply.value, "result") != null);
+            // The following healthy queue item clears its own active fields
+            // before finishInvocation. Observe its completion under the same
+            // queue mutex; the preceding refusal's deferred cleanup is over.
+            current.mutex.lockUncancelable(current.io);
+            defer current.mutex.unlock(current.io);
+            try Diag.check(case_index, "barrier", "active-until-clear", current.active_until == null);
+            try Diag.check(case_index, "barrier", "active-peer-clear", current.active_peer == null);
+            try Diag.check(case_index, "barrier", "queue-empty", current.queue_count == 0);
+        }
+        fn refusal(bytes: []const u8, message: ?[]const u8, case_index: usize) !void {
+            var reply = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{});
+            defer reply.deinit();
+            const failure = control.get(reply.value, "error") orelse {
+                try Diag.check(case_index, "reply", "error-present", false);
+                return error.ExpectedIngressRefusal;
+            };
+            const id = control.get(reply.value, "id");
+            try Diag.check(case_index, "reply", "null-id", id != null and id.? == .null);
+            const code = control.get(failure, "code");
+            try Diag.check(case_index, "reply", "invalid-request-code", code != null and code.? == .integer and code.?.integer == -32600);
+            if (message) |expected| try Diag.check(case_index, "reply", "error-name", eql(expected, try control.string(failure, "message")));
+        }
+    };
+    const Stable = struct {
+        persisted_json: []u8,
+        revision: u64,
+        key: envelope.Key,
+        root_id: usize,
+        sources: usize,
+        source_id: usize,
+        accounts: usize,
+        grants: usize,
+        mutations: usize,
+        cached_result: usize,
+        oauth_rows: usize,
+        capsule: usize,
+        database: usize,
+        network: usize,
+        supervisor: usize,
+        actor_handle: @TypeOf(@as(std.Thread, undefined).getHandle()),
+
+        fn capture(current: *Engine) !@This() {
+            return .{
+                .persisted_json = try std.json.Stringify.valueAlloc(std.testing.allocator, current.persisted(), .{}),
+                .revision = current.revision,
+                .key = current.root_key,
+                .root_id = @intFromPtr(current.root_id.?.ptr),
+                .sources = @intFromPtr(current.state.sources.items.ptr),
+                .source_id = @intFromPtr(current.state.sources.items[0].id.ptr),
+                .accounts = @intFromPtr(current.state.accounts.items.ptr),
+                .grants = @intFromPtr(current.state.grants.items.ptr),
+                .mutations = @intFromPtr(current.mutations.data.records.ptr),
+                .cached_result = @intFromPtr(current.mutations.snapshot().records[0].result.ptr),
+                .oauth_rows = @intFromPtr(current.fresh_oauth.?.records.items.ptr),
+                .capsule = @intFromPtr(current.fresh_oauth.?.records.items[0].verifier_capsule.ptr),
+                .database = @intFromPtr(current.db.?.db),
+                .network = @intFromPtr(current.network.?),
+                .supervisor = @intFromPtr(current.native_workers.?),
+                .actor_handle = current.thread.?.getHandle(),
+            };
+        }
+        fn check(self: *const @This(), current: *Engine, sql: *const SqlWitness, case_index: usize) !void {
+            current.mutex.lockUncancelable(current.io);
+            defer current.mutex.unlock(current.io);
+            try Diag.check(case_index, "custody", "sql-reads-zero", sql.reads.load(.seq_cst) == 0);
+            try Diag.check(case_index, "custody", "sql-writes-zero", sql.writes.load(.seq_cst) == 0);
+            try Diag.check(case_index, "custody", "poison-clear", !current.poisoned and !current.db.?.poisoned);
+            try Diag.check(case_index, "custody", "same-revision", self.revision == current.revision);
+            try Diag.check(case_index, "custody", "same-root-key", std.mem.eql(u8, &self.key, &current.root_key));
+            try Diag.check(case_index, "custody", "same-root-id", self.root_id == @intFromPtr(current.root_id.?.ptr));
+            try Diag.check(case_index, "custody", "same-sources", self.sources == @intFromPtr(current.state.sources.items.ptr));
+            try Diag.check(case_index, "custody", "same-source-id", self.source_id == @intFromPtr(current.state.sources.items[0].id.ptr));
+            try Diag.check(case_index, "custody", "same-accounts", self.accounts == @intFromPtr(current.state.accounts.items.ptr));
+            try Diag.check(case_index, "custody", "same-grants", self.grants == @intFromPtr(current.state.grants.items.ptr));
+            try Diag.check(case_index, "custody", "same-mutations", self.mutations == @intFromPtr(current.mutations.data.records.ptr));
+            try Diag.check(case_index, "custody", "same-cached-result", self.cached_result == @intFromPtr(current.mutations.snapshot().records[0].result.ptr));
+            try Diag.check(case_index, "custody", "same-oauth-rows", self.oauth_rows == @intFromPtr(current.fresh_oauth.?.records.items.ptr));
+            try Diag.check(case_index, "custody", "same-capsule", self.capsule == @intFromPtr(current.fresh_oauth.?.records.items[0].verifier_capsule.ptr));
+            try Diag.check(case_index, "custody", "same-database", self.database == @intFromPtr(current.db.?.db));
+            try Diag.check(case_index, "custody", "same-network", self.network == @intFromPtr(current.network.?));
+            try Diag.check(case_index, "custody", "same-supervisor", self.supervisor == @intFromPtr(current.native_workers.?));
+            try Diag.check(case_index, "custody", "same-actor-handle", self.actor_handle == current.thread.?.getHandle());
+            const after = try std.json.Stringify.valueAlloc(std.testing.allocator, current.persisted(), .{});
+            defer std.testing.allocator.free(after);
+            try Diag.check(case_index, "custody", "same-persisted-metadata", std.mem.eql(u8, self.persisted_json, after));
+            try Diag.check(case_index, "custody", "request-ledger-empty", current.requests.snapshot().records.len == 0);
+            try Diag.check(case_index, "custody", "native-tasks-empty", current.native_tasks.items.len == 0);
+            try Diag.check(case_index, "custody", "native-imports-empty", current.native_import_tasks.items.len == 0);
+            try Diag.check(case_index, "custody", "pending-imports-empty", current.pending_imports.items.len == 0);
+            try Diag.check(case_index, "custody", "identity-submissions-empty", current.fixture_identity_submissions == 0);
+            try Diag.check(case_index, "custody", "observation-submissions-empty", current.fixture_observation_submissions == 0);
+            try Diag.check(case_index, "custody", "transport-next-id", current.network.?.next_id == 1);
+            try Diag.check(case_index, "custody", "transport-outstanding-empty", current.network.?.outstanding == 0);
+            try Diag.check(case_index, "custody", "transport-starts-empty", current.network.?.starts.count == 0);
+            try Diag.check(case_index, "custody", "transport-results-empty", current.network.?.results.count == 0);
+        }
+    };
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0)) catch |err| return Diag.failure(active_case, stage, err);
+    const path = directory.dir.realPathFileAlloc(io, ".", a) catch |err| return Diag.failure(active_case, stage, err);
+    defer a.free(path);
+    const key: envelope.Key = @splat(0x72);
+    const source_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const database = std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0) catch |err| return Diag.failure(active_case, stage, err);
+    defer a.free(database);
+    {
+        var state = domain.State.init(a);
+        defer state.deinit();
+        _ = state.connectSource(.{ .id = source_id, .kind = .explicit, .provider = "codex" }) catch |err| return Diag.failure(active_case, stage, err);
+        _ = state.enroll(.{ .account_id = "synthetic-queued-account", .source_id = source_id, .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-queued-subject", .tenant = "synthetic-queued-tenant", .verified = true } }, 1) catch |err| return Diag.failure(active_case, stage, err);
+        state.pause("synthetic-queued-account", true) catch |err| return Diag.failure(active_case, stage, err);
+        _ = state.addGrant(.{ .id = "synthetic-queued-external", .account_id = "synthetic-queued-account", .source_id = source_id, .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" }) catch |err| return Diag.failure(active_case, stage, err);
+        var seeded: Persisted = .{ .schema_version = 2, .state = state.snapshot() };
+        seeded.maintenance_growth_bytes = maintenanceReservation(seeded) catch |err| return Diag.failure(active_case, stage, err);
+        const metadata = std.json.Stringify.valueAlloc(a, seeded, .{}) catch |err| return Diag.failure(active_case, stage, err);
+        defer a.free(metadata);
+        var store = storage.Store.openRootWithSnapshotValidator(io, a, database, instance.Selection.default.vaultRoot(), key, validatePersistedAdmission) catch |err| return Diag.failure(active_case, stage, err);
+        defer store.close();
+        _ = store.commit(0, metadata, &.{.{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "synthetic-queued-account", .grant_id = "synthetic-queued-external", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-queued-independent-payload", .renewal_owner = .external } }}) catch |err| return Diag.failure(active_case, stage, err);
+    }
+    var actor_allocator: Gate = .{ .parent = a };
+    const current = Engine.openWithKey(io, actor_allocator.allocator(), path, key) catch |err| return Diag.failure(active_case, stage, err);
+    defer current.deinit();
+    // The gate is atomically armed only after genuine startup; unrelated
+    // transport/worker threads remain on the normal underlying allocator.
+    actor_allocator.actor_thread = current.db.?.owner_thread;
+    defer actor_allocator.blocked.store(0, .seq_cst);
+    stage = "policy-setup";
+    var policy = Rpc.call(current, "policy.set", .{ .operation_id = "queued-disable-warming", .expected_revision = current.revision, .warm_alternatives = false }) catch |err| return Diag.failure(active_case, stage, err);
+    defer policy.deinit();
+    Diag.check(active_case, stage, "result", control.get(policy.value, "result") != null) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "oauth-setup";
+    var prepared = Rpc.call(current, "oauth.enrollment.prepare.v1", .{ .operation_id = "queued-fresh-intent", .expected_revision = current.revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }) catch |err| return Diag.failure(active_case, stage, err);
+    defer prepared.deinit();
+    Diag.check(active_case, stage, "result", control.get(prepared.value, "result") != null) catch |err| return Diag.failure(active_case, stage, err);
+    Diag.check(active_case, stage, "one-oauth-row", current.fresh_oauth.?.records.items.len == 1) catch |err| return Diag.failure(active_case, stage, err);
+    Diag.check(active_case, stage, "prepared-oauth-row", current.fresh_oauth.?.records.items[0].phase == .prepared) catch |err| return Diag.failure(active_case, stage, err);
+    Diag.check(active_case, stage, "actual-owners", current.thread != null and current.db != null and current.network != null) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "capture";
+    Rpc.barrier(current, active_case) catch |err| return Diag.failure(active_case, stage, err);
+    const retained = Stable.capture(current) catch |err| return Diag.failure(active_case, stage, err);
+    defer a.free(retained.persisted_json);
+    var witness: SqlWitness = .{};
+    // Same actual SQLite authorizer fixture bracket as the existing readiness
+    // actor tests. No source paths, expirations, warming or pending IO exists.
+    if (sql_api.sqlite3_set_authorizer(current.db.?.db, SqlWitness.authorize, &witness) != sql_api.SQLITE_OK) return Diag.failure(active_case, stage, error.AuthorizerFixtureFailed);
+    defer if (sql_api.sqlite3_set_authorizer(current.db.?.db, null, null) != sql_api.SQLITE_OK) @panic("queued ingress authorizer cleanup failed");
+    const invalid_frames = [_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeFileCoordinationReadiness\",\"params\":{\"purpose\":\"native_file_coordination_only\",\"purpose\":\"native_file_coordination_only\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeFileCoordinationReadiness\",\"params\":{",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeFileCoordinationReadiness\",\"method\":\"integrations.discover\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"integrations.nativeFileCoordinationReadiness\"}",
+        "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"integrations.nativeFileCoordinationReadiness\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"integrations.nativeFileCoordinationReadiness\",\"params\":[]}",
+    };
+    for (invalid_frames, 0..) |payload, index| {
+        active_case = index + 1;
+        stage = "malformed-dispatch";
+        const reply = current.dispatch(a, payload, .control) catch |err| return Diag.failure(active_case, stage, err);
+        defer a.free(reply);
+        stage = "malformed-reply";
+        Rpc.refusal(reply, null, active_case) catch |err| return Diag.failure(active_case, stage, err);
+        stage = "barrier";
+        Rpc.barrier(current, active_case) catch |err| return Diag.failure(active_case, stage, err);
+        stage = "custody";
+        retained.check(current, &witness, active_case) catch |err| return Diag.failure(active_case, stage, err);
+    }
+    const native_payload = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"integrations.discover\",\"params\":{\"adapter\":\"codex\"}}";
+    active_case = 7;
+    stage = "parser-oom-dispatch";
+    actor_allocator.blocked.store(1, .seq_cst);
+    const refused = current.dispatch(a, native_payload, .control) catch |err| {
+        actor_allocator.blocked.store(0, .seq_cst);
+        return Diag.failure(active_case, stage, err);
+    };
+    actor_allocator.blocked.store(0, .seq_cst);
+    defer a.free(refused);
+    Diag.check(active_case, stage, "one-actor-allocation-refused", actor_allocator.rejected.load(.seq_cst) == 1) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "parser-oom-reply";
+    Rpc.refusal(refused, "OutOfMemory", active_case) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "barrier";
+    Rpc.barrier(current, active_case) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "custody";
+    retained.check(current, &witness, active_case) catch |err| return Diag.failure(active_case, stage, err);
+    var caller_allocator: Gate = .{ .parent = a, .actor_thread = current.db.?.owner_thread };
+    defer caller_allocator.blocked.store(0, .seq_cst);
+    active_case = 8;
+    stage = "encoder-oom-dispatch";
+    caller_allocator.blocked.store(1, .seq_cst);
+    // Caller diagnostic parsing genuinely allocates for the duplicate frame.
+    // Only the actor's reply allocator fails; the engine parser is healthy.
+    const encoded = current.dispatch(caller_allocator.allocator(), invalid_frames[0], .control);
+    caller_allocator.blocked.store(0, .seq_cst);
+    if (encoded) |unexpected| {
+        a.free(unexpected);
+        Diag.check(active_case, stage, "encoder-returned-error", false) catch |err| return Diag.failure(active_case, stage, err);
+    } else |err| {
+        Diag.check(active_case, stage, "encoder-out-of-memory", err == error.OutOfMemory) catch |check_error| return Diag.failure(active_case, stage, check_error);
+    }
+    Diag.check(active_case, stage, "caller-allocation-admitted", caller_allocator.caller_allowed.load(.seq_cst) > 0) catch |err| return Diag.failure(active_case, stage, err);
+    Diag.check(active_case, stage, "one-actor-encoding-allocation-refused", caller_allocator.rejected.load(.seq_cst) == 1) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "barrier";
+    Rpc.barrier(current, active_case) catch |err| return Diag.failure(active_case, stage, err);
+    stage = "custody";
+    retained.check(current, &witness, active_case) catch |err| return Diag.failure(active_case, stage, err);
+}
+
+const fresh_api = @import("c");
+const FreshOAuthActorModel = struct {
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    const key: envelope.Key = @splat(0x64);
+    const Listener = struct {
+        fd: c_int,
+        port: u16,
+        fn open() !Listener {
+            const fd = fresh_api.socket(fresh_api.AF_INET, fresh_api.SOCK_STREAM, 0);
+            if (fd < 0) return error.FixtureSocket;
+            errdefer _ = fresh_api.close(fd);
+            var address = std.mem.zeroes(fresh_api.struct_sockaddr_in);
+            address.sin_family = fresh_api.AF_INET;
+            address.sin_addr.s_addr = fresh_api.htonl(0x7f000001);
+            if (@hasField(fresh_api.struct_sockaddr_in, "sin_len")) address.sin_len = @sizeOf(fresh_api.struct_sockaddr_in);
+            if (fresh_api.bind(fd, @ptrCast(&address), @sizeOf(fresh_api.struct_sockaddr_in)) != 0 or fresh_api.listen(fd, 1) != 0) return error.FixtureSocket;
+            var length: fresh_api.socklen_t = @sizeOf(fresh_api.struct_sockaddr_in);
+            if (fresh_api.getsockname(fd, @ptrCast(&address), &length) != 0) return error.FixtureSocket;
+            const flags = fresh_api.fcntl(fd, fresh_api.F_GETFL, @as(c_int, 0));
+            if (flags < 0 or fresh_api.fcntl(fd, fresh_api.F_SETFL, flags | fresh_api.O_NONBLOCK) != 0) return error.FixtureSocket;
+            return .{ .fd = fd, .port = fresh_api.ntohs(address.sin_port) };
+        }
+        fn close(self: *Listener) void {
+            _ = fresh_api.close(self.fd);
+            self.fd = -1;
+        }
+        fn accept(self: *Listener) !c_int {
+            const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) });
+            while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
+                const fd = fresh_api.accept(self.fd, null, null);
+                if (fd >= 0) return fd;
+                if (std.posix.errno(fd) != .AGAIN and std.posix.errno(fd) != .INTR) return error.FixtureSocket;
+                try io.sleep(.fromMilliseconds(5), .awake);
+            }
+            return error.FixtureTimeout;
+        }
+    };
+    fn call(engine: *Engine, method: []const u8, params: anytype, channel: Channel) !std.json.Parsed(std.json.Value) {
+        const frame = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
+        defer a.free(frame);
+        const bytes = try engine.dispatch(a, frame, channel);
+        defer {
+            std.crypto.secureZero(u8, bytes);
+            a.free(bytes);
+        }
+        return std.json.parseFromSlice(std.json.Value, a, bytes, .{ .allocate = .alloc_always });
+    }
+    fn observe(engine: *Engine, id: []const u8) !std.json.Parsed(std.json.Value) {
+        const capability = try engine.capability("enrollment");
+        return call(engine, "fixture.freshOAuthRetained", .{ .application = "enrollment", .capability = capability[0..], .transaction_id = id }, .adapter);
+    }
+    fn wait(engine: *Engine, id: []const u8, phase: []const u8, pending: usize) !std.json.Parsed(std.json.Value) {
+        const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) });
+        while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
+            const result = try observe(engine, id);
+            const row = control.get(result.value, "result") orelse {
+                result.deinit();
+                return error.FixtureRefused;
+            };
+            if (eql(try control.string(row, "phase"), phase) and control.get(row, "pending").?.integer == pending) return result;
+            result.deinit();
+            try io.sleep(.fromMilliseconds(5), .awake);
+        }
+        return error.FixtureTimeout;
+    }
+    fn revision(engine: *Engine) !u64 {
+        const reply = try call(engine, "system.health", @as(?u8, null), .control);
+        defer reply.deinit();
+        return @intCast(control.get(control.get(reply.value, "result").?, "revision").?.integer);
+    }
+    fn seed(path: []const u8) !void {
+        var state = domain.State.init(a);
+        defer state.deinit();
+        _ = try state.connectSource(.{ .id = "synthetic-owned-other-source", .kind = .explicit, .provider = "codex" });
+        _ = try state.enroll(.{ .account_id = "synthetic-owned-other-account", .source_id = "synthetic-owned-other-source", .identity = .{ .provider = "codex", .issuer = "https://chatgpt.com", .subject = "synthetic-owned-other-subject", .tenant = "synthetic-owned-other-tenant", .verified = true } }, 1);
+        try state.pause("synthetic-owned-other-account", true);
+        _ = try state.addGrant(.{ .id = "synthetic-owned-external-grant", .account_id = "synthetic-owned-other-account", .source_id = "synthetic-owned-other-source", .credential_kind = .oauth_access, .ownership = .external, .purposes = &.{.request}, .audience = "https://chatgpt.com" });
+        var saved: Persisted = .{ .schema_version = 2, .state = state.snapshot() };
+        saved.maintenance_growth_bytes = try maintenanceReservation(saved);
+        const encoded = try std.json.Stringify.valueAlloc(a, saved, .{});
+        defer a.free(encoded);
+        const file = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+        defer a.free(file);
+        var store = try storage.Store.openRootWithSnapshotValidator(io, a, file, instance.Selection.default.vaultRoot(), key, validatePersistedAdmission);
+        defer store.close();
+        _ = try store.commit(0, encoded, &.{.{ .put = .{ .context = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = "synthetic-owned-other-account", .grant_id = "synthetic-owned-external-grant", .generation = 1, .purpose = "request", .scope = "https://chatgpt.com" }, .plaintext = "synthetic-owned-independent-external", .renewal_owner = .external } }});
+    }
+    fn sendCallback(port: u16, state: []const u8, denied: bool) !c_int {
+        const fd = fresh_api.socket(fresh_api.AF_INET, fresh_api.SOCK_STREAM, 0);
+        if (fd < 0) return error.FixtureSocket;
+        errdefer _ = fresh_api.close(fd);
+        var address = std.mem.zeroes(fresh_api.struct_sockaddr_in);
+        address.sin_family = fresh_api.AF_INET;
+        address.sin_addr.s_addr = fresh_api.htonl(0x7f000001);
+        address.sin_port = fresh_api.htons(port);
+        if (@hasField(fresh_api.struct_sockaddr_in, "sin_len")) address.sin_len = @sizeOf(fresh_api.struct_sockaddr_in);
+        if (fresh_api.connect(fd, @ptrCast(&address), @sizeOf(fresh_api.struct_sockaddr_in)) != 0) return error.FixtureSocket;
+        const query = if (denied) "error=access_denied" else "code=synthetic-actor-owned-code&client_id=synthetic-actor-issued-client&scope=openid+chatgpt.tokens.use.direct";
+        const frame = try std.fmt.allocPrint(a, "GET /auth/callback?state={s}&{s} HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n\r\n", .{ state, query, port });
+        defer {
+            std.crypto.secureZero(u8, frame);
+            a.free(frame);
+        }
+        if (fresh_api.send(fd, frame.ptr, frame.len, if (@hasDecl(fresh_api, "MSG_NOSIGNAL")) fresh_api.MSG_NOSIGNAL else 0) != frame.len) return error.FixtureSocket;
+        return fd;
+    }
+    fn stateFromUrl(url: []const u8) ![]const u8 {
+        const prefix = "&state=";
+        const begin = (std.mem.indexOf(u8, url, prefix) orelse return error.FixtureRefused) + prefix.len;
+        const end = std.mem.indexOfScalarPos(u8, url, begin, '&') orelse return error.FixtureRefused;
+        if (end - begin != 43) return error.FixtureRefused;
+        return url[begin..end];
+    }
+    fn read(fd: c_int, output: []u8) ![]u8 {
+        const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) });
+        var length: usize = 0;
+        while (until.durationFromNow(io).raw.toNanoseconds() > 0 and length < output.len) {
+            var descriptor: fresh_api.struct_pollfd = .{ .fd = fd, .events = fresh_api.POLLIN, .revents = 0 };
+            if (fresh_api.poll(&descriptor, 1, 20) < 0) return error.FixtureSocket;
+            if (descriptor.revents & fresh_api.POLLIN == 0) continue;
+            const count = fresh_api.recv(fd, output[length..].ptr, output.len - length, 0);
+            if (count <= 0) return error.FixtureSocket;
+            length += @intCast(count);
+            if (std.mem.indexOf(u8, output[0..length], "\r\n\r\n")) |end| {
+                var lines = std.mem.splitSequence(u8, output[0..end], "\r\n");
+                var content_length: ?usize = null;
+                while (lines.next()) |line| {
+                    const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+                    if (std.ascii.eqlIgnoreCase(line[0..colon], "Content-Length")) content_length = try std.fmt.parseInt(usize, std.mem.trim(u8, line[colon + 1 ..], " "), 10);
+                }
+                const expected = try std.math.add(usize, end + 4, content_length orelse return error.FixtureInvalidHttp);
+                if (expected > output.len or length > expected) return error.FixtureInvalidHttp;
+                if (length == expected) return output[0..length];
+            }
+        }
+        return error.FixtureTimeout;
+    }
+};
+
+test "queued owned callback commits ciphertext then issues once and quarantines unverified response without changing external writer" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    var token_listener = try M.Listener.open();
+    defer token_listener.close();
+    var callback_reservation = try M.Listener.open();
+    const callback_port = callback_reservation.port;
+    // Free-port selection is only fixture setup. Production open binds the
+    // exact URI and refuses foreign appearance, with no fallback/adoption.
+    callback_reservation.close();
+    const uri = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/auth/callback", .{callback_port});
+    defer a.free(uri);
+    const profile = try oauth_issue.testing.profile(a, token_listener.port, uri);
+    defer profile.deinit();
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+    defer if (current) |engine| engine.deinit();
+    const payload = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "oauth.enrollment.prepare.v1", .params = .{ .operation_id = "owned-actor-callback", .expected_revision = try M.revision(current.?), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 60 } }, .{});
+    defer a.free(payload);
+    const reply_bytes = try current.?.prepareFreshOAuthWithProfile(a, payload, profile, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }));
+    defer a.free(reply_bytes);
+    const reply = try std.json.parseFromSlice(std.json.Value, a, reply_bytes, .{});
+    defer reply.deinit();
+    const id = try control.string(control.get(reply.value, "result").?, "transaction_id");
+    const id_bytes = try parseOpaqueId(id);
+    var url = try current.?.preparedFreshOAuthAuthorization(a, id_bytes, try M.revision(current.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
+    defer url.deinit();
+    const browser_peer = try M.sendCallback(callback_port, try M.stateFromUrl(url.bytes), false);
+    defer _ = fresh_api.close(browser_peer);
+    var acknowledgment: [256]u8 = undefined;
+    try std.testing.expect(std.mem.startsWith(u8, try M.read(browser_peer, &acknowledgment), "HTTP/1.1 200"));
+    const token_peer = try token_listener.accept();
+    defer _ = fresh_api.close(token_peer);
+    var request: [16 * 1024]u8 = undefined;
+    defer std.crypto.secureZero(u8, &request);
+    const posted = try M.read(token_peer, &request);
+    try std.testing.expect(std.mem.startsWith(u8, posted, "POST /oauth/token HTTP/1.1"));
+    try std.testing.expect(std.mem.indexOf(u8, posted, "client_id=synthetic-actor-issued-client") != null);
+    try std.testing.expect(std.mem.indexOf(u8, posted, "dynamic_agent_client") == null);
+    try std.testing.expect(std.mem.indexOf(u8, posted, "code_verifier=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, posted, "Authorization:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, posted, "Cookie:") == null);
+    const issued = try M.wait(current.?, id, "exchange_issued", 1);
+    defer issued.deinit();
+    const issued_row = control.get(issued.value, "result").?;
+    try std.testing.expectEqual(@as(i64, 0), control.get(issued_row, "verifier_bytes").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(issued_row, "callback_bytes").?.integer);
+    const body = "{\"access_token\":\"synthetic-unverified-actor-access\",\"refresh_token\":\"synthetic-unverified-actor-refresh\",\"token_type\":\"Bearer\",\"expires_in\":60,\"scope\":\"openid chatgpt.tokens.use.direct\"}";
+    const response = try std.fmt.allocPrint(a, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ body.len, body });
+    defer a.free(response);
+    try std.testing.expectEqual(@as(isize, @intCast(response.len)), fresh_api.send(token_peer, response.ptr, response.len, if (@hasDecl(fresh_api, "MSG_NOSIGNAL")) fresh_api.MSG_NOSIGNAL else 0));
+    const quarantined = try M.wait(current.?, id, "quarantined", 0);
+    defer quarantined.deinit();
+    try std.testing.expect(control.get(control.get(quarantined.value, "result").?, "response_bytes").?.integer > 48);
+    try std.testing.expectEqual(@as(i64, 1), control.get(control.get(quarantined.value, "result").?, "grants").?.integer);
+    try std.testing.expectError(error.EnrollmentNotFound, current.?.preparedFreshOAuthAuthorization(a, id_bytes, try M.revision(current.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(2) })));
+    current.?.deinit();
+    current = null;
+    const file = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(file);
+    var store = try storage.Store.openRootWithSnapshotValidator(io, a, file, instance.Selection.default.vaultRoot(), M.key, validatePersistedAdmission);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "synthetic-unverified-actor-access") == null);
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "synthetic-unverified-actor-refresh") == null);
+    const status = (try store.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant")).?;
+    try std.testing.expectEqual(storage.RenewalOwner.external, status.renewal_owner);
+    try std.testing.expectEqual(@as(u64, 1), status.generation);
+}
+
+test "actual queued consent withdrawal and denial close callbacks while issued forget remains unknown and never restores work" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]enum { before_callback, after_issue, denied, forget }{ .before_callback, .after_issue, .denied, .forget }) |mode| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try M.seed(path);
+        var token_listener = try M.Listener.open();
+        defer token_listener.close();
+        var reservation = try M.Listener.open();
+        const callback_port = reservation.port;
+        reservation.close();
+        const uri = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/auth/callback", .{callback_port});
+        defer a.free(uri);
+        const profile = try oauth_issue.testing.profile(a, token_listener.port, uri);
+        defer profile.deinit();
+        var engine: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+        defer if (engine) |live| live.deinit();
+        const payload = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "oauth.enrollment.prepare.v1", .params = .{ .operation_id = "owned-actor-withdraw", .expected_revision = try M.revision(engine.?), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 60 } }, .{});
+        defer a.free(payload);
+        const bytes = try engine.?.prepareFreshOAuthWithProfile(a, payload, profile, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }));
+        defer a.free(bytes);
+        const prepared = try std.json.parseFromSlice(std.json.Value, a, bytes, .{});
+        defer prepared.deinit();
+        const id = try control.string(control.get(prepared.value, "result").?, "transaction_id");
+        var authorization = try engine.?.preparedFreshOAuthAuthorization(a, try parseOpaqueId(id), try M.revision(engine.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
+        defer authorization.deinit();
+        var browser_peer: c_int = -1;
+        defer {
+            if (browser_peer >= 0) {
+                _ = fresh_api.close(browser_peer);
+            }
+        }
+        var token_peer: c_int = -1;
+        defer {
+            if (token_peer >= 0) {
+                _ = fresh_api.close(token_peer);
+            }
+        }
+        if (mode != .before_callback) {
+            browser_peer = try M.sendCallback(callback_port, try M.stateFromUrl(authorization.bytes), mode == .denied);
+            var ack: [256]u8 = undefined;
+            try std.testing.expect(std.mem.startsWith(u8, try M.read(browser_peer, &ack), "HTTP/1.1 200"));
+            if (mode != .denied) {
+                token_peer = try token_listener.accept();
+                var request: [16 * 1024]u8 = undefined;
+                defer std.crypto.secureZero(u8, &request);
+                _ = try M.read(token_peer, &request);
+                const issued = try M.wait(engine.?, id, "exchange_issued", 1);
+                defer issued.deinit();
+            }
+        }
+        if (mode == .forget) {
+            const forgotten = try M.call(engine.?, "account.forget", .{ .operation_id = "owned-actor-forget", .expected_revision = try M.revision(engine.?), .account_id = "synthetic-owned-other-account" }, .control);
+            defer forgotten.deinit();
+            try std.testing.expect(control.get(forgotten.value, "result") != null);
+        } else if (mode != .denied) {
+            const withdrawn = try M.call(engine.?, "oauth.enrollment.withdraw.v1", .{ .operation_id = "owned-actor-withdraw-consent", .expected_revision = try M.revision(engine.?), .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+            defer withdrawn.deinit();
+            const result = control.get(withdrawn.value, "result") orelse return error.FixtureRefused;
+            try std.testing.expect(try control.boolean(result, "consent_withdrawn", false));
+            try std.testing.expectEqual(mode == .after_issue, try control.boolean(result, "issued_work_may_have_occurred", false));
+            try std.testing.expect(!try control.boolean(result, "upstream_revoked", true));
+        }
+        const expected_phase = if (mode == .after_issue or mode == .forget) "completion_unknown" else "retired";
+        const retained = try M.wait(engine.?, id, expected_phase, 0);
+        defer retained.deinit();
+        const row = control.get(retained.value, "result").?;
+        try std.testing.expectEqual(@as(i64, 0), control.get(row, "verifier_bytes").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(row, "callback_bytes").?.integer);
+        if (mode != .forget) {
+            try std.testing.expectEqualStrings("withdrawn", try control.string(row, "consent_status"));
+            try std.testing.expectEqual(@as(i64, 2), control.get(row, "consent_generation").?.integer);
+            try std.testing.expectEqual(@as(i64, 1), control.get(row, "grants").?.integer);
+        } else {
+            try std.testing.expectEqual(@as(i64, 1), control.get(row, "forget_epoch").?.integer);
+            try std.testing.expectEqual(@as(i64, 0), control.get(row, "grants").?.integer);
+        }
+        if (mode == .denied or mode == .before_callback) {
+            const unexpected = fresh_api.accept(token_listener.fd, null, null);
+            defer {
+                if (unexpected >= 0) {
+                    _ = fresh_api.close(unexpected);
+                }
+            }
+            try std.testing.expect(unexpected < 0 and std.posix.errno(unexpected) == .AGAIN);
+        }
+        engine.?.deinit();
+        engine = null;
+        engine = try Engine.openWithKey(io, a, path, M.key);
+        const restarted = try M.observe(engine.?, id);
+        defer restarted.deinit();
+        try std.testing.expectEqualStrings(expected_phase, try control.string(control.get(restarted.value, "result").?, "phase"));
+        try std.testing.expectError(error.EnrollmentNotFound, engine.?.preparedFreshOAuthAuthorization(a, try parseOpaqueId(id), try M.revision(engine.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(2) })));
+    }
+}
+
+test "documented OSS enrollment producer persists stable own host and private nonce URL without native client or provider call" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    var engine: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+    defer if (engine) |live| live.deinit();
+    var host: ?[32]u8 = null;
+    for (0..2) |attempt| {
+        var reservation = try M.Listener.open();
+        const port = reservation.port;
+        reservation.close();
+        const operation = if (attempt == 0) "oss-first-host" else "oss-same-host-after-restart";
+        const frame = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "oauth.enrollment.prepare.v1", .params = .{ .operation_id = operation, .expected_revision = try M.revision(engine.?), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 60 } }, .{});
+        defer a.free(frame);
+        const bytes = try engine.?.prepareFreshOssEnrollment(a, frame, port, .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }));
+        defer a.free(bytes);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, bytes, .{});
+        defer parsed.deinit();
+        const id = try control.string(control.get(parsed.value, "result").?, "transaction_id");
+        var authorization = try engine.?.preparedFreshOAuthAuthorization(a, try parseOpaqueId(id), try M.revision(engine.?), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
+        defer authorization.deinit();
+        try std.testing.expect(std.mem.startsWith(u8, authorization.bytes, "https://auth.openai.com/api/accounts/authorize?client_id=dynamic_agent_client"));
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "&agent_name_hint=omux&ext_agent_host_id=") != null);
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "&nonce=") != null);
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "&resource=https%3A%2F%2Fapi.openai.com%2Fv1") != null);
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "chatgpt.tokens.use.direct") != null);
+        try std.testing.expect(std.mem.indexOf(u8, authorization.bytes, "app_EMoam") == null);
+        const observed = try M.observe(engine.?, id);
+        defer observed.deinit();
+        const row = control.get(observed.value, "result").?;
+        const host_value = control.get(row, "host_id").?;
+        const encoded = try std.json.Stringify.valueAlloc(a, host_value, .{});
+        defer a.free(encoded);
+        const decoded = try std.json.parseFromSlice([32]u8, a, encoded, .{});
+        defer decoded.deinit();
+        try std.testing.expect(!std.mem.allEqual(u8, &decoded.value, 0));
+        if (host) |prior| try std.testing.expectEqualSlices(u8, &prior, &decoded.value) else host = decoded.value;
+        try std.testing.expectEqualStrings("prepared", try control.string(row, "phase"));
+        try std.testing.expectEqual(@as(i64, 0), control.get(row, "grants").?.integer);
+        engine.?.deinit();
+        engine = null;
+        engine = try Engine.openWithKey(io, a, path, M.key);
+    }
+}
+
+test "actual actor SQLite enrollment cycles reclaim settled rows without replay and cap sixteen active intents" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+    defer if (current) |value| value.deinit();
+    var old_id: [64]u8 = undefined;
+    var original_revision: u64 = 0;
+    for (0..32) |index| {
+        const operation = try std.fmt.allocPrint(a, "settled-prepare-{d}", .{index});
+        defer a.free(operation);
+        const revision = try M.revision(current.?);
+        if (index == 0) original_revision = revision;
+        const prepared = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = operation, .expected_revision = revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+        defer prepared.deinit();
+        const result = control.get(prepared.value, "result") orelse return error.FixtureRefused;
+        const transaction = try control.string(result, "transaction_id");
+        if (index == 0) @memcpy(&old_id, transaction);
+        const retire = try std.fmt.allocPrint(a, "settled-retire-{d}", .{index});
+        defer a.free(retire);
+        const retired = try M.call(current.?, "oauth.enrollment.retire.v1", .{ .operation_id = retire, .expected_revision = try M.revision(current.?), .purpose = oauth_enrollment.purpose, .transaction_id = transaction }, .control);
+        defer retired.deinit();
+        try std.testing.expect(control.get(retired.value, "result") != null);
+    }
+    const replay = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = "settled-prepare-0", .expected_revision = original_revision, .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+    defer replay.deinit();
+    try std.testing.expectEqualStrings(&old_id, try control.string(control.get(replay.value, "result").?, "transaction_id"));
+    // Historical ACK is preserved; it creates no current row or callback lease.
+    const absent = try M.observe(current.?, &old_id);
+    defer absent.deinit();
+    try std.testing.expectEqualStrings("EnrollmentNotFound", try control.string(control.get(absent.value, "error").?, "message"));
+    for (0..16) |index| {
+        const operation = try std.fmt.allocPrint(a, "active-prepare-{d}", .{index});
+        defer a.free(operation);
+        const active = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = operation, .expected_revision = try M.revision(current.?), .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+        defer active.deinit();
+        try std.testing.expect(control.get(active.value, "result") != null);
+    }
+    const refused = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = "active-seventeenth", .expected_revision = try M.revision(current.?), .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+    defer refused.deinit();
+    try std.testing.expectEqualStrings("EnrollmentCapacity", try control.string(control.get(refused.value, "error").?, "message"));
+    current.?.deinit();
+    current = null;
+    const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(filename);
+    var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), M.key);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    const persisted = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+    defer persisted.deinit();
+    try std.testing.expectEqual(@as(usize, 16), persisted.value.fresh_oauth_authority.?.records.len);
+    for (persisted.value.fresh_oauth_authority.?.records) |record| try std.testing.expectEqual(oauth_enrollment.Phase.prepared, record.phase);
+    try std.testing.expectEqual(@as(usize, 1), persisted.value.state.grants.len);
+    const external = (try store.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant")).?;
+    try std.testing.expectEqual(storage.RenewalOwner.external, external.renewal_owner);
+}
+
+test "same actor Store signed OSS exchange activates a paired writer and retains independent external custody" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+    defer if (current) |value| value.deinit();
+    const capability = try current.?.capability("enrollment");
+    const activated = try M.call(current.?, "fixture.admitSignedOssPair", .{ .application = "enrollment", .capability = capability[0..], .subject = "synthetic-pair-one" }, .adapter);
+    defer activated.deinit();
+    const result = control.get(activated.value, "result") orelse return error.FixtureRefused;
+    const account = try a.dupe(u8, try control.string(result, "account_id"));
+    defer a.free(account);
+    const access_id = try a.dupe(u8, try control.string(result, "access_grant_id"));
+    defer a.free(access_id);
+    const refresh_id = try a.dupe(u8, try control.string(result, "refresh_grant_id"));
+    defer a.free(refresh_id);
+    current.?.deinit();
+    current = null;
+    const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(filename);
+    var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), M.key);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    const persisted = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+    defer persisted.deinit();
+    try std.testing.expectEqual(@as(usize, 1), persisted.value.owned_siwc_pairs.?.records.len);
+    try std.testing.expectEqual(@as(usize, 3), persisted.value.state.grants.len);
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "synthetic-access-synthetic-pair-one") == null);
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "synthetic-refresh-synthetic-pair-one") == null);
+    try std.testing.expect(std.mem.indexOf(u8, saved.json, "oaiapp_synthetic_synthetic-pair-one") == null);
+    const authority = try siwc_pair.currentPair(&store, account, access_id, 1, std.Io.Clock.real.now(io).toSeconds());
+    defer authority.deinit();
+    try std.testing.expectEqual(@as(u64, 1), authority.familyGeneration());
+    try std.testing.expectEqualStrings(refresh_id, authority.refreshGrantId());
+    const external = (try store.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant")).?;
+    try std.testing.expectEqual(storage.RenewalOwner.external, external.renewal_owner);
+    // A real in-flight one-use Store rotation refuses request admission; row
+    // ownership alone cannot make a refreshing pair ready again.
+    const rotation = try store.beginRotation(.{ .key_id = store.key_id, .account_id = account, .grant_id = refresh_id, .generation = 1, .purpose = "renewal", .scope = siwc_pair.resource_uri }, "synthetic-owned-rotation");
+    try std.testing.expect(rotation.may_issue);
+    try std.testing.expectError(error.SiwcPairQuarantined, siwc_pair.currentPair(&store, account, access_id, 1, std.Io.Clock.real.now(io).toSeconds()));
+}
+
+test "ordinary SIWC flow survives prompt delay past control RPC and queries never renew or redeliver authorization" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    const current = try Engine.openWithKey(io, a, path, M.key);
+    defer current.deinit();
+    const descriptor = try M.call(current, "oauth.enrollment.descriptor.v1", @as(?u8, null), .control);
+    defer descriptor.deinit();
+    try std.testing.expect(control.get(control.get(descriptor.value, "result").?, "implemented").?.bool);
+    const prepared = try M.call(current, "oauth.enrollment.prepare.siwc.v1", .{ .operation_id = "owned-finite-human-flow", .expected_revision = try M.revision(current), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 60 }, .control);
+    defer prepared.deinit();
+    const result = control.get(prepared.value, "result") orelse return error.FixtureRefused;
+    const id = try control.string(result, "transaction_id");
+    const expiry = control.get(result, "flow_expires_at").?.integer;
+    const before = try M.call(current, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer before.deinit();
+    try std.testing.expectEqualStrings("pending", try control.string(control.get(before.value, "result").?, "status"));
+    // Real elapsed time exceeds the ordinary original 15s control envelope.
+    // This is a deliberate declared fixture, not a clock reset.
+    try io.sleep(.fromSeconds(16), .awake);
+    const recovered = try M.call(current, "oauth.enrollment.pending.v1", @as(?u8, null), .control);
+    defer recovered.deinit();
+    const pending = control.get(control.get(recovered.value, "result").?, "pending").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), pending.len);
+    try std.testing.expectEqualStrings(id, try control.string(pending[0], "transaction_id"));
+    try std.testing.expectEqual(expiry, control.get(pending[0], "flow_expires_at").?.integer);
+    const status = try M.call(current, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer status.deinit();
+    const status_result = control.get(status.value, "result").?;
+    try std.testing.expectEqual(expiry, control.get(status_result, "flow_expires_at").?.integer);
+    const authorization = try M.call(current, "oauth.enrollment.authorization.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id, .expected_revision = control.get(status_result, "revision").?.integer }, .control);
+    defer authorization.deinit();
+    const url = try control.string(control.get(authorization.value, "result").?, "authorization_url");
+    defer std.crypto.secureZero(u8, @constCast(url));
+    try std.testing.expect(std.mem.startsWith(u8, url, "https://auth.openai.com/api/accounts/authorize?"));
+    const again = try M.call(current, "oauth.enrollment.authorization.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id, .expected_revision = control.get(status_result, "revision").?.integer }, .control);
+    defer again.deinit();
+    try std.testing.expectEqualStrings("AuthorizationAlreadyDelivered", try control.string(control.get(again.value, "error").?, "message"));
+    const withdrawn = try M.call(current, "oauth.enrollment.withdraw.v1", .{ .operation_id = "owned-finite-human-withdraw", .expected_revision = try M.revision(current), .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer withdrawn.deinit();
+    try std.testing.expect(control.get(withdrawn.value, "result") != null);
+    const cancelled = try M.call(current, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer cancelled.deinit();
+    try std.testing.expectEqualStrings("cancelled", try control.string(control.get(cancelled.value, "result").?, "status"));
+}
+
+test "expired ordinary owned flow refuses receipt and control-only status is truthful without loaded custody" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try M.seed(path);
+    const current = try Engine.openWithKey(io, a, path, M.key);
+    defer current.deinit();
+    const prepared = try M.call(current, "oauth.enrollment.prepare.siwc.v1", .{ .operation_id = "owned-flow-expiry", .expected_revision = try M.revision(current), .provider = "openai_siwc", .purpose = oauth_enrollment.oss_purpose, .consent_seconds = 1 }, .control);
+    defer prepared.deinit();
+    const result = control.get(prepared.value, "result") orelse return error.FixtureRefused;
+    const id = try control.string(result, "transaction_id");
+    try io.sleep(.fromMilliseconds(1250), .awake);
+    const expired = try M.call(current, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id }, .control);
+    defer expired.deinit();
+    const expired_result = control.get(expired.value, "result").?;
+    try std.testing.expectEqualStrings("expired", try control.string(expired_result, "status"));
+    try std.testing.expect(!control.get(expired_result, "grant_ready").?.bool);
+    const refused = try M.call(current, "oauth.enrollment.authorization.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id, .expected_revision = control.get(expired_result, "revision").?.integer }, .control);
+    defer refused.deinit();
+    try std.testing.expect(control.get(refused.value, "error") != null);
+    const pending = try M.call(current, "oauth.enrollment.pending.v1", @as(?u8, null), .control);
+    defer pending.deinit();
+    try std.testing.expectEqual(@as(usize, 0), control.get(control.get(pending.value, "result").?, "pending").?.array.items.len);
+
+    var unavailable: Engine = .{ .allocator = a, .io = io, .state_dir = try a.dupe(u8, path), .state = domain.State.init(a), .observers = observer.Coordinator.init(a), .requests = request_authority.Ledger.init(a, 4096), .mutations = try mutation_authority.Ledger.init(a, 4096), .admission = snapshot_admission.Ledger.init(a), .native_owners = native_owner.Ledger.init(a), .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }), .vault_locked = true, .startup_vault_failure = error.Locked };
+    defer {
+        unavailable.release();
+        a.free(unavailable.state_dir);
+    }
+    const frame = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "oauth.enrollment.status.v1", .params = .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = id } }, .{});
+    defer a.free(frame);
+    const reply = try unavailable.lockedRequest(a, frame, .control);
+    defer a.free(reply);
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, reply, .{});
+    defer parsed.deinit();
+    const unknown = control.get(parsed.value, "result").?;
+    try std.testing.expectEqualStrings("unknown", try control.string(unknown, "status"));
+    try std.testing.expect(control.get(unknown, "paired_committed").? == .null and control.get(unknown, "grant_ready").? == .null);
+    try std.testing.expect(unavailable.db == null and unavailable.network == null and unavailable.fresh_oauth == null);
+}
+
+test "paired status distinguishes settled consent withdrawal source disconnection and account forget" {
+    const M = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_][]const u8{ "withdraw", "disconnect", "forget", "disconnect_then_withdraw" }) |action| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try M.seed(path);
+        var current: ?*Engine = try Engine.openWithKey(io, a, path, M.key);
+        defer if (current) |value| value.deinit();
+        const capability = try current.?.capability("enrollment");
+        const admitted = try M.call(current.?, "fixture.admitSignedOssPair", .{ .application = "enrollment", .capability = capability[0..], .subject = "synthetic-retirement-pair" }, .adapter);
+        defer admitted.deinit();
+        const pair = control.get(admitted.value, "result") orelse return error.FixtureRefused;
+        const account = try control.string(pair, "account_id");
+        const source_id = try control.string(pair, "source_id");
+        // Transaction handle is the access-issued binding's original operation;
+        // read it only through authenticated actor fixture metadata below.
+        const handles = try M.call(current.?, "fixture.siwcPairHandles", .{ .application = "enrollment", .capability = capability[0..], .account_id = account }, .adapter);
+        defer handles.deinit();
+        const transaction = try control.string(control.get(handles.value, "result").?, "transaction_id");
+        // Real bounded actor mutations cause the active attempt row to be
+        // reclaimed after authority has transferred to the retained pair.
+        // Status and withdrawal must remain truthful without that old row.
+        for (0..16) |index| {
+            const operation = try std.fmt.allocPrint(a, "retirement-settle-prepare-{d}", .{index});
+            defer a.free(operation);
+            const prepared = try M.call(current.?, "oauth.enrollment.prepare.v1", .{ .operation_id = operation, .expected_revision = try M.revision(current.?), .provider = "codex", .purpose = oauth_enrollment.purpose, .consent_seconds = 60 }, .control);
+            defer prepared.deinit();
+            const prepared_id = try control.string(control.get(prepared.value, "result").?, "transaction_id");
+            const retirement = try std.fmt.allocPrint(a, "retirement-settle-retire-{d}", .{index});
+            defer a.free(retirement);
+            const retired = try M.call(current.?, "oauth.enrollment.retire.v1", .{ .operation_id = retirement, .expected_revision = try M.revision(current.?), .purpose = oauth_enrollment.purpose, .transaction_id = prepared_id }, .control);
+            defer retired.deinit();
+            try std.testing.expect(control.get(retired.value, "result") != null);
+        }
+        const settled = try M.observe(current.?, transaction);
+        defer settled.deinit();
+        try std.testing.expectEqualStrings("EnrollmentNotFound", try control.string(control.get(settled.value, "error").?, "message"));
+        if (eql(action, "withdraw")) {
+            const result = try M.call(current.?, "oauth.enrollment.withdraw.v1", .{ .operation_id = "specific-pair-withdraw", .expected_revision = try M.revision(current.?), .purpose = oauth_enrollment.oss_purpose, .transaction_id = transaction }, .control);
+            defer result.deinit();
+            try std.testing.expect(control.get(result.value, "result") != null);
+        } else if (eql(action, "disconnect") or eql(action, "disconnect_then_withdraw")) {
+            const result = try M.call(current.?, "source.disconnect", .{ .operation_id = "specific-pair-disconnect", .expected_revision = try M.revision(current.?), .source_id = source_id }, .control);
+            defer result.deinit();
+            try std.testing.expect(control.get(result.value, "result") != null);
+        } else {
+            const result = try M.call(current.?, "account.forget", .{ .operation_id = "specific-pair-forget", .expected_revision = try M.revision(current.?), .account_id = account }, .control);
+            defer result.deinit();
+            try std.testing.expect(control.get(result.value, "result") != null);
+        }
+        const status = try M.call(current.?, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = transaction }, .control);
+        defer status.deinit();
+        const observed = control.get(status.value, "result").?;
+        try std.testing.expectEqualStrings("retired", try control.string(observed, "status"));
+        try std.testing.expect(control.get(observed, "paired_committed").?.bool and !control.get(observed, "grant_ready").?.bool);
+        try std.testing.expectEqualStrings(if (eql(action, "withdraw")) "withdrawn" else "recorded", try control.string(observed, "consent_status"));
+        try std.testing.expectEqualStrings(if (eql(action, "withdraw")) "withdrawn" else if (eql(action, "disconnect") or eql(action, "disconnect_then_withdraw")) "source_disconnected" else "forgotten", try control.string(observed, "retirement_reason"));
+        if (eql(action, "disconnect_then_withdraw")) {
+            for ([_][]const u8{ "after-disconnect-withdraw", "after-disconnect-withdraw-again" }) |operation| {
+                const withdrawn = try M.call(current.?, "oauth.enrollment.withdraw.v1", .{ .operation_id = operation, .expected_revision = try M.revision(current.?), .purpose = oauth_enrollment.oss_purpose, .transaction_id = transaction }, .control);
+                defer withdrawn.deinit();
+                try std.testing.expect(control.get(control.get(withdrawn.value, "result").?, "consent_withdrawn").?.bool);
+            }
+            const after = try M.call(current.?, "oauth.enrollment.status.v1", .{ .purpose = oauth_enrollment.oss_purpose, .transaction_id = transaction }, .control);
+            defer after.deinit();
+            try std.testing.expectEqualStrings("withdrawn", try control.string(control.get(after.value, "result").?, "consent_status"));
+            try std.testing.expectEqualStrings("withdrawn", try control.string(control.get(after.value, "result").?, "retirement_reason"));
+        }
+        current.?.deinit();
+        current = null;
+        const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+        defer a.free(filename);
+        var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), M.key);
+        defer store.close();
+        var saved = try store.readSnapshot();
+        defer saved.deinit();
+        const parsed = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+        defer parsed.deinit();
+        const retained = parsed.value.owned_siwc_pairs.?.records[0];
+        try std.testing.expectEqual(if (eql(action, "withdraw") or eql(action, "disconnect_then_withdraw")) @as(u64, 2) else @as(u64, 1), retained.consent_generation);
+        try std.testing.expectEqual(if (eql(action, "withdraw") or eql(action, "disconnect_then_withdraw")) oauth_enrollment.ConsentStatus.withdrawn else oauth_enrollment.ConsentStatus.recorded, retained.consent_status);
+        try std.testing.expectEqual(@as(usize, 0), retained.identity_capsule.len);
+        try std.testing.expect((try store.readGrantStatus(account, retained.access_grant_id)) == null);
+        try std.testing.expect((try store.readGrantStatus(account, retained.refresh_grant_id)) == null);
+        const external = (try store.readGrantStatus("synthetic-owned-other-account", "synthetic-owned-external-grant")).?;
+        try std.testing.expectEqual(storage.RenewalOwner.external, external.renewal_owner);
+        try std.testing.expectEqual(eql(action, "forget"), retained.forget_tombstone);
+    }
+}
+
+// Source-only offline models: real actor Store, sealed issued RT ticket, real
+// loopback curl/key receipt and runtime-signed resource JWT. No live provider,
+// installed native process or cross-application renewal claim follows.
+const OwnedRenewalActorModel = struct {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const Json = std.json.Parsed(std.json.Value);
+    const Options = struct {
+        milliseconds: i64 = 5000,
+        delay_ms: u32 = 0,
+        lost_reply: bool = false,
+        hold_reply: bool = false,
+        scheduled: bool = false,
+        http_status: u16 = 200,
+        hold_stage: ?[]const u8 = null,
+        fail_stage: ?[]const u8 = null,
+        tamper_accounting: bool = false,
+        hold_kind: []const u8 = "successor",
+        hold_window: bool = false,
+        hold_before_dispatch: bool = false,
+        hold_worker: bool = false,
+    };
+    fn call(current: *Engine, method: []const u8, params: anytype, channel: Channel) !Json {
+        const raw = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = method, .params = params }, .{});
+        defer {
+            std.crypto.secureZero(u8, raw);
+            a.free(raw);
+        }
+        const reply = try current.dispatch(a, raw, channel);
+        defer {
+            std.crypto.secureZero(u8, reply);
+            a.free(reply);
+        }
+        return std.json.parseFromSlice(std.json.Value, a, reply, .{ .allocate = .alloc_always });
+    }
+    fn fixture(current: *Engine, method: []const u8, values: anytype) !Json {
+        var arena: std.heap.ArenaAllocator = .init(a);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const raw = try std.json.Stringify.valueAlloc(allocator, values, .{});
+        defer std.crypto.secureZero(u8, raw);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidFixtureParams;
+        var object = parsed.value.object;
+        var capability = try current.capabilityForTest("enrollment");
+        defer std.crypto.secureZero(u8, &capability);
+        try object.put(allocator, "application", .{ .string = "enrollment" });
+        try object.put(allocator, "capability", .{ .string = &capability });
+        return call(current, method, @as(std.json.Value, .{ .object = object }), .adapter);
+    }
+    fn result(reply: *const Json) !std.json.Value {
+        return control.get(reply.value, "result") orelse return error.FixtureExpectedSuccess;
+    }
+    fn observe(current: *Engine, account: []const u8) !Json {
+        return fixture(current, "fixture.siwcRenewalObserve", .{ .account_id = account });
+    }
+    fn measurements(current: *Engine) !siwc_pair.RenewalMeasurements {
+        const reply = try call(current, "reliability.lifecycle", @as(?u8, null), .control);
+        defer reply.deinit();
+        const value = control.get(try result(&reply), "owned_pair_renewal") orelse return error.FixtureMeasurementsMissing;
+        const parsed = try std.json.parseFromValue(siwc_pair.RenewalMeasurements, a, value, .{});
+        defer parsed.deinit();
+        return parsed.value;
+    }
+    fn accounting(current: *Engine) !owned_renewal_accounting.Summary {
+        const reply = try call(current, "reliability.lifecycle", @as(?u8, null), .control);
+        defer reply.deinit();
+        const value = control.get(try result(&reply), "owned_pair_renewal_attempts") orelse return error.FixtureMeasurementsMissing;
+        const parsed = try std.json.parseFromValue(owned_renewal_accounting.Summary, a, value, .{});
+        defer parsed.deinit();
+        return parsed.value;
+    }
+    // Fixed synthetic fixture stages only; this is not user-outcome telemetry.
+    fn trace(comptime case: []const u8, index: usize, comptime stage: []const u8, started: std.Io.Timestamp) void {
+        const elapsed = started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds();
+        std.debug.print("paired-renewal case={s} index={d} stage={s} elapsed_ns={d}\n", .{ case, index, stage, elapsed });
+    }
+    fn wait(current: *Engine, account: []const u8, status: []const u8, generation: u64) !Json {
+        const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(12) });
+        while (until.durationFromNow(io).raw.toNanoseconds() > 0) {
+            const observed = try observe(current, account);
+            const value = try result(&observed);
+            if (eql(try control.string(value, "status"), status) and control.get(value, "generation").?.integer == @as(i64, @intCast(generation)) and
+                control.get(value, "pending").?.integer == 0 and control.get(value, "workers").?.integer == 0) return observed;
+            observed.deinit();
+            try io.sleep(.fromMilliseconds(5), .awake);
+        }
+        return error.FixtureTimeout;
+    }
+    fn start(current: *Engine, account: []const u8, body: []const u8, keys: []const u8, options: Options) !Json {
+        return fixture(current, "fixture.siwcRenewalStart", .{ .account_id = account, .body = body, .keys = keys, .milliseconds = options.milliseconds, .delay_ms = options.delay_ms, .lost_reply = options.lost_reply, .hold_reply = options.hold_reply, .scheduled = options.scheduled, .http_status = options.http_status, .hold_stage = options.hold_stage, .fail_stage = options.fail_stage, .tamper_accounting = options.tamper_accounting, .hold_kind = options.hold_kind, .hold_window = options.hold_window, .hold_before_dispatch = options.hold_before_dispatch, .hold_worker = options.hold_worker });
+    }
+    fn window(current: *Engine, account: []const u8, bound: []const u8, seconds: i64) !i64 {
+        const narrowed = try fixture(current, "fixture.siwcGrantWindow", .{ .account_id = account, .bound = bound, .seconds = seconds });
+        defer narrowed.deinit();
+        return (control.get(try result(&narrowed), "expiry") orelse return error.InvalidFixtureWindow).integer;
+    }
+    fn assertOriginalWindow(value: std.json.Value, bound: []const u8, expiry: i64) !void {
+        const captured = control.get(value, "original_grant_window") orelse return error.InvalidFixtureWindow;
+        const field = if (eql(bound, "access_custody")) "access_custody_expires_at" else if (eql(bound, "refresh_custody")) "refresh_custody_expires_at" else "refresh_provider_expires_at";
+        try std.testing.expectEqual(expiry, (control.get(captured, field) orelse return error.InvalidFixtureWindow).integer);
+    }
+    fn signer() !@import("oauth_oidc_fixture.zig").Signer {
+        const tool = std.c.getenv("OMUX_OIDC_OPENSSL") orelse return error.MissingDeclaredSigner;
+        return @import("oauth_oidc_fixture.zig").Signer.init(a, io, std.mem.span(tool), .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }));
+    }
+    const BodyOptions = struct { wrong_client: bool = false, wrong_subject: bool = false, wrong_audience: bool = false, tamper: bool = false, missing_refresh: bool = false, same_refresh: bool = false, missing_scope: bool = false };
+    fn makeBody(key: *@import("oauth_oidc_fixture.zig").Signer, subject: []const u8, options: BodyOptions) !envelope.Secret {
+        const client_id = try std.fmt.allocPrint(a, "oaiapp_synthetic_{s}", .{subject});
+        defer a.free(client_id);
+        const timestamp = std.Io.Clock.real.now(io).toSeconds();
+        const scope = if (options.missing_scope) "openid offline_access" else "resource.invoke chatgpt.tokens.use.direct";
+        const claims = try std.json.Stringify.valueAlloc(a, .{ .iss = siwc_pair.issuer_uri, .aud = if (options.wrong_audience) "https://chatgpt.com" else siwc_pair.resource_uri, .client_id = if (options.wrong_client) "oaiapp_synthetic_foreign" else client_id, .sub = if (options.wrong_subject) "synthetic-foreign-subject" else subject, .iat = timestamp, .nbf = timestamp, .exp = timestamp + 300, .scope = scope }, .{});
+        defer {
+            std.crypto.secureZero(u8, claims);
+            a.free(claims);
+        }
+        const jwt = try key.sign(claims);
+        defer {
+            std.crypto.secureZero(u8, jwt);
+            a.free(jwt);
+        }
+        if (options.tamper) {
+            const separator = std.mem.lastIndexOfScalar(u8, jwt, '.') orelse return error.InvalidFixtureJwt;
+            jwt[separator + 1] = if (jwt[separator + 1] == 'A') 'B' else 'A';
+        }
+        const refresh = if (options.same_refresh)
+            try std.fmt.allocPrint(a, "synthetic-refresh-{s}", .{subject})
+        else
+            try std.fmt.allocPrint(a, "synthetic-renewed-refresh-{s}", .{subject});
+        defer {
+            std.crypto.secureZero(u8, refresh);
+            a.free(refresh);
+        }
+        const bytes = if (options.missing_refresh)
+            try std.json.Stringify.valueAlloc(a, .{ .access_token = jwt, .token_type = "Bearer", .expires_in = 300, .scope = scope }, .{})
+        else
+            try std.json.Stringify.valueAlloc(a, .{ .access_token = jwt, .refresh_token = refresh, .token_type = "Bearer", .expires_in = 300, .scope = scope }, .{});
+        return .{ .allocator = a, .bytes = bytes };
+    }
+    fn assertPair(value: std.json.Value, status: []const u8, generation: i64, request_ready: bool) !void {
+        try std.testing.expectEqualStrings(status, try control.string(value, "status"));
+        try std.testing.expectEqualStrings(status, try control.string(value, "persisted_status"));
+        try std.testing.expectEqual(generation, control.get(value, "generation").?.integer);
+        try std.testing.expectEqual(generation, control.get(value, "persisted_generation").?.integer);
+        try std.testing.expectEqual(request_ready, try control.boolean(value, "access_authorized", false));
+    }
+};
+
+test "fixture expiry remaining honors original fractional boundary and rejects invalid windows" {
+    const F = OwnedRenewalFixtureExpiry;
+    try std.testing.expectEqual(@as(i96, 3_000_000_000), try F.remaining(103, .{ .nanoseconds = 100_000_000_000 }));
+    try std.testing.expectEqual(@as(i96, 2_250_000_000), try F.remaining(103, .{ .nanoseconds = 100_750_000_000 }));
+    try std.testing.expectEqual(@as(i96, 1), try F.remaining(103, .{ .nanoseconds = 102_999_999_999 }));
+    try std.testing.expectEqual(@as(i96, 0), try F.remaining(103, .{ .nanoseconds = 103_000_000_000 }));
+    try std.testing.expectEqual(@as(i96, 0), try F.remaining(103, .{ .nanoseconds = 104_000_000_000 }));
+    try std.testing.expectError(error.InvalidFixtureWindow, F.remaining(104, .{ .nanoseconds = 100_750_000_000 }));
+    try std.testing.expectError(error.InvalidFixtureWindow, F.remaining(0, .{ .nanoseconds = 100_000_000_000 }));
+    try std.testing.expectError(error.InvalidFixtureWindow, F.remaining(103, .{ .nanoseconds = -1 }));
+    const maximum = std.math.maxInt(i64);
+    try std.testing.expectError(error.InvalidFixtureWindow, F.remaining(maximum, .{ .nanoseconds = 0 }));
+    try std.testing.expectEqual(@as(i96, 1), try F.remaining(maximum, .{ .nanoseconds = @as(i96, maximum) * 1_000_000_000 - 1 }));
+}
+
+test "fixture expiry wait reaches its unchanged actual wall boundary before returning" {
+    const io = std.testing.io;
+    const original_expiry = std.Io.Clock.real.now(io).toSeconds() + 1;
+    try OwnedRenewalFixtureExpiry.wait(io, original_expiry);
+    try std.testing.expect(std.Io.Clock.real.now(io).toSeconds() >= original_expiry);
+    try OwnedRenewalFixtureExpiry.wait(io, original_expiry);
+    try std.testing.expectEqual(@as(i96, 0), try OwnedRenewalFixtureExpiry.remaining(original_expiry, std.Io.Clock.real.now(io)));
+}
+
+test "owned paired renewal preserves usable current access and accepted native work while one writer rotates" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const N = @import("native_owner_fixture.zig");
+    const M = OwnedRenewalActorModel;
+    var diagnostic_stage: []const u8 = "setup";
+    errdefer std.debug.print("paired-renewal case=accepted-work stage={s} failed\n", .{diagnostic_stage});
+    const a = std.testing.allocator;
+    const producer = try N.Fixture.create(std.testing.io, a);
+    defer producer.destroy();
+    const actor = try N.ActorFixture.create(std.testing.io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    diagnostic_stage = "admit-signed-pair";
+    const pair = try SiwcActorTest.admit(producer, current, "renew-concurrent");
+    const initial_measurements = try M.measurements(current);
+    try std.testing.expect(initial_measurements.authority_available);
+    try std.testing.expectEqual(@as(u64, 1), initial_measurements.retained_pairs);
+    try std.testing.expectEqual(@as(u64, 1), initial_measurements.pairs_without_retained_renewal);
+    try std.testing.expectEqual(@as(u64, 0), initial_measurements.retained_attempts);
+    diagnostic_stage = "native-registration";
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    diagnostic_stage = "initial-native-acquire";
+    var acquired = try SiwcActorTest.acquire(producer, current, reference, "renew-accepted-original");
+    defer SiwcActorTest.dispose(&acquired);
+    const lease = try SiwcActorTest.handle(&acquired);
+    var materialized = try SiwcActorTest.materialize(producer, current, reference, lease);
+    defer SiwcActorTest.dispose(&materialized);
+    diagnostic_stage = "initial-native-accepted";
+    var accepted = try SiwcActorTest.report(producer, current, reference, lease, "accepted");
+    defer SiwcActorTest.dispose(&accepted);
+    _ = try SiwcActorTest.result(&accepted);
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-concurrent", .{ .same_refresh = true });
+    defer body.deinit();
+    diagnostic_stage = "issue-one-owned-refresh";
+    const started = try M.start(current, &pair.account_id, body.bytes, keys, .{ .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    diagnostic_stage = "observe-original-request-authority";
+    const live = try M.observe(current, &pair.account_id);
+    defer live.deinit();
+    const live_value = try M.result(&live);
+    try M.assertPair(live_value, "refreshing", 1, true);
+    try std.testing.expectEqualStrings("ready", try control.string(control.get(live_value, "access_sql").?, "state"));
+    try std.testing.expectEqualStrings("refreshing", try control.string(control.get(live_value, "refresh_sql").?, "state"));
+    const issued_measurements = try M.measurements(current);
+    try std.testing.expectEqual(@as(u64, 1), issued_measurements.retained_attempts);
+    try std.testing.expectEqual(@as(u64, 1), issued_measurements.unresolved_issued);
+    try std.testing.expectEqual(@as(u64, 0), issued_measurements.committed_successors);
+    try std.testing.expectEqual(@as(u64, 0), issued_measurements.completion_unknown);
+    diagnostic_stage = "second-writer-refusal";
+    const second_writer = try M.start(current, &pair.account_id, body.bytes, keys, .{});
+    defer second_writer.deinit();
+    try SiwcActorTest.refusal(&second_writer, "RenewalNotOwned");
+    // A duplicate writer refusal is not another owned issued attempt or success.
+    try std.testing.expectEqualDeep(issued_measurements, try M.measurements(current));
+    diagnostic_stage = "same-generation-independent-request";
+    // A sticky unchanged route legitimately admits independent work; it is
+    // neither an accepted-work replay nor an in-flight generation switch.
+    var overlap = try SiwcActorTest.acquire(producer, current, reference, "renew-overlap-independent");
+    defer SiwcActorTest.dispose(&overlap);
+    const overlap_value = try SiwcActorTest.result(&overlap);
+    try std.testing.expectEqualStrings(&pair.account_id, try control.string(overlap_value, "account_id"));
+    try std.testing.expectEqual(@as(i64, 1), control.get(overlap_value, "route_generation").?.integer);
+    const overlap_lease = try SiwcActorTest.handle(&overlap);
+    var overlap_auth = try SiwcActorTest.materialize(producer, current, reference, overlap_lease);
+    defer SiwcActorTest.dispose(&overlap_auth);
+    const overlap_credential = try SiwcActorTest.result(&overlap_auth);
+    try std.testing.expectEqualStrings(try control.string(try SiwcActorTest.result(&materialized), "access_token"), try control.string(overlap_credential, "access_token"));
+    var overlap_terminal = try SiwcActorTest.report(producer, current, reference, overlap_lease, "abandoned");
+    defer SiwcActorTest.dispose(&overlap_terminal);
+    _ = try SiwcActorTest.result(&overlap_terminal);
+    diagnostic_stage = "accepted-work-replay-refusal";
+    var accepted_retry = try SiwcActorTest.reject(producer, current, reference, lease, 429, "subscription_sharing_usage_limit_exceeded");
+    defer SiwcActorTest.dispose(&accepted_retry);
+    try SiwcActorTest.refusal(&accepted_retry, "UnsafeReplay");
+    diagnostic_stage = "release-original-response";
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = pair.account_id[0..] });
+    defer released.deinit();
+    _ = try M.result(&released);
+    diagnostic_stage = "wait-atomic-successor";
+    const renewed = try M.wait(current, &pair.account_id, "ready", 2);
+    defer renewed.deinit();
+    const renewed_value = try M.result(&renewed);
+    try M.assertPair(renewed_value, "ready", 2, true);
+    diagnostic_stage = "successor-state-and-counts";
+    try std.testing.expectEqualStrings("completed", try control.string(renewed_value, "renewal_state"));
+    try std.testing.expectEqual(@as(i64, 1), control.get(renewed_value, "token_count").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), control.get(renewed_value, "key_count").?.integer);
+    diagnostic_stage = "successor-wire-valid";
+    try std.testing.expect(try control.boolean(renewed_value, "wire_valid", false));
+    const committed_measurements = try M.measurements(current);
+    try std.testing.expectEqual(@as(u64, 1), committed_measurements.retained_attempts);
+    try std.testing.expectEqual(@as(u64, 1), committed_measurements.committed_successors);
+    try std.testing.expectEqual(@as(u64, 0), committed_measurements.unresolved_issued);
+    try std.testing.expectEqual(@as(u64, 0), committed_measurements.completion_unknown);
+    try std.testing.expect(!committed_measurements.safe_refusals_measured);
+    try std.testing.expect(!committed_measurements.duration_measured);
+    try std.testing.expect(!committed_measurements.complete_renewal_opportunity_denominator);
+    try std.testing.expect(!committed_measurements.before_authority_expiry_measured);
+    const observation_revision = current.revision;
+    try std.testing.expectEqualDeep(committed_measurements, try M.measurements(current));
+    try std.testing.expectEqual(observation_revision, current.revision);
+    const observed_again = try M.observe(current, &pair.account_id);
+    defer observed_again.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(try M.result(&observed_again), "token_count").?.integer);
+    diagnostic_stage = "new-generation-switch-refusal";
+    // The accepted original still holds generation1. Generation2 is now ready,
+    // so this NEW work would rebind the live route and must remain refused.
+    var generation_switch = try SiwcActorTest.acquire(producer, current, reference, "renew-next-independent");
+    defer SiwcActorTest.dispose(&generation_switch);
+    try SiwcActorTest.refusal(&generation_switch, "InFlight");
+    diagnostic_stage = "original-accepted-terminal-report";
+    var completed = try SiwcActorTest.report(producer, current, reference, lease, "completed");
+    defer SiwcActorTest.dispose(&completed);
+    _ = try SiwcActorTest.result(&completed);
+    diagnostic_stage = "completed-original-replay-refusal";
+    var replay = try SiwcActorTest.acquire(producer, current, reference, "renew-accepted-original");
+    defer SiwcActorTest.dispose(&replay);
+    try SiwcActorTest.refusal(&replay, "AttemptBudgetExhausted");
+    diagnostic_stage = "independent-next-request";
+    var next = try SiwcActorTest.acquire(producer, current, reference, "renew-next-independent");
+    defer SiwcActorTest.dispose(&next);
+    const next_lease = try SiwcActorTest.handle(&next);
+    diagnostic_stage = "new-generation-materialization";
+    var next_auth = try SiwcActorTest.materialize(producer, current, reference, next_lease);
+    defer SiwcActorTest.dispose(&next_auth);
+    const credentials = try SiwcActorTest.result(&next_auth);
+    try std.testing.expectEqualStrings(siwc_pair.auth_mode, try control.string(credentials, "auth_mode"));
+    try std.testing.expectEqual(@as(usize, 7), credentials.object.count());
+    diagnostic_stage = "new-access-token-differs";
+    try std.testing.expect(!eql(try control.string(credentials, "access_token"), try control.string(try SiwcActorTest.result(&materialized), "access_token")));
+    diagnostic_stage = "new-route-generation";
+    try std.testing.expectEqual(@as(i64, 2), control.get(credentials, "route_generation").?.integer);
+    diagnostic_stage = "new-request-terminal-report";
+    var finished = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned");
+    defer SiwcActorTest.dispose(&finished);
+    _ = try SiwcActorTest.result(&finished);
+    diagnostic_stage = "retained-successor-sqlite-restart";
+    try actor.restart();
+    try std.testing.expectEqualDeep(committed_measurements, try M.measurements(actor.engine.?));
+    const restarted = try M.observe(actor.engine.?, &pair.account_id);
+    defer restarted.deinit();
+    try M.assertPair(try M.result(&restarted), "ready", 2, true);
+    try std.testing.expectEqual(@as(i64, 0), control.get(try M.result(&restarted), "token_count").?.integer);
+    // Actual second issuance replaces the one retained witness. The counter is
+    // not two lifetime successes, and observations must not repeat either POST.
+    diagnostic_stage = "replace-last-retained-renewal";
+    const replacement = try M.start(actor.engine.?, &pair.account_id, body.bytes, keys, .{});
+    defer replacement.deinit();
+    _ = try M.result(&replacement);
+    const replaced = try M.wait(actor.engine.?, &pair.account_id, "ready", 3);
+    defer replaced.deinit();
+    try M.assertPair(try M.result(&replaced), "ready", 3, true);
+    try std.testing.expectEqualDeep(committed_measurements, try M.measurements(actor.engine.?));
+    try std.testing.expectEqualDeep(committed_measurements, try M.measurements(actor.engine.?));
+    const replacement_observed = try M.observe(actor.engine.?, &pair.account_id);
+    defer replacement_observed.deinit();
+    try std.testing.expectEqual(@as(i64, 1), control.get(try M.result(&replacement_observed), "token_count").?.integer);
+}
+
+test "periodic owned renewal repairs expired access without user reconsent while new requests use a ready alternative" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const N = @import("native_owner_fixture.zig");
+    const M = OwnedRenewalActorModel;
+    const a = std.testing.allocator;
+    const producer = try N.Fixture.create(std.testing.io, a);
+    defer producer.destroy();
+    const actor = try N.ActorFixture.create(std.testing.io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const first = try SiwcActorTest.admit(producer, current, "renew-expired");
+    const alternative = try SiwcActorTest.admit(producer, current, "renew-alternative");
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    var original = try SiwcActorTest.acquire(producer, current, reference, "expiry-original-work");
+    defer SiwcActorTest.dispose(&original);
+    try std.testing.expectEqualStrings(&first.account_id, try control.string(try SiwcActorTest.result(&original), "account_id"));
+    const original_lease = try SiwcActorTest.handle(&original);
+    var accepted = try SiwcActorTest.report(producer, current, reference, original_lease, "accepted");
+    defer SiwcActorTest.dispose(&accepted);
+    _ = try SiwcActorTest.result(&accepted);
+    var completed = try SiwcActorTest.report(producer, current, reference, original_lease, "completed");
+    defer SiwcActorTest.dispose(&completed);
+    _ = try SiwcActorTest.result(&completed);
+    const expired = try M.fixture(current, "fixture.siwcExpireAccess", .{ .account_id = first.account_id[0..] });
+    defer expired.deinit();
+    _ = try M.result(&expired);
+    const before = try M.observe(current, &first.account_id);
+    defer before.deinit();
+    try M.assertPair(try M.result(&before), "ready", 1, false);
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-expired", .{});
+    defer body.deinit();
+    const configured = try M.start(current, &first.account_id, body.bytes, keys, .{ .scheduled = true, .hold_reply = true });
+    defer configured.deinit();
+    try std.testing.expect(!(try control.boolean(try M.result(&configured), "issued", true)));
+    var next = try SiwcActorTest.acquire(producer, current, reference, "expiry-new-work");
+    defer SiwcActorTest.dispose(&next);
+    try std.testing.expectEqualStrings(&alternative.account_id, try control.string(try SiwcActorTest.result(&next), "account_id"));
+    const next_lease = try SiwcActorTest.handle(&next);
+    var credentials = try SiwcActorTest.materialize(producer, current, reference, next_lease);
+    defer SiwcActorTest.dispose(&credentials);
+    try std.testing.expectEqual(@as(usize, 7), (try SiwcActorTest.result(&credentials)).object.count());
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = first.account_id[0..] });
+    defer released.deinit();
+    _ = try M.result(&released);
+    const repaired = try M.wait(current, &first.account_id, "ready", 2);
+    defer repaired.deinit();
+    const value = try M.result(&repaired);
+    try M.assertPair(value, "ready", 2, true);
+    try std.testing.expect(try control.boolean(value, "wire_valid", false));
+    try std.testing.expectEqual(@as(i64, 1), control.get(value, "token_count").?.integer);
+    var abandoned = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned");
+    defer SiwcActorTest.dispose(&abandoned);
+    _ = try SiwcActorTest.result(&abandoned);
+    var replay = try SiwcActorTest.acquire(producer, current, reference, "expiry-original-work");
+    defer SiwcActorTest.dispose(&replay);
+    try SiwcActorTest.refusal(&replay, "AttemptBudgetExhausted");
+}
+
+test "actual owned token replies with missing successor altered identity signature scopes or HTTP failure quarantine without replay" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const cases = [_]struct { body: M.BodyOptions = .{}, lost_reply: bool = false, http_status: u16 = 200 }{
+        .{ .body = .{ .missing_refresh = true } },
+        .{ .body = .{ .tamper = true } },
+        .{ .body = .{ .wrong_client = true } },
+        .{ .body = .{ .wrong_subject = true } },
+        .{ .body = .{ .wrong_audience = true } },
+        .{ .body = .{ .missing_scope = true } },
+        .{ .lost_reply = true },
+        .{ .http_status = 400 },
+    };
+    for (cases, 0..) |case, index| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try F.seed(path);
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = try std.fmt.allocPrint(a, "renew-negative-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
+        const account = try control.string(try M.result(&admitted), "account_id");
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, case.body);
+        defer body.deinit();
+        if (case.http_status != 200) {
+            body.deinit();
+            body = .{ .allocator = a, .bytes = try a.dupe(u8, "{\"error\":\"invalid_grant\"}") };
+        }
+        const started = try M.start(current, account, body.bytes, keys, .{ .lost_reply = case.lost_reply, .http_status = case.http_status });
+        defer started.deinit();
+        _ = try M.result(&started);
+        const refused = try M.wait(current, account, "quarantined", 1);
+        defer refused.deinit();
+        const value = try M.result(&refused);
+        try M.assertPair(value, "quarantined", 1, false);
+        try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+        try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "access_sql").?, "state"));
+        try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "refresh_sql").?, "state"));
+        try std.testing.expectEqual(@as(i64, 1), control.get(value, "token_count").?.integer);
+        try std.testing.expect(try control.boolean(value, "wire_valid", false));
+        try std.testing.expect(try control.boolean(value, "external_retained", false));
+        const replay = try M.start(current, account, body.bytes, keys, .{});
+        defer replay.deinit();
+        try SiwcActorTest.refusal(&replay, "RenewalNotOwned");
+        const still = try M.observe(current, account);
+        defer still.deinit();
+        try M.assertPair(try M.result(&still), "quarantined", 1, false);
+        try std.testing.expectEqual(@as(i64, 1), control.get(try M.result(&still), "token_count").?.integer);
+    }
+}
+
+test "actual paired renewal disconnect withdrawal and forget retire held owned renewals without late replacement or independent grant loss" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_][]const u8{ "source.disconnect", "oauth.enrollment.withdraw.v1", "account.forget" }, 0..) |method, index| {
+        const case_started = std.Io.Clock.awake.now(io);
+        M.trace("retirement", index, "case-start", case_started);
+        defer M.trace("retirement", index, "case-cleanup-returned", case_started);
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try F.seed(path);
+        M.trace("retirement", index, "actor-open-enter", case_started);
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer {
+            M.trace("retirement", index, "actor-close-enter", case_started);
+            current.deinit();
+            M.trace("retirement", index, "actor-close-returned", case_started);
+        }
+        M.trace("retirement", index, "actor-open-complete", case_started);
+        const subject = try std.fmt.allocPrint(a, "renew-retire-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
+        const pair = try M.result(&admitted);
+        const account = try control.string(pair, "account_id");
+        const source = try control.string(pair, "source_id");
+        const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account });
+        defer handles.deinit();
+        const transaction = try control.string(try M.result(&handles), "transaction_id");
+        M.trace("retirement", index, "paired-admission-complete", case_started);
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        M.trace("retirement", index, "held-issuance-enter", case_started);
+        const started = try M.start(current, account, body.bytes, keys, .{ .hold_reply = true });
+        defer started.deinit();
+        _ = try M.result(&started);
+        M.trace("retirement", index, "held-issuance-complete", case_started);
+        const revision = try F.revision(current);
+        M.trace("retirement", index, "retirement-enter", case_started);
+        const retired = if (index == 0)
+            try M.call(current, method, .{ .source_id = source, .operation_id = "renew-source-retire", .expected_revision = revision }, .control)
+        else if (index == 1)
+            try M.call(current, method, .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose, .operation_id = "renew-consent-withdraw", .expected_revision = revision }, .control)
+        else
+            try M.call(current, method, .{ .account_id = account, .operation_id = "renew-account-forget", .expected_revision = revision }, .control);
+        defer retired.deinit();
+        _ = try M.result(&retired);
+        M.trace("retirement", index, "retirement-complete", case_started);
+        const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account });
+        defer released.deinit();
+        _ = try M.result(&released);
+        M.trace("retirement", index, "reply-release-complete", case_started);
+        M.trace("retirement", index, "retired-observation-enter", case_started);
+        const observed = try M.wait(current, account, "retired", 1);
+        defer observed.deinit();
+        const value = try M.result(&observed);
+        M.trace("retirement", index, "retired-observation-complete", case_started);
+        try M.assertPair(value, "retired", 1, false);
+        try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+        try std.testing.expect(control.get(value, "access_sql").? == .null and control.get(value, "refresh_sql").? == .null);
+        try std.testing.expect(try control.boolean(value, "external_retained", false));
+        const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control);
+        defer status.deinit();
+        const metadata = try M.result(&status);
+        try std.testing.expectEqualStrings(if (index == 1) "withdrawn" else "recorded", try control.string(metadata, "consent_status"));
+        try std.testing.expect(!(try control.boolean(metadata, "grant_ready", true)));
+        M.trace("retirement", index, "assertions-complete", case_started);
+    }
+}
+
+test "actual paired renewal successor original cutoff refuses after sealing before reserve and poisons after reserve" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_][]const u8{ "before_begin", "before_reservation", "before_commit" }, 0..) |stage, index| {
+        const case_started = std.Io.Clock.awake.now(io);
+        M.trace("cutoff", index, "case-start", case_started);
+        defer M.trace("cutoff", index, "case-cleanup-returned", case_started);
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try F.seed(path);
+        M.trace("cutoff", index, "actor-open-enter", case_started);
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer {
+            M.trace("cutoff", index, "actor-close-enter", case_started);
+            current.deinit();
+            M.trace("cutoff", index, "actor-close-returned", case_started);
+        }
+        M.trace("cutoff", index, "actor-open-complete", case_started);
+        const subject = try std.fmt.allocPrint(a, "renew-cutoff-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
+        const account = try control.string(try M.result(&admitted), "account_id");
+        const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account });
+        defer handles.deinit();
+        const transaction = try control.string(try M.result(&handles), "transaction_id");
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        M.trace("cutoff", index, "held-issuance-enter", case_started);
+        const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 3000, .hold_stage = stage });
+        defer started.deinit();
+        _ = try M.result(&started);
+        M.trace("cutoff", index, "issued-observation-enter", case_started);
+        if (index != 2) {
+            const refused = try M.wait(current, account, "quarantined", 1);
+            defer refused.deinit();
+            const value = try M.result(&refused);
+            try M.assertPair(value, "quarantined", 1, false);
+            try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+            try std.testing.expectEqual(@as(i64, 1), control.get(value, "token_count").?.integer);
+            try std.testing.expectEqual(@as(i64, 1), control.get(value, "key_count").?.integer);
+        } else {
+            const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(8) });
+            var poisoned = false;
+            while (!poisoned and until.durationFromNow(io).raw.toNanoseconds() > 0) {
+                const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control);
+                defer status.deinit();
+                const value = try M.result(&status);
+                poisoned = !(try control.boolean(value, "custody_available", true));
+                if (poisoned) {
+                    try std.testing.expectEqualStrings("unknown", try control.string(value, "status"));
+                    try std.testing.expect(control.get(value, "grant_ready").? == .null);
+                } else try io.sleep(.fromMilliseconds(5), .awake);
+            }
+            try std.testing.expect(poisoned);
+            const unavailable = try M.measurements(current);
+            try std.testing.expect(!unavailable.authority_available);
+            try std.testing.expectEqual(@as(u64, 0), unavailable.retained_attempts);
+            try std.testing.expectEqual(@as(u64, 0), unavailable.committed_successors);
+        }
+        M.trace("cutoff", index, "assertions-complete", case_started);
+    }
+}
+
+test "actual issued paired renewal restart quarantines retained tuple without reconstructing a ticket or replaying refresh" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    var diagnostic_stage: []const u8 = "setup";
+    errdefer std.debug.print("paired-renewal case=issued-restart stage={s} failed\n", .{diagnostic_stage});
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+    defer if (current) |engine| engine.deinit();
+    diagnostic_stage = "admit-signed-pair";
+    const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = "renew-restart" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-restart", .{});
+    defer body.deinit();
+    diagnostic_stage = "issue-held-refresh";
+    const started = try M.start(current.?, account, body.bytes, keys, .{ .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    diagnostic_stage = "close-issued-actor";
+    const issued_measurements = try M.measurements(current.?);
+    try std.testing.expectEqual(@as(u64, 1), issued_measurements.unresolved_issued);
+    try std.testing.expectEqual(@as(u64, 0), issued_measurements.committed_successors);
+    current.?.deinit();
+    current = null;
+    diagnostic_stage = "reopen-before-any-provider-work";
+    current = try Engine.openWithKey(io, a, path, F.key);
+    diagnostic_stage = "observe-restart-quarantine";
+    const observed = try M.wait(current.?, account, "quarantined", 1);
+    defer observed.deinit();
+    const value = try M.result(&observed);
+    diagnostic_stage = "restart-pair-status";
+    try M.assertPair(value, "quarantined", 1, false);
+    try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+    diagnostic_stage = "restart-sql-quarantine";
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "access_sql").?, "state"));
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "refresh_sql").?, "state"));
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+    try std.testing.expect(try control.boolean(value, "external_retained", false));
+    const unknown_measurements = try M.measurements(current.?);
+    try std.testing.expectEqual(@as(u64, 1), unknown_measurements.retained_attempts);
+    try std.testing.expectEqual(@as(u64, 1), unknown_measurements.completion_unknown);
+    try std.testing.expectEqual(@as(u64, 0), unknown_measurements.unresolved_issued);
+    try std.testing.expectEqual(@as(u64, 0), unknown_measurements.committed_successors);
+    diagnostic_stage = "spent-refresh-replay-refusal";
+    const replay = try M.start(current.?, account, body.bytes, keys, .{});
+    defer replay.deinit();
+    try SiwcActorTest.refusal(&replay, "RenewalNotOwned");
+    const observation_revision = current.?.revision;
+    try std.testing.expectEqualDeep(unknown_measurements, try M.measurements(current.?));
+    try std.testing.expectEqualDeep(unknown_measurements, try M.measurements(current.?));
+    try std.testing.expectEqual(observation_revision, current.?.revision);
+}
+
+test "unrelated account forget before issued paired renewal restart does not prevent quarantine or rewrite the original epoch" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    var diagnostic_stage: []const u8 = "setup";
+    errdefer std.debug.print("paired-renewal case=issued-restart stage={s} failed\n", .{diagnostic_stage});
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+    defer if (current) |engine| engine.deinit();
+    diagnostic_stage = "admit-signed-pair";
+    const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = "renew-unrelated-restart" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-unrelated-restart", .{});
+    defer body.deinit();
+    diagnostic_stage = "issue-held-refresh";
+    const started = try M.start(current.?, account, body.bytes, keys, .{ .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    diagnostic_stage = "forget-unrelated-known-account";
+    const forgotten = try M.call(current.?, "account.forget", .{ .account_id = "synthetic-owned-other-account", .operation_id = "restart-unrelated-forget", .expected_revision = try F.revision(current.?) }, .control);
+    defer forgotten.deinit();
+    _ = try M.result(&forgotten);
+    const live = try M.observe(current.?, account);
+    defer live.deinit();
+    try M.assertPair(try M.result(&live), "refreshing", 1, true);
+    diagnostic_stage = "close-issued-actor";
+    current.?.deinit();
+    current = null;
+    diagnostic_stage = "reopen-before-any-provider-work";
+    current = try Engine.openWithKey(io, a, path, F.key);
+    diagnostic_stage = "observe-restart-quarantine";
+    const observed = try M.wait(current.?, account, "quarantined", 1);
+    defer observed.deinit();
+    const value = try M.result(&observed);
+    diagnostic_stage = "restart-pair-status";
+    try M.assertPair(value, "quarantined", 1, false);
+    try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+    diagnostic_stage = "restart-sql-quarantine";
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "access_sql").?, "state"));
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "refresh_sql").?, "state"));
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+    try std.testing.expect(!(try control.boolean(value, "external_retained", false)));
+    diagnostic_stage = "spent-refresh-replay-refusal";
+    const replay = try M.start(current.?, account, body.bytes, keys, .{});
+    defer replay.deinit();
+    try SiwcActorTest.refusal(&replay, "RenewalNotOwned");
+    current.?.deinit();
+    current = null;
+    const filename = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+    defer a.free(filename);
+    var store = try storage.Store.openRoot(io, a, filename, instance.Selection.default.vaultRoot(), F.key);
+    defer store.close();
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    const persisted = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+    defer persisted.deinit();
+    try std.testing.expectEqual(@as(u64, 1), persisted.value.import_forget_epoch);
+    const retained = persisted.value.owned_siwc_pairs.?.records[0];
+    try std.testing.expectEqual(@as(u64, 0), retained.renewal.?.forget_epoch);
+    try std.testing.expect(retained.status == .quarantined and retained.renewal.?.state == .unknown);
+}
+
+test "expired issued paired renewal restart only quarantines and never revives its original cutoff" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    var diagnostic_stage: []const u8 = "setup";
+    errdefer std.debug.print("paired-renewal case=issued-restart stage={s} failed\n", .{diagnostic_stage});
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+    defer if (current) |engine| engine.deinit();
+    diagnostic_stage = "admit-signed-pair";
+    const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = "renew-expired-restart" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-expired-restart", .{});
+    defer body.deinit();
+    diagnostic_stage = "issue-held-refresh";
+    const started = try M.start(current.?, account, body.bytes, keys, .{ .milliseconds = 1000, .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    diagnostic_stage = "close-issued-actor";
+    current.?.deinit();
+    current = null;
+    // The persisted issued tuple outlives its immutable awake deadline.
+    // Recovery may only reduce authority, never reconstruct a live ticket.
+    try io.sleep(.fromMilliseconds(1250), .awake);
+    diagnostic_stage = "reopen-after-original-cutoff";
+    current = try Engine.openWithKey(io, a, path, F.key);
+    diagnostic_stage = "observe-restart-quarantine";
+    const observed = try M.wait(current.?, account, "quarantined", 1);
+    defer observed.deinit();
+    const value = try M.result(&observed);
+    diagnostic_stage = "restart-pair-status";
+    try M.assertPair(value, "quarantined", 1, false);
+    try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+    diagnostic_stage = "restart-sql-quarantine";
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "access_sql").?, "state"));
+    try std.testing.expectEqualStrings("quarantined", try control.string(control.get(value, "refresh_sql").?, "state"));
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+    try std.testing.expect(try control.boolean(value, "external_retained", false));
+    diagnostic_stage = "spent-refresh-replay-refusal";
+    const replay = try M.start(current.?, account, body.bytes, keys, .{});
+    defer replay.deinit();
+    try SiwcActorTest.refusal(&replay, "RenewalNotOwned");
+}
+
+test "actual paired issuance cutoff before recovery reservation returns no ticket or provider work" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    const current = try Engine.openWithKey(io, a, path, F.key);
+    defer current.deinit();
+    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "renew-unsent" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-unsent", .{});
+    defer body.deinit();
+    const before = try M.observe(current, account);
+    defer before.deinit();
+    const revision = control.get(try M.result(&before), "revision").?.integer;
+    const failed = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 500, .hold_stage = "before_reservation", .hold_kind = "issue" });
+    defer failed.deinit();
+    try std.testing.expect(control.get(failed.value, "error") != null);
+    const after = try M.observe(current, account);
+    defer after.deinit();
+    const value = try M.result(&after);
+    try M.assertPair(value, "ready", 1, true);
+    try std.testing.expectEqual(revision, control.get(value, "revision").?.integer);
+    try std.testing.expect(control.get(value, "renewal_state").? == .null);
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "pending").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+    try std.testing.expectEqualStrings("ready", try control.string(control.get(value, "refresh_sql").?, "state"));
+}
+
+test "unrelated account forget does not steal an independently authenticated known refresh family" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    const current = try Engine.openWithKey(io, a, path, F.key);
+    defer current.deinit();
+    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "renew-independent" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-independent", .{});
+    defer body.deinit();
+    const started = try M.start(current, account, body.bytes, keys, .{ .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    const forgotten = try M.call(current, "account.forget", .{ .account_id = "synthetic-owned-other-account", .operation_id = "renew-unrelated-forget", .expected_revision = try F.revision(current) }, .control);
+    defer forgotten.deinit();
+    _ = try M.result(&forgotten);
+    const live = try M.observe(current, account);
+    defer live.deinit();
+    try M.assertPair(try M.result(&live), "refreshing", 1, true);
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account });
+    defer released.deinit();
+    _ = try M.result(&released);
+    const renewed = try M.wait(current, account, "ready", 2);
+    defer renewed.deinit();
+    try M.assertPair(try M.result(&renewed), "ready", 2, true);
+    try std.testing.expectEqual(@as(i64, 1), control.get(try M.result(&renewed), "token_count").?.integer);
+}
+
+test "owned renewal refuses each expired actual grant bound before issuing or dispatching" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, index| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try F.seed(path);
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = try std.fmt.allocPrint(a, "renew-expired-window-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
+        const account = try control.string(try M.result(&admitted), "account_id");
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        _ = try M.window(current, account, bound, 0);
+        const refused = try M.start(current, account, body.bytes, keys, .{});
+        defer refused.deinit();
+        try std.testing.expect(control.get(refused.value, "error") != null);
+        const observed = try M.observe(current, account);
+        defer observed.deinit();
+        const value = try M.result(&observed);
+        try M.assertPair(value, "ready", 1, false);
+        try std.testing.expect(control.get(value, "renewal_state").? == .null);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "pending").?.integer);
+        try std.testing.expect(try control.boolean(value, "external_retained", false));
+    }
+}
+
+test "original owned grant bounds refuse queued dispatch and late actual response or signed worker completion" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const matrix_started = std.Io.Clock.awake.now(io);
+    M.trace("original-bound", 0, "matrix-start", matrix_started);
+    for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, bound_index| {
+        for (0..3) |stage| {
+            const case_index = bound_index * 3 + stage;
+            M.trace("original-bound", case_index, "case-start", matrix_started);
+            defer M.trace("original-bound", case_index, "case-cleanup-returned", matrix_started);
+            var directory = std.testing.tmpDir(.{});
+            defer directory.cleanup();
+            try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+            const path = try directory.dir.realPathFileAlloc(io, ".", a);
+            defer a.free(path);
+            M.trace("original-bound", case_index, "seed-enter", matrix_started);
+            try F.seed(path);
+            M.trace("original-bound", case_index, "seed-returned", matrix_started);
+            M.trace("original-bound", case_index, "actor-open-enter", matrix_started);
+            const current = try Engine.openWithKey(io, a, path, F.key);
+            defer {
+                M.trace("original-bound", case_index, "actor-close-enter", matrix_started);
+                current.deinit();
+                M.trace("original-bound", case_index, "actor-close-returned", matrix_started);
+            }
+            M.trace("original-bound", case_index, "actor-open-complete", matrix_started);
+            const subject = try std.fmt.allocPrint(a, "renew-held-window-{d}-{d}", .{ bound_index, stage });
+            defer a.free(subject);
+            M.trace("original-bound", case_index, "paired-admission-enter", matrix_started);
+            const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+            defer admitted.deinit();
+            const account = try control.string(try M.result(&admitted), "account_id");
+            M.trace("original-bound", case_index, "paired-admission-complete", matrix_started);
+            M.trace("original-bound", case_index, "signer-create-enter", matrix_started);
+            var key = try M.signer();
+            defer {
+                M.trace("original-bound", case_index, "signer-cleanup-enter", matrix_started);
+                key.deinit() catch @panic("renewal signing key cleanup failed");
+                M.trace("original-bound", case_index, "signer-cleanup-returned", matrix_started);
+            }
+            M.trace("original-bound", case_index, "signer-create-complete", matrix_started);
+            const keys = try key.jwks();
+            defer a.free(keys);
+            var body = try M.makeBody(&key, subject, .{});
+            defer body.deinit();
+            M.trace("original-bound", case_index, "signing-complete", matrix_started);
+            M.trace("original-bound", case_index, "grant-window-enter", matrix_started);
+            const expiry = try M.window(current, account, bound, 3);
+            M.trace("original-bound", case_index, "grant-window-complete", matrix_started);
+            M.trace("original-bound", case_index, "held-issuance-enter", matrix_started);
+            const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_window = true, .hold_before_dispatch = stage == 0, .hold_reply = stage == 1, .hold_worker = stage == 2 });
+            defer started.deinit();
+            M.trace("original-bound", case_index, "held-issuance-returned", matrix_started);
+            if (stage == 0) try std.testing.expect(control.get(started.value, "error") != null) else _ = try M.result(&started);
+            if (stage == 1) {
+                M.trace("original-bound", case_index, "refreshing-observation-enter", matrix_started);
+                const live = try M.observe(current, account);
+                defer live.deinit();
+                try M.assertPair(try M.result(&live), "refreshing", 1, true);
+                M.trace("original-bound", case_index, "refreshing-observation-complete", matrix_started);
+                M.trace("original-bound", case_index, "original-expiry-wait-enter", matrix_started);
+                while (std.Io.Clock.real.now(io).toSeconds() < expiry) try io.sleep(.fromMilliseconds(5), .awake);
+                M.trace("original-bound", case_index, "original-expiry-wait-returned", matrix_started);
+                M.trace("original-bound", case_index, "reply-release-enter", matrix_started);
+                const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = account });
+                defer released.deinit();
+                _ = try M.result(&released);
+                M.trace("original-bound", case_index, "reply-release-complete", matrix_started);
+            }
+            M.trace("original-bound", case_index, "terminal-observation-enter", matrix_started);
+            const refused = try M.wait(current, account, "quarantined", 1);
+            defer refused.deinit();
+            const value = try M.result(&refused);
+            M.trace("original-bound", case_index, "terminal-observation-complete", matrix_started);
+            try M.assertPair(value, "quarantined", 1, false);
+            try M.assertOriginalWindow(value, bound, expiry);
+            try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+            try std.testing.expectEqual(@as(i64, if (stage == 0) 0 else 1), control.get(value, "token_count").?.integer);
+            if (stage == 2) {
+                try std.testing.expectEqual(@as(i64, 1), control.get(value, "key_count").?.integer);
+                try std.testing.expect(try control.boolean(value, "verified_before_expiry", false));
+            }
+            try std.testing.expect(try control.boolean(value, "external_retained", false));
+            M.trace("original-bound", case_index, "assertions-complete", matrix_started);
+        }
+    }
+    M.trace("original-bound", 8, "matrix-complete", matrix_started);
+}
+
+test "paired grant expiry after sealing and before recovery publication rolls back or poisons without successor authority" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const matrix_started = std.Io.Clock.awake.now(io);
+    M.trace("grant-expiry", 0, "matrix-start", matrix_started);
+    for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, bound_index| {
+        for ([_][]const u8{ "before_begin", "before_reservation", "before_commit" }, 0..) |stage, stage_index| {
+            const case_index = bound_index * 3 + stage_index;
+            M.trace("grant-expiry", case_index, "case-start", matrix_started);
+            defer M.trace("grant-expiry", case_index, "case-cleanup-returned", matrix_started);
+            var directory = std.testing.tmpDir(.{});
+            defer directory.cleanup();
+            try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+            const path = try directory.dir.realPathFileAlloc(io, ".", a);
+            defer a.free(path);
+            try F.seed(path);
+            M.trace("grant-expiry", case_index, "actor-open-enter", matrix_started);
+            const current = try Engine.openWithKey(io, a, path, F.key);
+            defer {
+                M.trace("grant-expiry", case_index, "actor-close-enter", matrix_started);
+                current.deinit();
+                M.trace("grant-expiry", case_index, "actor-close-returned", matrix_started);
+            }
+            M.trace("grant-expiry", case_index, "actor-open-complete", matrix_started);
+            const subject = try std.fmt.allocPrint(a, "renew-sql-window-{d}-{d}", .{ bound_index, stage_index });
+            defer a.free(subject);
+            const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+            defer admitted.deinit();
+            const account = try control.string(try M.result(&admitted), "account_id");
+            const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = account });
+            defer handles.deinit();
+            const transaction = try control.string(try M.result(&handles), "transaction_id");
+            M.trace("grant-expiry", case_index, "paired-admission-complete", matrix_started);
+            var key = try M.signer();
+            defer {
+                M.trace("grant-expiry", case_index, "signer-cleanup-enter", matrix_started);
+                key.deinit() catch @panic("renewal signing key cleanup failed");
+                M.trace("grant-expiry", case_index, "signer-cleanup-returned", matrix_started);
+            }
+            const keys = try key.jwks();
+            defer a.free(keys);
+            var body = try M.makeBody(&key, subject, .{});
+            defer body.deinit();
+            M.trace("grant-expiry", case_index, "signing-complete", matrix_started);
+            M.trace("grant-expiry", case_index, "grant-window-enter", matrix_started);
+            const expiry = try M.window(current, account, bound, 3);
+            M.trace("grant-expiry", case_index, "grant-window-complete", matrix_started);
+            M.trace("grant-expiry", case_index, "held-issuance-enter", matrix_started);
+            const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_stage = stage, .hold_window = true });
+            defer started.deinit();
+            _ = try M.result(&started);
+            M.trace("grant-expiry", case_index, "held-issuance-complete", matrix_started);
+            M.trace("grant-expiry", case_index, "terminal-observation-enter", matrix_started);
+            if (stage_index != 2) {
+                const refused = try M.wait(current, account, "quarantined", 1);
+                defer refused.deinit();
+                const value = try M.result(&refused);
+                M.trace("grant-expiry", case_index, "terminal-observation-complete", matrix_started);
+                try M.assertPair(value, "quarantined", 1, false);
+                try M.assertOriginalWindow(value, bound, expiry);
+                try std.testing.expectEqualStrings("unknown", try control.string(value, "renewal_state"));
+                try std.testing.expectEqual(@as(i64, 1), control.get(value, "token_count").?.integer);
+                try std.testing.expectEqual(@as(i64, 1), control.get(value, "key_count").?.integer);
+            } else {
+                const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+                var poisoned = false;
+                while (!poisoned and until.durationFromNow(io).raw.toNanoseconds() > 0) {
+                    const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control);
+                    defer status.deinit();
+                    const value = try M.result(&status);
+                    poisoned = !(try control.boolean(value, "custody_available", true));
+                    if (poisoned) {
+                        try std.testing.expectEqualStrings("unknown", try control.string(value, "status"));
+                        try std.testing.expect(control.get(value, "grant_ready").? == .null);
+                    } else try io.sleep(.fromMilliseconds(5), .awake);
+                }
+                try std.testing.expect(poisoned);
+                M.trace("grant-expiry", case_index, "terminal-observation-complete", matrix_started);
+            }
+            M.trace("grant-expiry", case_index, "assertions-complete", matrix_started);
+        }
+    }
+    M.trace("grant-expiry", 8, "matrix-complete", matrix_started);
+}
+
+test "paired issuance original grant expiry before reserve cannot return ticket or publish an issued witness" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, index| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try F.seed(path);
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = try std.fmt.allocPrint(a, "renew-issue-window-{d}", .{index});
+        defer a.free(subject);
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
+        const account = try control.string(try M.result(&admitted), "account_id");
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        _ = try M.window(current, account, bound, 3);
+        const started = try M.start(current, account, body.bytes, keys, .{ .milliseconds = 8000, .hold_stage = "before_reservation", .hold_kind = "issue", .hold_window = true });
+        defer started.deinit();
+        try std.testing.expect(control.get(started.value, "error") != null);
+        const observed = try M.observe(current, account);
+        defer observed.deinit();
+        const value = try M.result(&observed);
+        try M.assertPair(value, "ready", 1, false);
+        try std.testing.expect(control.get(value, "renewal_state").? == .null);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "pending").?.integer);
+    }
+}
+
+test "actual returned renewal successor preserves finite custody and refresh windows without extending them" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    const current = try Engine.openWithKey(io, a, path, F.key);
+    defer current.deinit();
+    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "renew-finite-positive" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "renew-finite-positive", .{ .same_refresh = true });
+    defer body.deinit();
+    const access_custody = try M.window(current, account, "access_custody", 30);
+    const refresh_custody = try M.window(current, account, "refresh_custody", 30);
+    const refresh_provider = try M.window(current, account, "refresh_provider", 30);
+    const started = try M.start(current, account, body.bytes, keys, .{});
+    defer started.deinit();
+    _ = try M.result(&started);
+    const renewed = try M.wait(current, account, "ready", 2);
+    defer renewed.deinit();
+    const value = try M.result(&renewed);
+    try M.assertPair(value, "ready", 2, true);
+    try M.assertOriginalWindow(value, "access_custody", access_custody);
+    try M.assertOriginalWindow(value, "refresh_custody", refresh_custody);
+    try M.assertOriginalWindow(value, "refresh_provider", refresh_provider);
+    const persisted = control.get(value, "persisted_grant_window") orelse return error.InvalidFixtureWindow;
+    try std.testing.expectEqual(access_custody, control.get(persisted, "access_custody_expires_at").?.integer);
+    try std.testing.expectEqual(refresh_custody, control.get(persisted, "refresh_custody_expires_at").?.integer);
+    try std.testing.expectEqual(refresh_provider, control.get(persisted, "refresh_provider_expires_at").?.integer);
+    try std.testing.expectEqualStrings("completed", try control.string(value, "renewal_state"));
+    try std.testing.expectEqual(@as(i64, 1), control.get(value, "token_count").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), control.get(value, "key_count").?.integer);
+    try std.testing.expect(try control.boolean(value, "wire_valid", false));
+}
+
+test "public expiry status skips an expired paired candidate and serves a genuinely ready native alternative" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const N = @import("native_owner_fixture.zig");
+    const M = OwnedRenewalActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_][]const u8{ "access_custody", "refresh_custody", "refresh_provider" }, 0..) |bound, index| {
+        const producer = try N.Fixture.create(io, a);
+        defer producer.destroy();
+        const actor = try N.ActorFixture.create(io, a, producer);
+        defer actor.destroy();
+        try actor.install();
+        const current = actor.engine.?;
+        const first_subject = try std.fmt.allocPrint(a, "renew-public-expiry-{d}", .{index});
+        defer a.free(first_subject);
+        const second_subject = try std.fmt.allocPrint(a, "renew-public-ready-{d}", .{index});
+        defer a.free(second_subject);
+        const first_pair = try SiwcActorTest.admit(producer, current, first_subject);
+        const other_pair = try SiwcActorTest.admit(producer, current, second_subject);
+        const reference = try producer.register(current, "synthetic-siwc-thread");
+        var initial = try SiwcActorTest.acquire(producer, current, reference, "expiry-completed-work");
+        defer SiwcActorTest.dispose(&initial);
+        try std.testing.expectEqualStrings(&first_pair.account_id, try control.string(try SiwcActorTest.result(&initial), "account_id"));
+        const first_lease = try SiwcActorTest.handle(&initial);
+        var initial_auth = try SiwcActorTest.materialize(producer, current, reference, first_lease);
+        defer SiwcActorTest.dispose(&initial_auth);
+        _ = try SiwcActorTest.result(&initial_auth);
+        var accepted = try SiwcActorTest.report(producer, current, reference, first_lease, "accepted");
+        defer SiwcActorTest.dispose(&accepted);
+        _ = try SiwcActorTest.result(&accepted);
+        var completed = try SiwcActorTest.report(producer, current, reference, first_lease, "completed");
+        defer SiwcActorTest.dispose(&completed);
+        _ = try SiwcActorTest.result(&completed);
+        const handles = try M.fixture(current, "fixture.siwcPairHandles", .{ .account_id = first_pair.account_id[0..] });
+        defer handles.deinit();
+        const transaction = try control.string(try M.result(&handles), "transaction_id");
+        const narrowed = try M.fixture(current, "fixture.siwcGrantWindow", .{ .account_id = first_pair.account_id[0..], .bound = bound, .seconds = 0, .hold_prune = true });
+        defer narrowed.deinit();
+        _ = try M.result(&narrowed);
+        const status = try M.call(current, "oauth.enrollment.status.v1", .{ .transaction_id = transaction, .purpose = oauth_enrollment.oss_purpose }, .control);
+        defer status.deinit();
+        const status_value = try M.result(&status);
+        try std.testing.expect(try control.boolean(status_value, "custody_available", false));
+        try std.testing.expect(try control.boolean(status_value, "paired_committed", false));
+        try std.testing.expect(!(try control.boolean(status_value, "grant_ready", true)));
+        try std.testing.expectEqualStrings("SiwcPairExpired", try control.string(status_value, "reason"));
+        const live_rows = try M.observe(current, &first_pair.account_id);
+        defer live_rows.deinit();
+        const live_value = try M.result(&live_rows);
+        try M.assertPair(live_value, "ready", 1, false);
+        // Actual ready ciphertext still exists: this isolates the expiry error
+        // path from both pruning and a generic missing-row refusal.
+        try std.testing.expectEqualStrings("ready", try control.string(control.get(live_value, "access_sql").?, "state"));
+        try std.testing.expectEqualStrings("ready", try control.string(control.get(live_value, "refresh_sql").?, "state"));
+        var replay = try SiwcActorTest.acquire(producer, current, reference, "expiry-completed-work");
+        defer SiwcActorTest.dispose(&replay);
+        try SiwcActorTest.refusal(&replay, "AttemptBudgetExhausted");
+        var next = try SiwcActorTest.acquire(producer, current, reference, "expiry-next-independent-work");
+        defer SiwcActorTest.dispose(&next);
+        try std.testing.expectEqualStrings(&other_pair.account_id, try control.string(try SiwcActorTest.result(&next), "account_id"));
+        const next_lease = try SiwcActorTest.handle(&next);
+        var next_auth = try SiwcActorTest.materialize(producer, current, reference, next_lease);
+        defer SiwcActorTest.dispose(&next_auth);
+        const credential = try SiwcActorTest.result(&next_auth);
+        try std.testing.expectEqual(@as(usize, 7), credential.object.count());
+        try std.testing.expectEqualStrings(siwc_pair.auth_mode, try control.string(credential, "auth_mode"));
+        try std.testing.expectEqual(@as(i64, 2), control.get(credential, "route_generation").?.integer);
+        var abandoned = try SiwcActorTest.report(producer, current, reference, next_lease, "abandoned");
+        defer SiwcActorTest.dispose(&abandoned);
+        _ = try SiwcActorTest.result(&abandoned);
+    }
+}
+
+// Source-only models: synthetic signed issuer + actual encrypted actor Store +
+// authenticated private peer + real libcurl loopback. No live provider proof.
+const SiwcCatalogTest = struct {
+    const visible = "{\"models\":[{\"slug\":\"synthetic-z\",\"display_name\":\"Synthetic Z\",\"visibility\":\"list\"},{\"slug\":\"synthetic-hidden\",\"visibility\":\"hidden\"},{\"slug\":\"synthetic-a\",\"display_name\":\"Synthetic A\",\"visibility\":\"list\"}]}";
+    const Producer = SiwcActorTest.Producer;
+    const Json = SiwcActorTest.Json;
+    fn wire(current: *Engine, params: anytype) ![]u8 {
+        const a = std.testing.allocator;
+        var arena: std.heap.ArenaAllocator = .init(a);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        const serialized_params: []const u8 = if (comptime @TypeOf(params) == @TypeOf(.{}))
+            "{}"
+        else
+            try std.json.Stringify.valueAlloc(scratch, params, .{});
+        var parsed = try std.json.parseFromSlice(std.json.Value, scratch, serialized_params, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidFixture;
+        var capability = try current.capabilityForTest("codex");
+        defer std.crypto.secureZero(u8, &capability);
+        try parsed.value.object.put(scratch, "application", .{ .string = "codex" });
+        try parsed.value.object.put(scratch, "capability", .{ .string = capability[0..] });
+        try parsed.value.object.put(scratch, "request_profile", .{ .string = siwc_pair.request_profile });
+        return std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = 1, .method = "adapter.siwcCatalog", .params = parsed.value }, .{});
+    }
+    fn raw(producer: *Producer, current: *Engine, server: *transport.testing.CatalogServer, payload: []const u8, until: std.Io.Clock.Timestamp) !Json {
+        const a = std.testing.allocator;
+        var buffer: [peer.maximum_packet]u8 = undefined;
+        defer std.crypto.secureZero(u8, &buffer);
+        const received = blk: {
+            producer.mutex.lockUncancelable(producer.io);
+            defer producer.mutex.unlock(producer.io);
+            if (sql_api.send(producer.sender, payload.ptr, payload.len, if (@hasDecl(sql_api, "MSG_NOSIGNAL")) sql_api.MSG_NOSIGNAL else 0) != payload.len) return error.FixtureSendFailed;
+            const length = try producer.packet_context.receivePacket(&buffer);
+            if (!eql(payload, buffer[0..length])) return error.FixturePacketMismatch;
+            break :blk length;
+        };
+        const reply = try current.dispatchCatalogForTest(a, buffer[0..received], until, &producer.packet_context, server);
+        defer {
+            std.crypto.secureZero(u8, reply);
+            a.free(reply);
+        }
+        return std.json.parseFromSlice(std.json.Value, a, reply, .{ .allocate = .alloc_always });
+    }
+    fn observe(producer: *Producer, current: *Engine, server: *transport.testing.CatalogServer, params: anytype) !Json {
+        const bytes = try wire(current, params);
+        defer {
+            std.crypto.secureZero(u8, bytes);
+            std.testing.allocator.free(bytes);
+        }
+        return raw(producer, current, server, bytes, .fromNow(current.io, .{ .clock = .awake, .raw = .fromSeconds(5) }));
+    }
+    fn check(reply: *const Json, account: [64]u8, known: bool) !std.json.Value {
+        const result = try SiwcActorTest.result(reply);
+        try std.testing.expect(result == .object and result.object.count() == 9);
+        try std.testing.expectEqualStrings(siwc_pair.request_profile, try control.string(result, "request_profile"));
+        try std.testing.expectEqualStrings(siwc_pair.resource_uri, try control.string(result, "audience"));
+        try std.testing.expectEqualStrings(&account, try control.string(result, "account_id"));
+        _ = try catalogOpaque(try control.string(result, "catalog_binding"));
+        const expires = control.get(result, "expires_at").?.integer;
+        const now = std.Io.Clock.real.now(std.testing.io).toSeconds();
+        try std.testing.expect(expires > now and expires <= now + 60);
+        try std.testing.expectEqualStrings(if (known) "known" else "unknown", try control.string(result, "observation_status"));
+        const models = control.get(result, "models").?.array.items;
+        try std.testing.expectEqual(if (known) @as(usize, 2) else 0, models.len);
+        if (known) {
+            try std.testing.expectEqualStrings("synthetic-z", try control.string(models[0], "slug"));
+            try std.testing.expectEqualStrings("synthetic-a", try control.string(models[1], "slug"));
+            for (models) |model| {
+                try std.testing.expect(model == .object and model.object.count() == 3);
+                try std.testing.expectEqualStrings("list", try control.string(model, "visibility"));
+            }
+        }
+        inline for (.{ "access_token", "refresh_token", "id_token", "issuer", "provider_account_id", "email", "subject", "quota" }) |forbidden| try std.testing.expect(control.get(result, forbidden) == null);
+        return result;
+    }
+    const Task = struct {
+        producer: *Producer,
+        current: *Engine,
+        server: *transport.testing.CatalogServer,
+        payload: []const u8,
+        until: std.Io.Clock.Timestamp,
+        reply: ?Json = null,
+        failure: ?anyerror = null,
+        fn run(self: *Task) void {
+            self.reply = raw(self.producer, self.current, self.server, self.payload, self.until) catch |err| {
+                self.failure = err;
+                return;
+            };
+        }
+        fn waitForRequest(self: *Task) !void {
+            const until = std.Io.Clock.Timestamp.fromNow(self.current.io, .{ .clock = .awake, .raw = .fromSeconds(2) });
+            while (self.server.requestCount() == 0) {
+                if (until.durationFromNow(self.current.io).raw.toMilliseconds() <= 0) return error.FixtureRequestNotIssued;
+                try self.current.io.sleep(.fromMilliseconds(5), .awake);
+            }
+        }
+        fn deinit(self: *Task) void {
+            if (self.reply) |*value| SiwcActorTest.dispose(value);
+        }
+    };
+};
+
+test "SIWC catalog real signed pair Store curl bootstrap is redacted ordered and does not lease renew or persist" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const owned = try SiwcActorTest.admit(producer, current, "synthetic-catalog-bootstrap");
+    const revision = current.revision;
+    const count = current.state.leases.items.len;
+    var server = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer server.deinit();
+    var reply = try SiwcCatalogTest.observe(producer, current, &server, .{});
+    defer SiwcActorTest.dispose(&reply);
+    const result = try SiwcCatalogTest.check(&reply, owned.account_id, true);
+    try std.testing.expect(control.get(result, "lease_handle").? == .null and control.get(result, "route_generation").? == .null);
+    try std.testing.expectEqual(revision, current.revision);
+    try std.testing.expectEqual(count, current.state.leases.items.len);
+    try std.testing.expectEqual(@as(usize, 0), current.native_leases.items.len);
+    try std.testing.expectEqual(@as(u32, 1), server.requestCount());
+    try std.testing.expect(server.validWire());
+    try std.testing.expectError(error.SiwcCatalogTicketConsumed, current.network.?.startCatalog(server.ticket.?));
+    try std.testing.expectEqual(@as(u32, 1), server.requestCount());
+    try std.testing.expectEqual(domain.GrantStatus.ready, current.state.grant(&owned.refresh_grant_id).?.status);
+    try std.testing.expectEqual(@as(u64, 1), current.state.grant(&owned.refresh_grant_id).?.generation);
+}
+
+test "SIWC catalog policy redirect malformed empty oversized observations are Unknown without grant or quota mutation" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const owned = try SiwcActorTest.admit(producer, current, "synthetic-catalog-unknown");
+    const revision = current.revision;
+    const observations = current.state.observations.items.len;
+    const large = try a.alloc(u8, siwc_catalog.maximum_body_bytes + 1);
+    defer a.free(large);
+    @memset(large, 'x');
+    const cases = [_]struct { status: u16, body: []const u8 }{
+        .{ .status = 403, .body = "{\"error\":\"synthetic_policy\"}" },
+        .{ .status = 302, .body = "synthetic-redirect" },
+        .{ .status = 200, .body = "{\"models\":[" },
+        .{ .status = 200, .body = "{\"models\":[]}" },
+        .{ .status = 200, .body = large },
+    };
+    for (cases) |case| {
+        var server = try transport.testing.CatalogServer.listen(a, case.status, case.body, 0);
+        defer server.deinit();
+        var reply = try SiwcCatalogTest.observe(producer, current, &server, .{});
+        defer SiwcActorTest.dispose(&reply);
+        _ = try SiwcCatalogTest.check(&reply, owned.account_id, false);
+        try std.testing.expectEqual(@as(u32, 1), server.requestCount());
+        try std.testing.expect(server.validWire());
+        try std.testing.expectEqual(revision, current.revision);
+        try std.testing.expectEqual(observations, current.state.observations.items.len);
+        try std.testing.expectEqual(domain.GrantStatus.ready, current.state.grant(&owned.access_grant_id).?.status);
+        try std.testing.expectEqual(domain.GrantStatus.ready, current.state.grant(&owned.refresh_grant_id).?.status);
+    }
+}
+
+test "SIWC catalog prospective account switch and actual issued lease join never borrow old account metadata" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const first = try SiwcActorTest.admit(producer, current, "synthetic-catalog-first");
+    const second = try SiwcActorTest.admit(producer, current, "synthetic-catalog-second");
+    var one = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer one.deinit();
+    var before = try SiwcCatalogTest.observe(producer, current, &one, .{});
+    defer SiwcActorTest.dispose(&before);
+    const old = try SiwcCatalogTest.check(&before, first.account_id, true);
+    var pause = try SiwcActorTest.call(producer, current, "account.pause", .{ .account_id = first.account_id[0..], .operation_id = "catalog-account-switch", .expected_revision = current.revision }, .control);
+    defer SiwcActorTest.dispose(&pause);
+    _ = try SiwcActorTest.result(&pause);
+    var two = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer two.deinit();
+    var switched = try SiwcCatalogTest.observe(producer, current, &two, .{ .catalog_binding = try control.string(old, "catalog_binding") });
+    defer SiwcActorTest.dispose(&switched);
+    _ = try SiwcCatalogTest.check(&switched, second.account_id, true);
+    const reference = try producer.register(current, "synthetic-siwc-thread");
+    var acquired = try SiwcActorTest.acquire(producer, current, reference, "catalog-issued-lease");
+    defer SiwcActorTest.dispose(&acquired);
+    const lease = try SiwcActorTest.handle(&acquired);
+    var ref_arena: std.heap.ArenaAllocator = .init(a);
+    defer ref_arena.deinit();
+    const ref_value = try fixture.referenceValue(ref_arena.allocator(), reference);
+    var bound = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer bound.deinit();
+    var result = try SiwcCatalogTest.observe(producer, current, &bound, .{ .lease_handle = lease[0..], .native_ref = ref_value, .catalog_binding = try control.string(old, "catalog_binding") });
+    defer SiwcActorTest.dispose(&result);
+    const body = try SiwcCatalogTest.check(&result, second.account_id, true);
+    try std.testing.expectEqualStrings(&lease, try control.string(body, "lease_handle"));
+    try std.testing.expectEqual(@as(i64, 1), control.get(body, "route_generation").?.integer);
+    try std.testing.expect(control.get(body, "expires_at").?.integer <= control.get(try SiwcActorTest.result(&acquired), "expires_at").?.integer);
+    try std.testing.expectEqual(@as(u32, 1), bound.requestCount());
+    var rejected = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer rejected.deinit();
+    var fake = try SiwcCatalogTest.observe(producer, current, &rejected, .{ .lease_handle = lease[0..] });
+    defer SiwcActorTest.dispose(&fake);
+    try SiwcActorTest.refusal(&fake, "InvalidSiwcParams");
+    try std.testing.expectEqual(@as(u32, 0), rejected.requestCount());
+}
+
+test "SIWC catalog in-flight pause cancels publication while unrelated revision advances do not starve observation" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_]bool{ false, true }) |retire| {
+        const producer = try fixture.Fixture.create(io, a);
+        defer producer.destroy();
+        const actor = try fixture.ActorFixture.create(io, a, producer);
+        defer actor.destroy();
+        try actor.install();
+        const current = actor.engine.?;
+        const owned = try SiwcActorTest.admit(producer, current, "synthetic-catalog-concurrent");
+        const before = current.revision;
+        var server = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 600);
+        defer server.deinit();
+        const payload = try SiwcCatalogTest.wire(current, .{});
+        defer {
+            std.crypto.secureZero(u8, payload);
+            a.free(payload);
+        }
+        var task: SiwcCatalogTest.Task = .{ .producer = producer, .current = current, .server = &server, .payload = payload, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(5) }) };
+        defer task.deinit();
+        const thread = try std.Thread.spawn(.{}, SiwcCatalogTest.Task.run, .{&task});
+        var joined = false;
+        defer if (!joined) thread.join();
+        try task.waitForRequest();
+        var changed = if (retire)
+            try SiwcActorTest.call(producer, current, "account.pause", .{ .account_id = owned.account_id[0..], .operation_id = "catalog-pause-inflight", .expected_revision = before }, .control)
+        else
+            try SiwcActorTest.call(producer, current, "policy.set", .{ .operation_id = "catalog-unrelated-revision", .expected_revision = before, .sticky_routes = true, .warm_alternatives = false }, .control);
+        defer SiwcActorTest.dispose(&changed);
+        _ = try SiwcActorTest.result(&changed);
+        thread.join();
+        joined = true;
+        try std.testing.expect(current.revision > before);
+        if (retire) {
+            if (task.reply) |*reply| try SiwcActorTest.refusal(reply, "SiwcCatalogAuthorityChanged") else try std.testing.expectEqual(error.SiwcCatalogAuthorityChanged, task.failure.?);
+            try std.testing.expectEqual(@as(usize, 0), current.catalog_cache.items.len);
+        } else {
+            try std.testing.expect(task.failure == null);
+            _ = try SiwcCatalogTest.check(&task.reply.?, owned.account_id, true);
+        }
+        try std.testing.expectEqual(@as(u32, 1), server.requestCount());
+        try std.testing.expect(server.validWire());
+    }
+}
+
+test "SIWC catalog caller flags thin channel missing owner and expired original cutoff never authorize network" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const fixture = @import("native_owner_fixture.zig");
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try fixture.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try fixture.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    var missing_server = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer missing_server.deinit();
+    var missing = try SiwcCatalogTest.observe(producer, current, &missing_server, .{});
+    defer SiwcActorTest.dispose(&missing);
+    try SiwcActorTest.refusal(&missing, "SiwcPairUnavailable");
+    try std.testing.expectEqual(@as(u32, 0), missing_server.requestCount());
+    _ = try SiwcActorTest.admit(producer, current, "synthetic-catalog-refusal");
+    const revision = current.revision;
+    var server = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer server.deinit();
+    var caller = try SiwcCatalogTest.observe(producer, current, &server, .{ .verified = true });
+    defer SiwcActorTest.dispose(&caller);
+    try SiwcActorTest.refusal(&caller, "InvalidSiwcParams");
+    const raw = try SiwcCatalogTest.wire(current, .{});
+    defer {
+        std.crypto.secureZero(u8, raw);
+        a.free(raw);
+    }
+    const thin = try producer.dispatch(current, a, raw, .control);
+    defer a.free(thin);
+    const thin_value = try std.json.parseFromSlice(std.json.Value, a, thin, .{});
+    defer thin_value.deinit();
+    try SiwcActorTest.refusal(&thin_value, "WrongChannel");
+    const no_peer = try current.dispatch(a, raw, .adapter);
+    defer a.free(no_peer);
+    const no_peer_value = try std.json.parseFromSlice(std.json.Value, a, no_peer, .{});
+    defer no_peer_value.deinit();
+    try SiwcActorTest.refusal(&no_peer_value, "NativePeerRequired");
+    try std.testing.expectError(error.Timeout, SiwcCatalogTest.raw(producer, current, &server, raw, .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) })));
+    try std.testing.expectEqual(@as(u32, 0), server.requestCount());
+    try std.testing.expectEqual(revision, current.revision);
+    try std.testing.expectEqual(@as(usize, 0), current.catalog_pending.items.len);
+}
+
+// Material interaction models use the existing genuine Store-backed synthetic
+// renewal producer and actual token/JWKS/catalog curl, never raw ticket flags.
+test "catalog read cancels before renewal issue while fresh safe refreshing access remains observable" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const N = @import("native_owner_fixture.zig");
+    const M = OwnedRenewalActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try N.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try N.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const subject = "synthetic-catalog-issue";
+    const owned = try SiwcActorTest.admit(producer, current, subject);
+    var signer = try M.signer();
+    defer signer.deinit() catch @panic("catalog renewal signer cleanup failed");
+    const keys = try signer.jwks();
+    defer a.free(keys);
+    var token_body = try M.makeBody(&signer, subject, .{});
+    defer token_body.deinit();
+    var delayed = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 600);
+    defer delayed.deinit();
+    try delayed.holdReply();
+    const payload = try SiwcCatalogTest.wire(current, .{});
+    defer {
+        std.crypto.secureZero(u8, payload);
+        a.free(payload);
+    }
+    var task: SiwcCatalogTest.Task = .{ .producer = producer, .current = current, .server = &delayed, .payload = payload, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }) };
+    defer task.deinit();
+    const thread = try std.Thread.spawn(.{}, SiwcCatalogTest.Task.run, .{&task});
+    var joined = false;
+    defer if (!joined) thread.join();
+    try task.waitForRequest();
+    const started = try M.start(current, &owned.account_id, token_body.bytes, keys, .{ .milliseconds = 10_000, .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    delayed.releaseReply();
+    thread.join();
+    joined = true;
+    if (task.reply) |*reply| try SiwcActorTest.refusal(reply, "SiwcCatalogAuthorityChanged") else try std.testing.expectEqual(error.SiwcCatalogAuthorityChanged, task.failure.?);
+    try std.testing.expectEqual(@as(usize, 0), current.catalog_cache.items.len);
+    const before = try M.observe(current, &owned.account_id);
+    defer before.deinit();
+    try M.assertPair(try M.result(&before), "refreshing", 1, true);
+    var fresh = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer fresh.deinit();
+    var observed = try SiwcCatalogTest.observe(producer, current, &fresh, .{});
+    defer SiwcActorTest.dispose(&observed);
+    _ = try SiwcCatalogTest.check(&observed, owned.account_id, true);
+    const captured = fresh.ticket.?.context();
+    try std.testing.expect(captured.status == .refreshing and captured.renewal != null);
+    const original = captured.renewal.?;
+    try std.testing.expectEqual(@as(u64, 1), original.family_generation);
+    try std.testing.expect(original.state == .issued);
+    try std.testing.expect(fresh.ticket.?.originalUntil().raw.nanoseconds <= original.until_nanoseconds);
+    try std.testing.expect(fresh.ticket.?.expiresAt() <= original.source_expires_at);
+    try std.testing.expect(std.meta.eql(captured.renewal, current.owned_siwc_pairs.find(captured.transaction_id).?.renewal));
+    try std.testing.expectEqual(@as(u32, 1), fresh.requestCount());
+    try std.testing.expect(fresh.validWire());
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = owned.account_id[0..] });
+    defer released.deinit();
+    _ = try M.result(&released);
+    const settled = try M.wait(current, &owned.account_id, "ready", 2);
+    defer settled.deinit();
+    try M.assertPair(try M.result(&settled), "ready", 2, true);
+}
+
+test "catalog refreshing HTTP cannot publish after atomic successor and completed witness does not cap new ready read" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const N = @import("native_owner_fixture.zig");
+    const M = OwnedRenewalActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const producer = try N.Fixture.create(io, a);
+    defer producer.destroy();
+    const actor = try N.ActorFixture.create(io, a, producer);
+    defer actor.destroy();
+    try actor.install();
+    const current = actor.engine.?;
+    const subject = "synthetic-catalog-successor";
+    const owned = try SiwcActorTest.admit(producer, current, subject);
+    var signer = try M.signer();
+    defer signer.deinit() catch @panic("catalog renewal signer cleanup failed");
+    const keys = try signer.jwks();
+    defer a.free(keys);
+    var token_body = try M.makeBody(&signer, subject, .{});
+    defer token_body.deinit();
+    const started = try M.start(current, &owned.account_id, token_body.bytes, keys, .{ .milliseconds = 10_000, .hold_reply = true });
+    defer started.deinit();
+    _ = try M.result(&started);
+    var delayed = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 1000);
+    defer delayed.deinit();
+    try delayed.holdReply();
+    const payload = try SiwcCatalogTest.wire(current, .{});
+    defer {
+        std.crypto.secureZero(u8, payload);
+        a.free(payload);
+    }
+    var task: SiwcCatalogTest.Task = .{ .producer = producer, .current = current, .server = &delayed, .payload = payload, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(15) }) };
+    defer task.deinit();
+    const thread = try std.Thread.spawn(.{}, SiwcCatalogTest.Task.run, .{&task});
+    var joined = false;
+    defer if (!joined) thread.join();
+    try task.waitForRequest();
+    const captured = delayed.ticket.?.context();
+    try std.testing.expect(captured.status == .refreshing and captured.renewal.?.state == .issued);
+    const released = try M.fixture(current, "fixture.siwcRenewalRelease", .{ .account_id = owned.account_id[0..] });
+    defer released.deinit();
+    _ = try M.result(&released);
+    const settled = try M.wait(current, &owned.account_id, "ready", 2);
+    defer settled.deinit();
+    delayed.releaseReply();
+    thread.join();
+    joined = true;
+    if (task.reply) |*reply| try SiwcActorTest.refusal(reply, "SiwcCatalogAuthorityChanged") else try std.testing.expectEqual(error.SiwcCatalogAuthorityChanged, task.failure.?);
+    try std.testing.expectEqual(@as(usize, 0), current.catalog_cache.items.len);
+    // Force old-operation cutoff to pass in genuine time, with no rewritten
+    // record/clock/credential. The completed operation remains historical only.
+    const left = captured.renewal.?.originalUntil().durationFromNow(io).raw.toNanoseconds();
+    if (left > 0) try io.sleep(.fromNanoseconds(left + 20_000_000), .awake);
+    var fresh = try transport.testing.CatalogServer.listen(a, 200, SiwcCatalogTest.visible, 0);
+    defer fresh.deinit();
+    var observed = try SiwcCatalogTest.observe(producer, current, &fresh, .{});
+    defer SiwcActorTest.dispose(&observed);
+    _ = try SiwcCatalogTest.check(&observed, owned.account_id, true);
+    const successor = fresh.ticket.?.context();
+    try std.testing.expect(successor.status == .ready and successor.renewal.?.state == .completed);
+    try std.testing.expectEqual(@as(u64, 2), successor.family_generation);
+    try std.testing.expect(std.meta.eql(successor.renewal.?.grant_window, captured.renewal.?.grant_window));
+    try std.testing.expect(fresh.ticket.?.originalUntil().raw.nanoseconds > successor.renewal.?.until_nanoseconds);
+    try std.testing.expectEqual(@as(u32, 1), fresh.requestCount());
+    try std.testing.expect(fresh.validWire());
+}
+
+test "paired renewal accounting survives real rotations pruning and observation restart without recount" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+    defer if (current) |live| live.deinit();
+    const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = "aggregate-two" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    try std.testing.expect((try M.accounting(current.?)).admitted == null);
+    var first_operation: [64]u8 = undefined;
+    for (0..2) |index| {
+        const expected: u64 = @intCast(index + 1);
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, "aggregate-two", .{});
+        defer body.deinit();
+        const started = try M.start(current.?, account, body.bytes, keys, .{});
+        defer started.deinit();
+        _ = try M.result(&started);
+        const completed = try M.wait(current.?, account, "ready", expected + 1);
+        defer completed.deinit();
+        const actual = try M.result(&completed);
+        try std.testing.expect(try control.boolean(actual, "wire_valid", false));
+        try std.testing.expect(try control.boolean(actual, "external_retained", false));
+        const counts = try M.accounting(current.?);
+        try std.testing.expectEqual(@as(?u64, expected), counts.admitted);
+        try std.testing.expectEqual(@as(?u64, expected), counts.committed_successors);
+        try std.testing.expectEqual(@as(?u64, 0), counts.safe_refusals);
+        try std.testing.expectEqual(@as(?u64, 0), counts.completion_unknown);
+        try std.testing.expectEqual(@as(?u64, 0), counts.unresolved);
+        for (0..3) |_| try std.testing.expectEqualDeep(counts, try M.accounting(current.?));
+        current.?.deinit();
+        current = null;
+        {
+            const file = try std.fmt.allocPrintSentinel(a, "{s}/state.sqlite", .{path}, 0);
+            defer a.free(file);
+            var store = try storage.Store.openRoot(io, a, file, instance.Selection.default.vaultRoot(), F.key);
+            defer store.close();
+            var saved = try store.readSnapshot();
+            defer saved.deinit();
+            const decoded = try std.json.parseFromSlice(Persisted, a, saved.json, .{});
+            defer decoded.deinit();
+            const operation = decoded.value.owned_siwc_pairs.?.records[0].renewal.?.operation_id;
+            if (index == 0) first_operation = operation else try std.testing.expect((try store.readOperation(&first_operation)) == null);
+            try std.testing.expectEqual(storage.RotationStatus.completed, (try store.readOperation(&operation)).?.status);
+            try std.testing.expectEqual(expected, decoded.value.owned_renewal_accounting.?.admitted);
+            try std.testing.expectEqual(expected, decoded.value.owned_renewal_accounting.?.committed_successors);
+            // The actual original ID cannot create a second admission. Once
+            // its completed row is pruned, the old grant-generation fence
+            // still denies it; unchanged counters remain authenticated SQL.
+            const old_pair = decoded.value.owned_siwc_pairs.?.records[0];
+            const original: storage.OwnedPairRotation = .{
+                .operation_id = &first_operation,
+                .access = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = old_pair.account_id, .grant_id = old_pair.access_grant_id, .generation = 1, .purpose = "request", .scope = siwc_pair.resource_uri },
+                .refresh = .{ .key_id = instance.Selection.default.vaultRoot(), .account_id = old_pair.account_id, .grant_id = old_pair.refresh_grant_id, .generation = 1, .purpose = "renewal", .scope = siwc_pair.resource_uri },
+            };
+            const Fence = struct {
+                fn check(_: *anyopaque, _: storage.CommitStage) !void {}
+            };
+            var context: u8 = 0;
+            const fence: storage.CommitFence = .{ .context = &context, .check = Fence.check };
+            try std.testing.expectError(if (index == 0) error.PairIssueAlreadyAdmitted else error.PairRotationConflict, store.beginOwnedPairRotation(saved.revision, saved.json, original, &fence));
+            var unchanged = try store.readSnapshot();
+            defer unchanged.deinit();
+            try std.testing.expectEqual(saved.revision, unchanged.revision);
+            try std.testing.expect(std.mem.eql(u8, saved.json, unchanged.json));
+        }
+        current = try Engine.openWithKey(io, a, path, F.key);
+        const restored = try M.accounting(current.?);
+        try std.testing.expectEqualDeep(counts, restored);
+        const observed = try M.observe(current.?, account);
+        defer observed.deinit();
+        const value = try M.result(&observed);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+        try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+        try std.testing.expect(!restored.successful_user_journeys_measured and restored.local_elapsed_ns == null and restored.user_end_to_end_elapsed_ns == null);
+    }
+}
+
+test "paired renewal accounting separates known pretransport refusal from accepted restart uncertainty" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for (0..2) |mode| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try F.seed(path);
+        var current: ?*Engine = try Engine.openWithKey(io, a, path, F.key);
+        defer if (current) |live| live.deinit();
+        const subject = if (mode == 0) "aggregate-refusal" else "aggregate-restart";
+        const admitted = try M.fixture(current.?, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
+        const account = try control.string(try M.result(&admitted), "account_id");
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        if (mode == 0) _ = try M.window(current.?, account, "refresh_provider", 3);
+        const options: M.Options = if (mode == 0) .{ .milliseconds = 8000, .hold_window = true, .hold_before_dispatch = true } else .{ .hold_reply = true };
+        const started = try M.start(current.?, account, body.bytes, keys, options);
+        defer started.deinit();
+        if (mode == 0) {
+            try std.testing.expect(control.get(started.value, "error") != null);
+            const refused = try M.wait(current.?, account, "quarantined", 1);
+            defer refused.deinit();
+            const value = try M.result(&refused);
+            try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+            try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+            const counts = try M.accounting(current.?);
+            try std.testing.expectEqual(@as(?u64, 1), counts.safe_refusals);
+            try std.testing.expectEqual(@as(?u64, 0), counts.completion_unknown);
+        } else {
+            _ = try M.result(&started);
+            const issued = try M.accounting(current.?);
+            try std.testing.expectEqual(@as(?u64, 1), issued.admitted);
+            try std.testing.expectEqual(@as(?u64, 1), issued.unresolved);
+            try std.testing.expectEqual(@as(?u64, 0), issued.safe_refusals);
+        }
+        current.?.deinit();
+        current = null;
+        for (0..2) |_| {
+            current = try Engine.openWithKey(io, a, path, F.key);
+            const counts = try M.accounting(current.?);
+            try std.testing.expectEqual(@as(?u64, 1), counts.admitted);
+            try std.testing.expectEqual(@as(?u64, 0), counts.unresolved);
+            try std.testing.expectEqual(@as(?u64, 0), counts.committed_successors);
+            try std.testing.expectEqual(@as(?u64, if (mode == 0) 1 else 0), counts.safe_refusals);
+            try std.testing.expectEqual(@as(?u64, if (mode == 0) 0 else 1), counts.completion_unknown);
+            const cause: owned_renewal_accounting.Cause = if (mode == 0) .transport_admission_refused else .interrupted_or_stranded;
+            try std.testing.expectEqual(@as(u64, 1), counts.causes.?[@backingInt(cause)]);
+            const observed = try M.observe(current.?, account);
+            defer observed.deinit();
+            const value = try M.result(&observed);
+            try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+            try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+            try std.testing.expect(try control.boolean(value, "external_retained", false));
+            current.?.deinit();
+            current = null;
+        }
+    }
+}
+
+test "paired renewal accounting actual rollback restores issued counts and postreserve poison hides prepared success" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    for ([_][]const u8{ "before_reservation", "before_commit" }, 0..) |stage, index| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+        const path = try directory.dir.realPathFileAlloc(io, ".", a);
+        defer a.free(path);
+        try F.seed(path);
+        const current = try Engine.openWithKey(io, a, path, F.key);
+        defer current.deinit();
+        const subject = if (index == 0) "aggregate-rollback" else "aggregate-poison";
+        const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = subject });
+        defer admitted.deinit();
+        const account = try control.string(try M.result(&admitted), "account_id");
+        var key = try M.signer();
+        defer key.deinit() catch @panic("renewal signing key cleanup failed");
+        const keys = try key.jwks();
+        defer a.free(keys);
+        var body = try M.makeBody(&key, subject, .{});
+        defer body.deinit();
+        const started = try M.start(current, account, body.bytes, keys, .{ .fail_stage = stage });
+        defer started.deinit();
+        _ = try M.result(&started);
+        if (index == 0) {
+            const refused = try M.wait(current, account, "quarantined", 1);
+            defer refused.deinit();
+            const value = try M.result(&refused);
+            try std.testing.expectEqual(@as(i64, 1), control.get(value, "token_count").?.integer);
+            try std.testing.expectEqual(@as(i64, 1), control.get(value, "key_count").?.integer);
+            try std.testing.expect(try control.boolean(value, "wire_valid", false));
+            const counts = try M.accounting(current);
+            try std.testing.expectEqual(@as(?u64, 1), counts.admitted);
+            try std.testing.expectEqual(@as(?u64, 0), counts.committed_successors);
+            try std.testing.expectEqual(@as(?u64, 0), counts.safe_refusals);
+            try std.testing.expectEqual(@as(?u64, 1), counts.completion_unknown);
+            try std.testing.expectEqual(@as(u64, 1), counts.causes.?[@backingInt(owned_renewal_accounting.Cause.successor_commit_failed)]);
+            try std.testing.expectEqualDeep(counts, try M.accounting(current));
+        } else {
+            const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+            var unavailable = false;
+            while (!unavailable and until.durationFromNow(io).raw.toNanoseconds() > 0) {
+                const counts = try M.accounting(current);
+                unavailable = !counts.authority_available;
+                if (unavailable) {
+                    try std.testing.expect(counts.admitted == null and counts.committed_successors == null and counts.causes == null);
+                } else try io.sleep(.fromMilliseconds(5), .awake);
+            }
+            try std.testing.expect(unavailable);
+        }
+    }
+}
+
+test "paired renewal accounting strict raw snapshot prepays growth and legacy null emits no field" {
+    const a = std.testing.allocator;
+    const legacy: Persisted = .{ .schema_version = 2 };
+    const encoded_legacy = try std.json.Stringify.valueAlloc(a, legacy, .{});
+    defer a.free(encoded_legacy);
+    const decoded_legacy = try std.json.parseFromSlice(std.json.Value, a, encoded_legacy, .{});
+    defer decoded_legacy.deinit();
+    try std.testing.expect(control.get(decoded_legacy.value, "owned_renewal_accounting") == null);
+    const legacy_reserve = try maintenanceReservation(legacy);
+    var active = legacy;
+    active.owned_renewal_accounting = try owned_renewal_accounting.Snapshot.init(100);
+    active.maintenance_growth_bytes = try maintenanceReservation(active);
+    const bytes = try snapshot_admission.countJson(active.owned_renewal_accounting.?, owned_renewal_accounting.maximum_snapshot_bytes);
+    try std.testing.expectEqual(owned_renewal_accounting.maximum_snapshot_bytes, bytes + active.maintenance_growth_bytes.? - legacy_reserve);
+    const encoded = try std.json.Stringify.valueAlloc(a, active, .{});
+    defer a.free(encoded);
+    try validatePersistedAdmission(a, encoded, 0);
+    var malformed = try std.json.parseFromSlice(std.json.Value, a, encoded, .{ .allocate = .alloc_always });
+    defer malformed.deinit();
+    const aggregate = malformed.value.object.getPtr("owned_renewal_accounting").?;
+    try std.testing.expect(aggregate.object.swapRemove("causes"));
+    const missing = try std.json.Stringify.valueAlloc(a, malformed.value, .{});
+    defer a.free(missing);
+    try std.testing.expectError(error.InvalidRenewalAccounting, validatePersistedAdmission(a, missing, 0));
+}
+
+test "paired renewal accounting optional reserve preserves a genuine held effect credit at capacity" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var current: Engine = .{
+        .allocator = a,
+        .io = io,
+        .state_dir = "",
+        .state = domain.State.init(a),
+        .observers = observer.Coordinator.init(a),
+        .requests = request_authority.Ledger.init(a, 4096),
+        .mutations = try mutation_authority.Ledger.init(a, 4096),
+        .admission = snapshot_admission.Ledger.init(a),
+        .native_owners = native_owner.Ledger.init(a),
+        .metrics = reliability.Recorder.init(0, .{ .evidence = .synthetic }),
+    };
+    defer current.release();
+    current.maintenance_growth_bytes = try maintenanceReservation(current.persisted());
+    const key: snapshot_admission.Key = .{ .kind = .rotation, .id = @splat(0x73), .generation = 1 };
+    try current.reserveOutcome(.{ .key = key, .owner_id = "aggregate-capacity-owner", .provider = "fixture", .plan_bytes = 1 });
+    current.maintenance_growth_bytes = try maintenanceReservation(current.persisted());
+    const roomy = try current.snapshotUsage();
+    try std.testing.expect(roomy.remaining_bytes > 4096);
+    const held_bytes = roomy.remaining_bytes + 1 - 512;
+    try current.releaseOutcome(key);
+    try current.reserveOutcome(.{ .key = key, .owner_id = "aggregate-capacity-owner", .provider = "fixture", .plan_bytes = held_bytes });
+    current.maintenance_growth_bytes = try maintenanceReservation(current.persisted());
+    const before_usage = try current.snapshotUsage();
+    try std.testing.expect(before_usage.remaining_bytes < owned_renewal_accounting.maximum_snapshot_bytes);
+    const before = try std.json.Stringify.valueAlloc(a, current.persisted(), .{});
+    defer a.free(before);
+    try std.testing.expect(!(try current.prepareOwnedRenewalAccounting(current.now())));
+    try std.testing.expect(current.owned_renewal_accounting == null and current.renewal_accounting_capacity_unavailable);
+    try std.testing.expectEqualDeep(before_usage, try current.snapshotUsage());
+    const after = try std.json.Stringify.valueAlloc(a, current.persisted(), .{});
+    defer a.free(after);
+    try std.testing.expect(std.mem.eql(u8, before, after));
+    try std.testing.expectEqual(held_bytes, current.outcomeIntent(key).?.plan_bytes);
+}
+
+test "paired renewal accounting constructor rejects unrelated aggregate advance before SQL or provider work" {
+    const M = OwnedRenewalActorModel;
+    const F = FreshOAuthActorModel;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var directory = std.testing.tmpDir(.{});
+    defer directory.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.fchmodat(directory.dir.handle, ".", 0o700, 0));
+    const path = try directory.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(path);
+    try F.seed(path);
+    const current = try Engine.openWithKey(io, a, path, F.key);
+    defer current.deinit();
+    const admitted = try M.fixture(current, "fixture.admitSignedOssPair", .{ .subject = "aggregate-unauthorized-delta" });
+    defer admitted.deinit();
+    const account = try control.string(try M.result(&admitted), "account_id");
+    var key = try M.signer();
+    defer key.deinit() catch @panic("renewal signing key cleanup failed");
+    const keys = try key.jwks();
+    defer a.free(keys);
+    var body = try M.makeBody(&key, "aggregate-unauthorized-delta", .{});
+    defer body.deinit();
+    const before = try M.accounting(current);
+    const rejected = try M.start(current, account, body.bytes, keys, .{ .tamper_accounting = true });
+    defer rejected.deinit();
+    try SiwcActorTest.refusal(&rejected, "OAuthAuthorityChanged");
+    try std.testing.expectEqualDeep(before, try M.accounting(current));
+    const observed = try M.observe(current, account);
+    defer observed.deinit();
+    const value = try M.result(&observed);
+    try M.assertPair(value, "ready", 1, true);
+    try std.testing.expect(control.get(value, "renewal_state").? == .null);
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "token_count").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), control.get(value, "key_count").?.integer);
+    try std.testing.expect(try control.boolean(value, "external_retained", false));
 }

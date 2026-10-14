@@ -6,24 +6,32 @@ const envelope = @import("envelope.zig");
 const recovery = @import("recovery.zig");
 const file_metadata = @import("platform/file_metadata.zig");
 
+pub const FileIdentity = struct { dev: u64, ino: u64 };
+pub const OpeningExpectation = struct { directory: FileIdentity, database: ?FileIdentity };
+pub const OpeningWitness = struct { directory: FileIdentity, database: FileIdentity, created: bool };
+
 /// Private creation precedes SQLite; existing files are never repaired/truncated.
 const DatabaseFile = struct {
     allocator: std.mem.Allocator,
     directory: std.c.fd_t,
+    directory_identity: FileIdentity,
+    parent_path: [:0]u8,
     identity: file_metadata.Metadata,
     name: [:0]u8,
     path: [:0]const u8,
     existed: bool,
 
-    fn open(allocator: std.mem.Allocator, path: [:0]const u8, create: bool) !?DatabaseFile {
+    fn open(allocator: std.mem.Allocator, path: [:0]const u8, create: bool, expected_directory: ?FileIdentity) !?DatabaseFile {
         if (std.mem.eql(u8, path, ":memory:")) return null;
         const parent = try allocator.dupeSentinel(u8, std.fs.path.dirname(path) orelse ".", 0);
-        defer allocator.free(parent);
+        errdefer allocator.free(parent);
         const directory = std.c.open(parent.ptr, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
         if (directory < 0) return error.DatabaseDirectoryUnavailable;
         errdefer _ = std.c.close(directory);
         const parent_metadata = try file_metadata.statFd(directory);
         if (parent_metadata.uid != std.c.getuid() or parent_metadata.mode & 0o777 != 0o700) return error.UnsafeRecoveryDirectory;
+        // Refuse a replaced namespace before exclusive creation can touch it.
+        if (expected_directory) |expected| if (parent_metadata.dev != expected.dev or parent_metadata.ino != expected.ino) return error.DatabaseFileChanged;
         const name = try allocator.dupeSentinel(u8, std.fs.path.basename(path), 0);
         errdefer allocator.free(name);
         var existed = true;
@@ -39,12 +47,18 @@ const DatabaseFile = struct {
             if (file >= 0) _ = std.c.close(file);
         }
         const identity = if (file >= 0) try file_metadata.statFd(file) else try file_metadata.statAt(directory, name.ptr, std.c.AT.SYMLINK_NOFOLLOW);
-        const result: DatabaseFile = .{ .allocator = allocator, .directory = directory, .identity = identity, .name = name, .path = path, .existed = existed };
+        const result: DatabaseFile = .{ .allocator = allocator, .directory = directory, .directory_identity = .{ .dev = parent_metadata.dev, .ino = parent_metadata.ino }, .parent_path = parent, .identity = identity, .name = name, .path = path, .existed = existed };
         try result.recheck();
         return result;
     }
 
     fn recheck(self: DatabaseFile) !void {
+        const held_directory = try file_metadata.statFd(self.directory);
+        const resolved_directory = try file_metadata.statAt(std.c.AT.FDCWD, self.parent_path.ptr, std.c.AT.SYMLINK_NOFOLLOW);
+        for ([_]file_metadata.Metadata{ held_directory, resolved_directory }) |directory| {
+            if (directory.mode & std.c.S.IFMT != std.c.S.IFDIR or directory.uid != std.c.getuid() or directory.mode & 0o777 != 0o700) return error.UnsafeRecoveryDirectory;
+            if (directory.dev != self.directory_identity.dev or directory.ino != self.directory_identity.ino) return error.DatabaseFileChanged;
+        }
         const held = self.identity;
         const named = try file_metadata.statAt(self.directory, self.name.ptr, std.c.AT.SYMLINK_NOFOLLOW);
         const resolved = try file_metadata.statAt(std.c.AT.FDCWD, self.path.ptr, std.c.AT.SYMLINK_NOFOLLOW);
@@ -54,9 +68,16 @@ const DatabaseFile = struct {
         if (held.dev != named.dev or held.ino != named.ino or held.dev != resolved.dev or held.ino != resolved.ino) return error.DatabaseFileChanged;
     }
 
+    fn witness(self: DatabaseFile) !OpeningWitness {
+        try self.recheck();
+        const directory = try file_metadata.statFd(self.directory);
+        return .{ .directory = .{ .dev = directory.dev, .ino = directory.ino }, .database = .{ .dev = self.identity.dev, .ino = self.identity.ino }, .created = !self.existed };
+    }
+
     fn close(self: DatabaseFile) void {
         _ = std.c.close(self.directory);
         self.allocator.free(self.name);
+        self.allocator.free(self.parent_path);
     }
 };
 
@@ -73,6 +94,12 @@ pub const GrantChange = union(enum) {
     /// Only explicit user re-enrollment may lift a forgotten-account tombstone.
     reenroll_account: []const u8,
 };
+pub const CommitStage = enum { before_begin, before_reservation, before_commit };
+pub const CommitFence = struct {
+    context: *anyopaque,
+    check: *const fn (*anyopaque, CommitStage) anyerror!void,
+};
+
 pub const Snapshot = struct {
     allocator: std.mem.Allocator,
     revision: u64,
@@ -82,6 +109,19 @@ pub const Snapshot = struct {
         self.allocator.free(self.json);
         self.* = undefined;
     }
+};
+/// Snapshot-coupled two-grant rotation. This Store tuple is not provider
+/// issuance authority: only the opaque paired issuer may dispatch its ticket.
+pub const OwnedPairRotation = struct {
+    operation_id: []const u8,
+    access: envelope.Context,
+    refresh: envelope.Context,
+};
+pub const OwnedPairSuccessor = struct {
+    access: envelope.Context,
+    refresh: envelope.Context,
+    access_plaintext: []const u8,
+    refresh_plaintext: []const u8,
 };
 pub const RotationStatus = enum { started, completed, quarantined };
 pub const RotationBegin = struct {
@@ -106,9 +146,60 @@ pub const GrantStatus = struct {
 /// every persisted section against this bound before external effects; grant
 /// ciphertext has its separate envelope limit and never consumes this JSON.
 pub const maximum_snapshot_bytes = 16 * 1024 * 1024;
+pub const CustodyObservation = struct {
+    storage_schema: u32,
+    snapshot_schema: u32,
+    custody_format: u32 = envelope.format_version,
+    recovery_format: u32 = recovery.format_version,
+    revision: u64,
+    checkpoint_sequence: u64,
+    preservation_commitment: [32]u8,
+};
+// Observation refuses over-limit custody; it never truncates retained authority.
+const maximum_observation_rows = 65536;
+const maximum_observation_bytes = 4 * maximum_snapshot_bytes;
+const ObservationColumn = enum { text, blob, integer, optional_integer };
+// Integrity loss fences admitted custody without restoring or writing it.
+// Capacity, deadlines and an already-open transaction remain ordinary refusals.
+fn observationIntegrityFailure(err: anyerror) bool {
+    return switch (err) {
+        error.DatabaseCorrupt, error.RecordMissing, error.InvalidSnapshot, error.SecretInSnapshot, error.SnapshotTooLarge, error.SnapshotAuthenticationFailed, error.InvalidCustodyObservationSnapshot, error.UnsupportedSchema, error.UnsupportedSnapshotSchema, error.WrongKeyIdentity, error.WrongRecoveryInstallation, error.RecoveryRollbackDetected, error.RecoveryCheckpointMismatch, error.InvalidRecoveryCheckpoint, error.RecoveryAuthorityPoisoned, error.MissingRecoveryAuthority, error.RecoveryAuthorityUnavailable, error.InvalidRecoveryAuthority, error.RecoveryReadFailed, error.RecoveryMigrationRequired, error.RecoveryAuthenticationFailed, error.UnsafeRecoveryFile => true,
+        else => false,
+    };
+}
+const ObservationHash = struct {
+    mac: std.crypto.auth.hmac.sha2.HmacSha256,
+    io: std.Io,
+    until: std.Io.Clock.Timestamp,
+    bytes: usize = 0,
+    rows: usize = 0,
+
+    fn tick(self: *const ObservationHash) !void {
+        if (self.until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.Timeout;
+    }
+
+    fn field(self: *ObservationHash, kind: u8, value: []const u8) !void {
+        try self.tick();
+        const length = std.math.add(usize, value.len, 9) catch return error.CustodyObservationTooLarge;
+        if (length > maximum_observation_bytes - self.bytes) return error.CustodyObservationTooLarge;
+        self.bytes += length;
+        self.mac.update(&.{kind});
+        var size: [8]u8 = undefined;
+        std.mem.writeInt(u64, &size, @intCast(value.len), .little);
+        self.mac.update(&size);
+        var offset: usize = 0;
+        while (offset < value.len) {
+            try self.tick();
+            const end = offset + @min(value.len - offset, 64 * 1024);
+            self.mac.update(value[offset..end]);
+            offset = end;
+        }
+    }
+};
 /// The actor's typed whole-envelope/obligation gate. It must perform no effects;
 /// returning an error prevents storage from adopting any recovered mutation.
 pub const SnapshotValidator = *const fn (std.mem.Allocator, []const u8, u64) anyerror!void;
+pub const SnapshotRecoveryValidator = *const fn (*Store, std.mem.Allocator, []const u8, u64) anyerror!void;
 const key_check_context: envelope.Context = .{
     .account_id = "omux-installation",
     .grant_id = "wrapping-key-check",
@@ -126,6 +217,7 @@ pub const Store = struct {
     key_id: []u8,
     owner_thread: std.Thread.Id,
     poisoned: bool = false,
+    opening_witness: ?OpeningWitness = null,
     authority: ?recovery.FileAuthority = null,
     checkpoint: recovery.Checkpoint = undefined,
 
@@ -137,21 +229,48 @@ pub const Store = struct {
     }
 
     pub fn openRoot(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key) !Store {
-        return openRootValidated(io, allocator, path, key_id, key, null);
+        return openRootValidated(io, allocator, path, key_id, key, null, null, null);
     }
 
     /// Validate an existing actor snapshot before rotation recovery can reserve
     /// independent authority or update SQLite. Fresh databases still begin with
     /// '{}'; the actor commits its new typed schema during initial bootstrap.
     pub fn openRootWithSnapshotValidator(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: SnapshotValidator) !Store {
-        return openRootValidated(io, allocator, path, key_id, key, validator);
+        return openRootValidated(io, allocator, path, key_id, key, validator, null, null);
     }
 
-    fn openRootValidated(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator) !Store {
+    /// Bind actor startup to its previously checked namespace before SQLite IO.
+    /// Fresh means this opening must own O_EXCL creation, never an appeared file.
+    pub fn openRootExpected(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator, expected: OpeningExpectation) !Store {
+        return openRootValidated(io, allocator, path, key_id, key, validator, expected, null);
+    }
+
+    /// Actor-owned exact metadata/SQL obligation validator. This callback
+    /// authorizes quarantine only, never issuer contact or replay. Generic actor
+    /// opens retain their blanket refusal for uncorrelated SQL-only rotations.
+    pub fn openRootExpectedWithRecoveryValidator(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: SnapshotValidator, recovery_validator: SnapshotRecoveryValidator, expected: OpeningExpectation) !Store {
+        return openRootValidated(io, allocator, path, key_id, key, validator, expected, recovery_validator);
+    }
+
+    /// Fixed public inode facts only; no key, grant, path or restored authority.
+    pub fn openingWitness(self: *Store) !OpeningWitness {
+        try self.assertOwner();
+        return self.opening_witness orelse error.OpeningWitnessUnavailable;
+    }
+
+    fn openRootValidated(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator, expected: ?OpeningExpectation, recovery_validator: ?SnapshotRecoveryValidator) !Store {
         if (key_id.len == 0 or key_id.len > 128) return error.InvalidKeyIdentity;
-        const private_file = try DatabaseFile.open(allocator, path, true);
+        const private_file = try DatabaseFile.open(allocator, path, if (expected) |wanted| wanted.database == null else true, if (expected) |wanted| wanted.directory else null);
         defer if (private_file) |file| file.close();
         const existed = if (private_file) |file| file.existed else false;
+        const opening_witness: ?OpeningWitness = if (private_file) |file| try file.witness() else null;
+        if (expected) |wanted| {
+            const actual = opening_witness orelse return error.OpeningWitnessUnavailable;
+            if (!std.meta.eql(wanted.directory, actual.directory)) return error.DatabaseFileChanged;
+            if (wanted.database) |database| {
+                if (actual.created or !std.meta.eql(database, actual.database)) return error.DatabaseFileChanged;
+            } else if (!actual.created) return error.DatabaseFileChanged;
+        }
         var db: ?*c.sqlite3 = null;
         // SQLite must not recreate a removed disk name with its default mode.
         const result = c.sqlite3_open_v2(path.ptr, &db, c.SQLITE_OPEN_READWRITE | (if (private_file == null) c.SQLITE_OPEN_CREATE else 0) | c.SQLITE_OPEN_FULLMUTEX | c.SQLITE_OPEN_NOFOLLOW, null);
@@ -164,7 +283,7 @@ pub const Store = struct {
             _ = c.sqlite3_close(db.?);
             return err;
         };
-        var self: Store = .{ .allocator = allocator, .io = io, .db = db.?, .key = key, .key_id = owned_key_id, .owner_thread = std.Thread.getCurrentId() };
+        var self: Store = .{ .allocator = allocator, .io = io, .db = db.?, .key = key, .key_id = owned_key_id, .owner_thread = std.Thread.getCurrentId(), .opening_witness = opening_witness };
         errdefer self.close();
         if (private_file) |file| try file.recheck();
         // Legacy refusal precedes journal-mode changes as well as schema or
@@ -195,7 +314,7 @@ pub const Store = struct {
             const revision = try integerColumn(stmt, 0);
             try self.verifySnapshot(revision, json);
             if (validator) |validate| {
-                try self.validateActorRecovery(allocator, json, revision);
+                try self.validateActorRecovery(allocator, json, revision, recovery_validator);
                 try validate(allocator, json, revision);
             }
         }
@@ -250,7 +369,7 @@ pub const Store = struct {
             try authority_checkpoint.verify(self.checkpoint);
             try self.verifySnapshot(revision, json);
             if (validator) |validate| {
-                try self.validateActorRecovery(allocator, json, revision);
+                try self.validateActorRecovery(allocator, json, revision, recovery_validator);
                 try validate(allocator, json, revision);
             }
         }
@@ -267,10 +386,11 @@ pub const Store = struct {
         if (version == 0) try self.exec("PRAGMA user_version=3;");
         try self.exec("COMMIT;");
         _ = try self.reconcilePendingRotations();
+        if (private_file) |file| try file.recheck();
         return self;
     }
 
-    fn validateActorRecovery(self: *Store, allocator: std.mem.Allocator, json: []const u8, revision: u64) !void {
+    fn validateActorRecovery(self: *Store, allocator: std.mem.Allocator, json: []const u8, revision: u64, recovery_validator: ?SnapshotRecoveryValidator) !void {
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
         defer parsed.deinit();
         // Only a genuine interrupted first initialization may use the empty
@@ -280,20 +400,20 @@ pub const Store = struct {
             if (revision != 0 or try self.scalar("SELECT (SELECT count(*) FROM grants)+(SELECT count(*) FROM operations)+(SELECT count(*) FROM tombstones)+(SELECT count(*) FROM grant_generations);") != 0 or (try self.readCheckpoint()).sequence != 0) return error.SnapshotAdmissionMigrationRequired;
         } else if (!parsed.value.object.contains("state")) return error.SnapshotAdmissionMigrationRequired;
 
-        // Current actors import externally owned grants and issue no SQL
-        // renewal rotations. A metadata-only callback cannot correlate or
-        // simulate SQL-only unresolved custody, even when JSON names schema2.
-        // A future renewal adapter needs a typed SQL obligation/simulation gate
-        // before automatic reconciliation can be enabled for actor startup.
-        // Generic Store.open/openRoot retain their independent quarantine API.
-        if (try self.scalar("SELECT (SELECT count(*) FROM operations WHERE state='started')+(SELECT count(*) FROM grants WHERE state='refreshing');") != 0) return error.SnapshotAdmissionMigrationRequired;
+        // A metadata-only callback still cannot correlate SQL-only custody.
+        // Only the explicit actor validator may authenticate every pending
+        // paired obligation before the existing quarantine-only reconciliation.
+        if (try self.scalar("SELECT (SELECT count(*) FROM operations WHERE state='started')+(SELECT count(*) FROM grants WHERE state='refreshing');") != 0) {
+            const verify = recovery_validator orelse return error.SnapshotAdmissionMigrationRequired;
+            try verify(self, allocator, json, revision);
+        }
     }
 
     /// Read public wrapping-key identity before requesting the corresponding
     /// OS-vault root. No key is guessed or created for an existing database.
     /// The caller owns the returned sentinel buffer and must free it.
     pub fn readRootId(allocator: std.mem.Allocator, path: [:0]const u8) ![:0]u8 {
-        const private_file = try DatabaseFile.open(allocator, path, false);
+        const private_file = try DatabaseFile.open(allocator, path, false, null);
         defer if (private_file) |file| file.close();
         var db: ?*c.sqlite3 = null;
         const result = c.sqlite3_open_v2(path.ptr, &db, c.SQLITE_OPEN_READONLY | c.SQLITE_OPEN_FULLMUTEX | c.SQLITE_OPEN_NOFOLLOW, null);
@@ -400,11 +520,23 @@ pub const Store = struct {
     /// an unsuccessful/ambiguous SQLite COMMIT prevents further use. The older
     /// DB cannot be admitted on restart, or used to repeat issuer contact.
     fn finishMutation(self: *Store) !void {
+        return self.finishMutationFenced(null);
+    }
+    fn finishMutationFenced(self: *Store, fence: ?CommitFence) !void {
         const snapshot = try self.snapshotCommitment();
         const next = try self.checkpoint.successor(self.io, snapshot.revision, snapshot.digest);
         if (next.sequence > std.math.maxInt(i64)) return error.RecoverySequenceExhausted;
         try self.writeCheckpoint(next);
+        // Still rollback-capable: deny before reserving irreversible recovery
+        // authority if preparation consumed the original issuance lifetime.
+        if (fence) |held| try held.check(held.context, .before_reservation);
         self.authority.?.reserve(self.checkpoint, next) catch |err| {
+            self.poisoned = true;
+            return err;
+        };
+        // A late failure after the durable reservation is uncertain custody,
+        // not an unissued retry or permission to restore the older DB/key.
+        if (fence) |held| held.check(held.context, .before_commit) catch |err| {
             self.poisoned = true;
             return err;
         };
@@ -458,10 +590,126 @@ pub const Store = struct {
         return .{ .allocator = self.allocator, .revision = revision, .json = try self.allocator.dupe(u8, json) };
     }
 
+    /// Strict exact-state observation, not a quiescence fence or a restart
+    /// equivalence proof. Cover exact snapshot bytes and five retained tables
+    /// (custody, grants, generations, tombstones, operations), with a verified
+    /// checkpoint. This observes ciphertext; it does not validate every grant.
+    /// Only the existing writer may call this; no grant is decrypted or issued.
+    pub fn custodyObservation(self: *Store, expected_revision: u64, until: std.Io.Clock.Timestamp) !CustodyObservation {
+        try self.assertOwner();
+        return self.custodyObservationOwned(expected_revision, until) catch |err| {
+            if (observationIntegrityFailure(err)) self.poisoned = true;
+            return err;
+        };
+    }
+
+    fn custodyObservationOwned(self: *Store, expected_revision: u64, until: std.Io.Clock.Timestamp) !CustodyObservation {
+        var hash: ObservationHash = .{ .mac = .init(&self.key), .io = self.io, .until = until };
+        defer std.crypto.secureZero(u8, std.mem.asBytes(&hash));
+        try hash.tick();
+        if (c.sqlite3_get_autocommit(self.db) != 1) return error.CustodyObservationTransactionPending;
+        try self.exec("BEGIN;");
+        var transaction_open = true;
+        defer if (transaction_open) self.rollback();
+        const schema = try self.scalar("PRAGMA user_version;");
+        if (schema != 3) return error.UnsupportedSchema;
+        const checkpoint = try self.readCheckpoint();
+        try checkpoint.verify(self.checkpoint);
+        if (self.authority) |*authority| try (try authority.read()).verify(checkpoint) else return error.MissingRecoveryAuthority;
+        var snapshot = try self.readSnapshot();
+        defer snapshot.deinit();
+        if (snapshot.revision != expected_revision or snapshot.revision != checkpoint.snapshot_revision) return error.RevisionConflict;
+        const Header = struct { schema_version: u32 };
+        const header = std.json.parseFromSlice(Header, self.allocator, snapshot.json, .{ .ignore_unknown_fields = true, .duplicate_field_behavior = .@"error" }) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return error.InvalidCustodyObservationSnapshot,
+        };
+        defer header.deinit();
+        if (header.value.schema_version != 1 and header.value.schema_version != 2) return error.UnsupportedSnapshotSchema;
+        try hash.field(0, "omux exact committed custody observation v1");
+        try hash.field(1, self.key_id);
+        try hash.field(2, &checkpoint.installation);
+        var formats: [16]u8 = undefined;
+        std.mem.writeInt(u32, formats[0..4], @intCast(schema), .little);
+        std.mem.writeInt(u32, formats[4..8], header.value.schema_version, .little);
+        std.mem.writeInt(u32, formats[8..12], envelope.format_version, .little);
+        std.mem.writeInt(u32, formats[12..16], recovery.format_version, .little);
+        try hash.field(12, &formats);
+        // Exact JSON includes source/identity tombstones, renewal ownership and
+        // request/mutation/native ledgers. Recovery may change these bytes and
+        // conservatively change this commitment; no normalization is applied.
+        try hash.field(3, snapshot.json);
+        {
+            const identity = try self.prepare("SELECT key_id FROM custody WHERE id=1;");
+            defer finalize(identity);
+            try expectRow(identity);
+            if (!std.mem.eql(u8, self.key_id, try textColumn(identity, 0))) return error.WrongKeyIdentity;
+        }
+        try self.observeRows(&hash, "SELECT id,key_id,key_check FROM custody ORDER BY id;", &.{ .integer, .text, .blob });
+        try self.observeRows(&hash, "SELECT account_id,grant_id,generation,purpose,scope,renewal_owner,state,ciphertext FROM grants ORDER BY account_id COLLATE BINARY,grant_id COLLATE BINARY;", &.{ .text, .text, .integer, .text, .text, .text, .text, .blob });
+        try self.observeRows(&hash, "SELECT account_id,grant_id,generation FROM grant_generations ORDER BY account_id COLLATE BINARY,grant_id COLLATE BINARY;", &.{ .text, .text, .integer });
+        try self.observeRows(&hash, "SELECT account_id FROM tombstones ORDER BY account_id COLLATE BINARY;", &.{.text});
+        try self.observeRows(&hash, "SELECT operation_id,account_id,grant_id,generation,state,committed_revision FROM operations ORDER BY operation_id COLLATE BINARY;", &.{ .text, .text, .text, .integer, .text, .optional_integer });
+        try hash.tick();
+        if (self.authority) |*authority| try (try authority.read()).verify(checkpoint) else return error.MissingRecoveryAuthority;
+        try hash.tick();
+        var result: CustodyObservation = .{ .storage_schema = @intCast(schema), .snapshot_schema = header.value.schema_version, .revision = snapshot.revision, .checkpoint_sequence = checkpoint.sequence, .preservation_commitment = undefined };
+        hash.mac.final(&result.preservation_commitment);
+        self.exec("ROLLBACK;") catch |err| {
+            self.poisoned = true;
+            return err;
+        };
+        transaction_open = false;
+        try hash.tick();
+        return result;
+    }
+
+    fn observeRows(self: *Store, hash: *ObservationHash, sql: [:0]const u8, columns: []const ObservationColumn) !void {
+        try hash.field(4, sql);
+        const stmt = try self.prepare(sql);
+        defer finalize(stmt);
+        if (c.sqlite3_column_count(stmt) != @as(c_int, @intCast(columns.len))) return error.DatabaseCorrupt;
+        while (true) {
+            try hash.tick();
+            switch (c.sqlite3_step(stmt)) {
+                c.SQLITE_DONE => break,
+                c.SQLITE_ROW => {},
+                else => |result| {
+                    try check(result);
+                    return error.DatabaseFailure;
+                },
+            }
+            if (hash.rows == maximum_observation_rows) return error.CustodyObservationTooLarge;
+            hash.rows += 1;
+            try hash.field(5, "");
+            for (columns, 0..) |kind, index| {
+                const column: c_int = @intCast(index);
+                switch (kind) {
+                    .text => try hash.field(6, try textColumn(stmt, column)),
+                    .blob => try hash.field(7, try blobColumn(stmt, column)),
+                    .integer, .optional_integer => {
+                        if (kind == .optional_integer and c.sqlite3_column_type(stmt, column) == c.SQLITE_NULL) {
+                            try hash.field(8, "");
+                        } else {
+                            var bytes: [8]u8 = undefined;
+                            std.mem.writeInt(u64, &bytes, try integerColumn(stmt, column), .little);
+                            try hash.field(9, &bytes);
+                        }
+                    },
+                }
+            }
+        }
+        try hash.field(10, "");
+    }
+
     /// Snapshot JSON is metadata only. Secret-bearing fields are rejected as
     /// defense in depth; provider adapters import payloads via GrantChange.put.
     /// Caller-owned input secrets are never copied into the metadata snapshot.
     pub fn commit(self: *Store, expected_revision: u64, snapshot_json: []const u8, changes: []const GrantChange) !u64 {
+        return self.commitFenced(expected_revision, snapshot_json, changes, null);
+    }
+    /// Trusted actor callback only; no wire boolean/caller label is authority.
+    pub fn commitFenced(self: *Store, expected_revision: u64, snapshot_json: []const u8, changes: []const GrantChange, fence: ?CommitFence) !u64 {
         try self.assertOwner();
         try validateMetadata(self.allocator, snapshot_json);
         const sealed = try self.allocator.alloc(?[]u8, changes.len);
@@ -479,6 +727,7 @@ pub const Store = struct {
             },
             .delete, .tombstone_account, .reenroll_account => {},
         };
+        if (fence) |held| try held.check(held.context, .before_begin);
         try self.exec("BEGIN IMMEDIATE;");
         errdefer self.rollback();
         const next_revision = try self.checkRevision(expected_revision);
@@ -495,7 +744,7 @@ pub const Store = struct {
             },
         };
         try self.updateSnapshot(next_revision, snapshot_json);
-        try self.finishMutation();
+        try self.finishMutationFenced(fence);
         return next_revision;
     }
 
@@ -522,7 +771,7 @@ pub const Store = struct {
     fn put(self: *Store, grant: GrantPut, ciphertext: []const u8) !void {
         if (try self.isTombstoned(grant.context.account_id)) return error.AccountForgotten;
         if (grant.context.generation != try self.nextGeneration(grant.context.account_id, grant.context.grant_id)) return error.StaleGeneration;
-        const lookup = try self.prepare("SELECT generation,state FROM grants WHERE account_id=?1 AND grant_id=?2;");
+        const lookup = try self.prepare("SELECT generation,state,renewal_owner FROM grants WHERE account_id=?1 AND grant_id=?2;");
         defer finalize(lookup);
         try bindText(lookup, 1, grant.context.account_id);
         try bindText(lookup, 2, grant.context.grant_id);
@@ -531,6 +780,9 @@ pub const Store = struct {
                 const old_generation = try integerColumn(lookup, 0);
                 if (old_generation == std.math.maxInt(i64) or grant.context.generation != old_generation + 1) return error.StaleGeneration;
                 if (std.mem.eql(u8, try textColumn(lookup, 1), "refreshing")) return error.RotationInProgress;
+                // A next generation is not evidence that a prior writer retired.
+                const owner = std.meta.stringToEnum(RenewalOwner, try textColumn(lookup, 2)) orelse return error.DatabaseCorrupt;
+                if (owner != grant.renewal_owner) return error.RenewalOwnerConflict;
             },
             c.SQLITE_DONE => {},
             else => |result| try check(result),
@@ -751,6 +1003,191 @@ pub const Store = struct {
         return revision;
     }
 
+    fn validateOwnedPair(self: *Store, pair: OwnedPairRotation) !void {
+        try pair.access.validate();
+        try pair.refresh.validate();
+        if (pair.operation_id.len != 64 or !std.mem.eql(u8, pair.access.key_id, self.key_id) or !std.mem.eql(u8, pair.refresh.key_id, self.key_id) or
+            !std.mem.eql(u8, pair.access.account_id, pair.refresh.account_id) or std.mem.eql(u8, pair.access.grant_id, pair.refresh.grant_id) or
+            pair.access.generation != pair.refresh.generation or !std.mem.eql(u8, pair.access.purpose, "request") or !std.mem.eql(u8, pair.refresh.purpose, "renewal") or
+            !std.mem.eql(u8, pair.access.scope, "https://api.openai.com/v1") or !std.mem.eql(u8, pair.refresh.scope, pair.access.scope)) return error.PairRotationConflict;
+        for (pair.operation_id) |byte| if (!std.ascii.isHex(byte)) return error.InvalidOperation;
+    }
+    fn ownedPairRows(self: *Store, pair: OwnedPairRotation, rotating: bool) !void {
+        const access = (try self.readGrantStatus(pair.access.account_id, pair.access.grant_id)) orelse return error.PairRotationConflict;
+        const refresh = (try self.readGrantStatus(pair.refresh.account_id, pair.refresh.grant_id)) orelse return error.PairRotationConflict;
+        if (access.generation != pair.access.generation or refresh.generation != pair.refresh.generation or access.renewal_owner != .omux or refresh.renewal_owner != .omux or
+            access.state != .ready or refresh.state != (if (rotating) GrantState.refreshing else GrantState.ready)) return error.PairRotationConflict;
+    }
+    /// Current authenticated pair metadata supplies the original tuple. Caller
+    /// must reread that metadata separately; an operation ID alone is no permit.
+    pub fn verifyOwnedPairRotation(self: *Store, pair: OwnedPairRotation) !void {
+        try self.assertOwner();
+        try self.validateOwnedPair(pair);
+        try self.ownedPairRows(pair, true);
+        const row = try self.prepare("SELECT account_id,grant_id,generation,state FROM operations WHERE operation_id=?1;");
+        defer finalize(row);
+        try bindText(row, 1, pair.operation_id);
+        try expectRow(row);
+        if (!std.mem.eql(u8, try textColumn(row, 0), pair.refresh.account_id) or !std.mem.eql(u8, try textColumn(row, 1), pair.refresh.grant_id) or
+            try integerColumn(row, 2) != pair.refresh.generation or try parseRotationStatus(try textColumn(row, 3)) != .started) return error.PairRotationConflict;
+    }
+    /// Authenticate the held rotating RT internally without exporting it to
+    /// request/catalog callers. Actual operation+row joins precede decryption.
+    pub fn authenticateOwnedPairRefresh(self: *Store, pair: OwnedPairRotation, client_id: []const u8, expected_commitment: [32]u8) !void {
+        try self.verifyOwnedPairRotation(pair);
+        const stmt = try self.prepare("SELECT ciphertext FROM grants WHERE account_id=?1 AND grant_id=?2 AND generation=?3 AND state='refreshing' AND renewal_owner='omux';");
+        defer finalize(stmt);
+        try bindText(stmt, 1, pair.refresh.account_id);
+        try bindText(stmt, 2, pair.refresh.grant_id);
+        try bindInteger(stmt, 3, pair.refresh.generation);
+        try expectRow(stmt);
+        var secret = try envelope.open(self.allocator, self.key, pair.refresh, try blobColumn(stmt, 0));
+        defer secret.deinit();
+        var scratch: [128 * 1024]u8 = undefined;
+        defer std.crypto.secureZero(u8, &scratch);
+        var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+        const parsed = try std.json.parseFromSlice(struct { refresh_token: []const u8, client_id: []const u8 }, fixed.allocator(), secret.bytes, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" });
+        defer parsed.deinit();
+        if (!std.mem.eql(u8, parsed.value.client_id, client_id) or parsed.value.refresh_token.len == 0 or parsed.value.refresh_token.len > 16 * 1024) return error.PairRotationConflict;
+        var hmac = std.crypto.auth.hmac.sha2.HmacSha256.init(&self.key);
+        hmac.update("omux-owned-siwc-refresh-v1");
+        var size: [8]u8 = undefined;
+        std.mem.writeInt(u64, &size, @intCast(parsed.value.refresh_token.len), .big);
+        hmac.update(&size);
+        hmac.update(parsed.value.refresh_token);
+        var commitment: [32]u8 = undefined;
+        hmac.final(&commitment);
+        if (!std.crypto.timing_safe.eql([32]u8, expected_commitment, commitment)) return error.PairRotationConflict;
+    }
+    /// The original owner snapshot and SQL intent commit together before one
+    /// issuer call. Existing IDs NEVER return issuance authority. Completed
+    /// older internal pair IDs can settle: old generation watermarks and the
+    /// opaque spent ticket still forbid replay, without unbounded SQL history.
+    pub fn beginOwnedPairRotation(self: *Store, expected_revision: u64, snapshot_json: []const u8, pair: OwnedPairRotation, fence: *const CommitFence) !u64 {
+        try self.assertOwner();
+        try self.validateOwnedPair(pair);
+        try validateMetadata(self.allocator, snapshot_json);
+        try fence.check(fence.context, .before_begin);
+        try self.exec("BEGIN IMMEDIATE;");
+        errdefer self.rollback();
+        const revision = try self.checkRevision(expected_revision);
+        if (try self.readOperation(pair.operation_id) != null) return error.PairIssueAlreadyAdmitted;
+        try self.ownedPairRows(pair, false);
+        const prune = try self.prepare("DELETE FROM operations WHERE account_id=?1 AND grant_id=?2 AND state='completed' AND generation<?3;");
+        defer finalize(prune);
+        try bindText(prune, 1, pair.refresh.account_id);
+        try bindText(prune, 2, pair.refresh.grant_id);
+        try bindInteger(prune, 3, pair.refresh.generation);
+        const update = try self.prepare("UPDATE grants SET state='refreshing' WHERE account_id=?1 AND grant_id=?2 AND generation=?3 AND renewal_owner='omux' AND state='ready';");
+        defer finalize(update);
+        try bindText(update, 1, pair.refresh.account_id);
+        try bindText(update, 2, pair.refresh.grant_id);
+        try bindInteger(update, 3, pair.refresh.generation);
+        const insert = try self.prepare("INSERT INTO operations(operation_id,account_id,grant_id,generation,state) VALUES(?1,?2,?3,?4,'started');");
+        defer finalize(insert);
+        try bindText(insert, 1, pair.operation_id);
+        try bindText(insert, 2, pair.refresh.account_id);
+        try bindText(insert, 3, pair.refresh.grant_id);
+        try bindInteger(insert, 4, pair.refresh.generation);
+        // Recheck after statement allocation/binding, before first SQL writer.
+        try fence.check(fence.context, .before_begin);
+        try expectDone(prune);
+        try expectDone(update);
+        if (c.sqlite3_changes(self.db) != 1) return error.PairRotationConflict;
+        try expectDone(insert);
+        try self.updateSnapshot(revision, snapshot_json);
+        try self.finishMutationFenced(fence.*);
+        return revision;
+    }
+    /// Both encrypted successors, one current family/writer snapshot and the
+    /// original started operation publish atomically. All sealing precedes
+    /// journal writes; pre-reserve rollback/post-reserve poison are unchanged.
+    pub fn completeOwnedPairRotation(self: *Store, expected_revision: u64, snapshot_json: []const u8, pair: OwnedPairRotation, successor: OwnedPairSuccessor, fence: *const CommitFence) !u64 {
+        try self.assertOwner();
+        try self.validateOwnedPair(pair);
+        try validateMetadata(self.allocator, snapshot_json);
+        if (pair.access.generation >= std.math.maxInt(i64) or successor.access.generation != pair.access.generation + 1 or successor.refresh.generation != successor.access.generation or
+            !std.mem.eql(u8, successor.access.account_id, pair.access.account_id) or !std.mem.eql(u8, successor.refresh.account_id, pair.refresh.account_id) or
+            !std.mem.eql(u8, successor.access.grant_id, pair.access.grant_id) or !std.mem.eql(u8, successor.refresh.grant_id, pair.refresh.grant_id) or
+            successor.access_plaintext.len == 0 or successor.access_plaintext.len > 32 * 1024 or successor.refresh_plaintext.len == 0 or successor.refresh_plaintext.len > 32 * 1024) return error.PairRotationConflict;
+        try self.validateOwnedPair(.{ .operation_id = pair.operation_id, .access = successor.access, .refresh = successor.refresh });
+        const access_ciphertext = try envelope.seal(self.io, self.allocator, self.key, successor.access, successor.access_plaintext);
+        defer self.allocator.free(access_ciphertext);
+        const refresh_ciphertext = try envelope.seal(self.io, self.allocator, self.key, successor.refresh, successor.refresh_plaintext);
+        defer self.allocator.free(refresh_ciphertext);
+        try fence.check(fence.context, .before_begin);
+        try self.exec("BEGIN IMMEDIATE;");
+        errdefer self.rollback();
+        const revision = try self.checkRevision(expected_revision);
+        try self.verifyOwnedPairRotation(pair);
+        // Statement ownership remains local to each row update. The enclosing
+        // transaction rolls back both on any successor/metadata failure.
+        for ([_]struct { next: envelope.Context, ciphertext: []const u8, old: envelope.Context, state: []const u8 }{
+            .{ .next = successor.access, .ciphertext = access_ciphertext, .old = pair.access, .state = "ready" },
+            .{ .next = successor.refresh, .ciphertext = refresh_ciphertext, .old = pair.refresh, .state = "refreshing" },
+        }) |row| {
+            const update = try self.prepare("UPDATE grants SET generation=?3,purpose=?4,scope=?5,ciphertext=?6,state='ready' WHERE account_id=?1 AND grant_id=?2 AND generation=?7 AND state=?8 AND renewal_owner='omux';");
+            defer finalize(update);
+            try bindContext(update, row.next);
+            try bindBlob(update, 6, row.ciphertext);
+            try bindInteger(update, 7, row.old.generation);
+            try bindText(update, 8, row.state);
+            if (std.mem.eql(u8, row.state, "ready")) try fence.check(fence.context, .before_begin);
+            try expectDone(update);
+            if (c.sqlite3_changes(self.db) != 1) return error.PairRotationConflict;
+            try self.recordGeneration(row.next);
+        }
+        const finish = try self.prepare("UPDATE operations SET state='completed',committed_revision=?2 WHERE operation_id=?1 AND state='started';");
+        defer finalize(finish);
+        try bindText(finish, 1, pair.operation_id);
+        try bindInteger(finish, 2, revision);
+        try expectDone(finish);
+        if (c.sqlite3_changes(self.db) != 1) return error.PairRotationConflict;
+        try self.updateSnapshot(revision, snapshot_json);
+        try self.finishMutationFenced(fence.*);
+        return revision;
+    }
+    /// Indeterminate issued work quarantines the entire renewable pair. Never
+    /// rewrite old RT into ready state or infer an unsent success from cancel.
+    pub fn quarantineOwnedPairRotation(self: *Store, expected_revision: u64, snapshot_json: []const u8, pair: OwnedPairRotation) !u64 {
+        try self.assertOwner();
+        try self.validateOwnedPair(pair);
+        try validateMetadata(self.allocator, snapshot_json);
+        try self.exec("BEGIN IMMEDIATE;");
+        errdefer self.rollback();
+        const revision = try self.checkRevision(expected_revision);
+        // Store.open already reduces a crashed started RT to quarantined.
+        // Join that exact retained operation as well as a live started one;
+        // neither path may recreate issuance or touch a successor generation.
+        const operation = try self.prepare("SELECT account_id,grant_id,generation,state FROM operations WHERE operation_id=?1;");
+        defer finalize(operation);
+        try bindText(operation, 1, pair.operation_id);
+        try expectRow(operation);
+        const status = try parseRotationStatus(try textColumn(operation, 3));
+        if (!std.mem.eql(u8, try textColumn(operation, 0), pair.refresh.account_id) or !std.mem.eql(u8, try textColumn(operation, 1), pair.refresh.grant_id) or
+            try integerColumn(operation, 2) != pair.refresh.generation or status == .completed) return error.PairRotationConflict;
+        const access = (try self.readGrantStatus(pair.access.account_id, pair.access.grant_id)) orelse return error.PairRotationConflict;
+        const refresh = (try self.readGrantStatus(pair.refresh.account_id, pair.refresh.grant_id)) orelse return error.PairRotationConflict;
+        if (access.generation != pair.access.generation or refresh.generation != pair.refresh.generation or access.renewal_owner != .omux or refresh.renewal_owner != .omux or
+            (access.state != .ready and access.state != .quarantined) or (refresh.state != .refreshing and refresh.state != .quarantined)) return error.PairRotationConflict;
+        const remove = try self.prepare("UPDATE grants SET state='quarantined' WHERE account_id=?1 AND (grant_id=?2 OR grant_id=?3) AND generation=?4 AND renewal_owner='omux';");
+        defer finalize(remove);
+        try bindText(remove, 1, pair.access.account_id);
+        try bindText(remove, 2, pair.access.grant_id);
+        try bindText(remove, 3, pair.refresh.grant_id);
+        try bindInteger(remove, 4, pair.access.generation);
+        try expectDone(remove);
+        if (c.sqlite3_changes(self.db) != 2) return error.PairRotationConflict;
+        const finish = try self.prepare("UPDATE operations SET state='quarantined' WHERE operation_id=?1 AND state IN ('started','quarantined');");
+        defer finalize(finish);
+        try bindText(finish, 1, pair.operation_id);
+        try expectDone(finish);
+        if (c.sqlite3_changes(self.db) != 1) return error.PairRotationConflict;
+        try self.updateSnapshot(revision, snapshot_json);
+        try self.finishMutation();
+        return revision;
+    }
+
     pub fn readOperation(self: *Store, operation_id: []const u8) !?Operation {
         try self.assertOwner();
         const stmt = try self.prepare("SELECT state,generation,committed_revision FROM operations WHERE operation_id=?1;");
@@ -789,6 +1226,24 @@ pub const Store = struct {
             try self.bumpRevision();
             try self.finishMutation();
         } else try self.exec("COMMIT;");
+    }
+
+    /// Exact coverage of the actual SQL recovery obligations, not a count or
+    /// Boolean supplied by actor metadata. Every tuple joins both current owned
+    /// rows and its single started operation before any recovery writer.
+    pub fn requireOnlyPairedRecovery(self: *Store, obligations: []const OwnedPairRotation) !void {
+        try self.assertOwner();
+        if (obligations.len == 0 or obligations.len > 256) return error.SnapshotAdmissionMigrationRequired;
+        const started = try self.scalar("SELECT count(*) FROM operations WHERE state='started';");
+        const refreshing = try self.scalar("SELECT count(*) FROM grants WHERE state='refreshing';");
+        if (started != @as(u64, @intCast(obligations.len)) or refreshing != @as(u64, @intCast(obligations.len))) return error.SnapshotAdmissionMigrationRequired;
+        for (obligations, 0..) |obligation, index| {
+            for (obligations[0..index]) |prior| {
+                if (std.mem.eql(u8, prior.operation_id, obligation.operation_id) or
+                    (std.mem.eql(u8, prior.refresh.account_id, obligation.refresh.account_id) and std.mem.eql(u8, prior.refresh.grant_id, obligation.refresh.grant_id))) return error.SnapshotAdmissionMigrationRequired;
+            }
+            try self.verifyOwnedPairRotation(obligation);
+        }
     }
 
     /// Called automatically on open. A crash between issuance and commit
@@ -924,6 +1379,145 @@ fn validateValue(value: std.json.Value, depth: usize) error{ InvalidSnapshot, Se
 }
 
 const test_context: envelope.Context = .{ .account_id = "account-1", .grant_id = "grant-1", .generation = 1, .purpose = "request", .scope = "read" };
+
+test "custody observation joins committed schemas and checkpoint without any writes" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    var store = try Store.open(std.testing.io, allocator, path, @splat(63));
+    defer store.close();
+    const revision = try store.commit(0, "{\"schema_version\":2}", &.{.{ .put = .{ .context = test_context, .plaintext = "synthetic-observation-payload" } }});
+    const before = store.checkpoint;
+    const changes = try store.scalar("SELECT total_changes();");
+    const until = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+    const first = try store.custodyObservation(revision, until);
+    const second = try store.custodyObservation(revision, until);
+    try std.testing.expectEqual(@as(u32, 3), first.storage_schema);
+    try std.testing.expectEqual(@as(u32, 2), first.snapshot_schema);
+    try std.testing.expectEqual(envelope.format_version, first.custody_format);
+    try std.testing.expectEqual(recovery.format_version, first.recovery_format);
+    try std.testing.expectEqual(revision, first.revision);
+    try std.testing.expectEqual(before.sequence, first.checkpoint_sequence);
+    try std.testing.expectEqualSlices(u8, &first.preservation_commitment, &second.preservation_commitment);
+    try std.testing.expect(before.eql(store.checkpoint));
+    try (try store.authority.?.read()).verify(before);
+    try std.testing.expectEqual(changes, try store.scalar("SELECT total_changes();"));
+    try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_get_autocommit(store.db));
+    try std.testing.expectError(error.RevisionConflict, store.custodyObservation(revision + 1, until));
+    try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_get_autocommit(store.db));
+    try store.exec("BEGIN;");
+    try std.testing.expectError(error.CustodyObservationTransactionPending, store.custodyObservation(revision, until));
+    try std.testing.expectEqual(@as(c_int, 0), c.sqlite3_get_autocommit(store.db));
+    try store.exec("ROLLBACK;");
+    const expired = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromMilliseconds(-1) });
+    try std.testing.expectError(error.Timeout, store.custodyObservation(revision, expired));
+    try std.testing.expect(!store.poisoned);
+    store.poisoned = true;
+    try std.testing.expectError(error.DatabasePoisoned, store.custodyObservation(revision, until));
+    store.poisoned = false;
+    store.checkpoint.sequence += 1;
+    try std.testing.expectError(error.RecoveryCheckpointMismatch, store.custodyObservation(revision, until));
+    try std.testing.expect(store.poisoned);
+    try std.testing.expectError(error.DatabasePoisoned, store.commit(revision, "{\"schema_version\":2}", &.{}));
+    // Test-only repair for the following independent-authority scenario.
+    store.poisoned = false;
+    store.checkpoint = before;
+    try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_get_autocommit(store.db));
+    const independent = try before.successor(std.testing.io, before.snapshot_revision, before.snapshot_digest);
+    try store.authority.?.reserve(before, independent);
+    try std.testing.expectError(error.RecoveryRollbackDetected, store.custodyObservation(revision, until));
+    try std.testing.expect(store.poisoned);
+    try std.testing.expectEqual(changes, try store.scalar("SELECT total_changes();"));
+}
+
+test "custody commitment covers SQL renewal generations tombstones and nullable rotation records" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    var store = try Store.open(std.testing.io, allocator, path, @splat(64));
+    defer store.close();
+    const revision = try store.commit(0, "{\"schema_version\":2}", &.{.{ .put = .{ .context = test_context, .plaintext = "synthetic-observation-payload" } }});
+    const until = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+    var prior = try store.custodyObservation(revision, until);
+    // The checkpoint authenticates exact metadata, not these SQL authorities.
+    // Independent commitment coverage must detect each change without issuing,
+    // decrypting or claiming a valid recovery of the tampered grant.
+    for ([_][:0]const u8{
+        "UPDATE grants SET renewal_owner='external';",
+        "UPDATE grants SET ciphertext=x'010203';",
+        "UPDATE grant_generations SET generation=generation+1;",
+        "INSERT INTO tombstones(account_id) VALUES('synthetic-forgotten');",
+        "INSERT INTO operations(operation_id,account_id,grant_id,generation,state,committed_revision) VALUES('synthetic-rotation','account-1','grant-1',1,'started',NULL);",
+        "UPDATE operations SET committed_revision=0;",
+        "UPDATE operations SET state='quarantined';",
+        "UPDATE custody SET key_check=x'010203';",
+    }) |sql| {
+        try store.exec(sql);
+        const next = try store.custodyObservation(revision, until);
+        try std.testing.expect(!std.mem.eql(u8, &prior.preservation_commitment, &next.preservation_commitment));
+        prior = next;
+    }
+    try store.exec("UPDATE snapshot SET metadata_json='{\"schema_version\":1}';");
+    try std.testing.expectError(error.SnapshotAuthenticationFailed, store.custodyObservation(revision, until));
+    try std.testing.expect(store.poisoned);
+    try std.testing.expectError(error.DatabasePoisoned, store.commit(revision, "{\"schema_version\":2}", &.{}));
+    try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_get_autocommit(store.db));
+}
+
+test "custody observation aggregate limits refuse before publishing a partial commitment" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    var store = try Store.open(std.testing.io, allocator, path, @splat(65));
+    defer store.close();
+    const revision = try store.commit(0, "{\"schema_version\":2}", &.{.{ .tombstone_account = "synthetic-forgotten" }});
+    const before = store.checkpoint;
+    const until = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+    var hash: ObservationHash = .{ .mac = .init(&store.key), .io = std.testing.io, .until = until, .bytes = maximum_observation_bytes - 9 };
+    defer std.crypto.secureZero(u8, std.mem.asBytes(&hash));
+    try hash.field(0, "");
+    try std.testing.expectError(error.CustodyObservationTooLarge, hash.field(0, ""));
+    hash.bytes = 0;
+    hash.rows = maximum_observation_rows;
+    try std.testing.expectError(error.CustodyObservationTooLarge, store.observeRows(&hash, "SELECT account_id FROM tombstones ORDER BY account_id COLLATE BINARY;", &.{.text}));
+    const observed = try store.custodyObservation(revision, until);
+    try std.testing.expectEqual(before.sequence, observed.checkpoint_sequence);
+    try std.testing.expect(before.eql(store.checkpoint));
+}
+
+test "custody observation keys exact authority to installation lineage and sorts retained rows" {
+    const allocator = std.testing.allocator;
+    var first_directory = std.testing.tmpDir(.{});
+    defer first_directory.cleanup();
+    var second_directory = std.testing.tmpDir(.{});
+    defer second_directory.cleanup();
+    const first_path = try testPath(allocator, first_directory);
+    defer allocator.free(first_path);
+    const second_path = try testPath(allocator, second_directory);
+    defer allocator.free(second_path);
+    // One OS wrapping key may legitimately serve more than one installation.
+    var first = try Store.open(std.testing.io, allocator, first_path, @splat(66));
+    defer first.close();
+    var second = try Store.open(std.testing.io, allocator, second_path, @splat(66));
+    defer second.close();
+    const revision = try first.commit(0, "{\"schema_version\":2}", &.{});
+    _ = try second.commit(0, "{\"schema_version\":2}", &.{});
+    const until = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{ .clock = .awake, .raw = .fromSeconds(10) });
+    const baseline = try first.custodyObservation(revision, until);
+    const other = try second.custodyObservation(revision, until);
+    try std.testing.expect(!std.mem.eql(u8, &baseline.preservation_commitment, &other.preservation_commitment));
+    try first.exec("INSERT INTO tombstones(account_id) VALUES('b'),('a');");
+    const ordered = try first.custodyObservation(revision, until);
+    try first.exec("DELETE FROM tombstones; INSERT INTO tombstones(account_id) VALUES('a'),('b');");
+    const reversed = try first.custodyObservation(revision, until);
+    try std.testing.expectEqualSlices(u8, &ordered.preservation_commitment, &reversed.preservation_commitment);
+}
 
 test "lifecycle terminal fact and mutation replay fence share authenticated commit" {
     const reliability = @import("reliability.zig");
@@ -1205,6 +1799,86 @@ test "same root does not authorize another installation or a divergent commit no
         store.close();
     }
     try std.testing.expectError(error.RecoveryCheckpointMismatch, Store.open(std.testing.io, allocator, first_path, key));
+}
+
+test "private opening witness rechecks the held directory against its replaced named parent" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(tmp.dir.handle, "live", 0o700));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.mkdirat(tmp.dir.handle, "replacement", 0o700));
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fmt.allocPrintSentinel(allocator, "{s}/live/custody.sqlite3", .{root}, 0);
+    defer allocator.free(path);
+    const file = (try DatabaseFile.open(allocator, path, true, null)).?;
+    defer file.close();
+    try std.testing.expect((try file.witness()).created);
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(tmp.dir.handle, "live", tmp.dir.handle, "retained"));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.renameat(tmp.dir.handle, "replacement", tmp.dir.handle, "live"));
+    try std.testing.expectError(error.DatabaseFileChanged, file.recheck());
+}
+
+test "expected directory substitution refuses before even a fresh empty file is created" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var original = std.testing.tmpDir(.{});
+    defer original.cleanup();
+    var replacement = std.testing.tmpDir(.{});
+    defer replacement.cleanup();
+    const original_path = try testPath(allocator, original);
+    defer allocator.free(original_path);
+    const replacement_path = try testPath(allocator, replacement);
+    defer allocator.free(replacement_path);
+    const directory = try file_metadata.statFd(original.dir.handle);
+    const expected: OpeningExpectation = .{ .directory = .{ .dev = directory.dev, .ino = directory.ino }, .database = null };
+    try std.testing.expectError(error.DatabaseFileChanged, Store.openRootExpected(io, allocator, replacement_path, envelope.default_key_id, @splat(0x63), null, expected));
+    try std.testing.expectError(error.FileNotFound, replacement.dir.statFile(io, "custody.sqlite3", .{ .follow_symlinks = false }));
+    try std.testing.expectError(error.FileNotFound, replacement.dir.statFile(io, "custody.sqlite3.authority", .{ .follow_symlinks = false }));
+}
+
+test "expected fresh opening rejects a foreign appeared inode before SQLite or custody initialization" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    const directory = try file_metadata.statFd(tmp.dir.handle);
+    const expected: OpeningExpectation = .{ .directory = .{ .dev = directory.dev, .ino = directory.ino }, .database = null };
+    const foreign = "foreign-appeared-file-must-stay-unmodified";
+    try tmp.dir.writeFile(io, .{ .sub_path = "custody.sqlite3", .data = foreign, .flags = .{ .exclusive = true, .permissions = .fromMode(0o600) } });
+    try std.testing.expectError(error.DatabaseFileChanged, Store.openRootExpected(io, allocator, path, envelope.default_key_id, @splat(0x63), null, expected));
+    const after = try tmp.dir.readFileAlloc(io, "custody.sqlite3", allocator, .limited(1024));
+    defer allocator.free(after);
+    try std.testing.expectEqualStrings(foreign, after);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "custody.sqlite3.authority", .{ .follow_symlinks = false }));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "custody.sqlite3-wal", .{ .follow_symlinks = false }));
+}
+
+test "opening witness proves this writer's fresh creation and later exact existing inode" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    const directory = try file_metadata.statFd(tmp.dir.handle);
+    const expected: OpeningExpectation = .{ .directory = .{ .dev = directory.dev, .ino = directory.ino }, .database = null };
+    const owned = owned: {
+        var store = try Store.openRootExpected(io, allocator, path, envelope.default_key_id, @splat(0x63), null, expected);
+        defer store.close();
+        const witness = try store.openingWitness();
+        try std.testing.expect(witness.created);
+        try std.testing.expectEqualDeep(expected.directory, witness.directory);
+        break :owned witness;
+    };
+    var reopened = try Store.openRootExpected(io, allocator, path, envelope.default_key_id, @splat(0x63), null, .{ .directory = owned.directory, .database = owned.database });
+    defer reopened.close();
+    const witness = try reopened.openingWitness();
+    try std.testing.expect(!witness.created);
+    try std.testing.expectEqualDeep(owned.database, witness.database);
 }
 
 test "durable metadata and encrypted grants never expose tokens in database WAL or backup" {
@@ -1577,6 +2251,70 @@ test "external renewal authority is never adopted implicitly" {
     try std.testing.expectEqualStrings("browser-owned", secret.bytes);
 }
 
+test "ordinary replacement cannot transfer a durable writer and rolls back the entire batch" {
+    const allocator = std.testing.allocator;
+    const key: envelope.Key = @splat(38);
+    for ([_]RenewalOwner{ .none, .external, .omux }) |owner| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const path = try testPath(allocator, tmp);
+        defer allocator.free(path);
+        var independent = test_context;
+        independent.grant_id = "independent-grant";
+        var next = test_context;
+        next.generation = 2;
+        var independent_next = independent;
+        independent_next.generation = 2;
+        {
+            var store = try Store.open(std.testing.io, allocator, path, key);
+            defer store.close();
+            _ = try store.commit(0, "{\"phase\":\"original\"}", &.{
+                .{ .put = .{ .context = test_context, .plaintext = "synthetic-original", .renewal_owner = owner } },
+                .{ .put = .{ .context = independent, .plaintext = "synthetic-independent", .renewal_owner = .external } },
+            });
+            const checkpoint = store.checkpoint;
+            for ([_]RenewalOwner{ .none, .external, .omux }) |replacement_owner| {
+                if (owner == replacement_owner) continue;
+                try std.testing.expectError(error.RenewalOwnerConflict, store.commit(1, "{\"phase\":\"unverified_transfer\"}", &.{
+                    .{ .put = .{ .context = independent_next, .plaintext = "synthetic-should-rollback", .renewal_owner = .external } },
+                    .{ .put = .{ .context = next, .plaintext = "synthetic-unverified", .renewal_owner = replacement_owner } },
+                }));
+                try std.testing.expect(checkpoint.eql(store.checkpoint));
+                var snapshot = try store.readSnapshot();
+                defer snapshot.deinit();
+                try std.testing.expectEqual(@as(u64, 1), snapshot.revision);
+                try std.testing.expectEqualStrings("{\"phase\":\"original\"}", snapshot.json);
+                const status = (try store.readGrantStatus(test_context.account_id, test_context.grant_id)).?;
+                try std.testing.expectEqual(owner, status.renewal_owner);
+                try std.testing.expectEqual(GrantState.ready, status.state);
+                try std.testing.expectEqual(@as(u64, 1), status.generation);
+                try std.testing.expectEqual(@as(u64, 2), try store.nextGeneration(test_context.account_id, test_context.grant_id));
+                try std.testing.expectEqual(@as(u64, 2), try store.nextGeneration(independent.account_id, independent.grant_id));
+                var original = try store.loadGrant(test_context);
+                defer original.deinit();
+                try std.testing.expectEqualStrings("synthetic-original", original.bytes);
+                var retained = try store.loadGrant(independent);
+                defer retained.deinit();
+                try std.testing.expectEqualStrings("synthetic-independent", retained.bytes);
+                try std.testing.expect((try store.readOperation("forbidden-takeover")) == null);
+            }
+            if (owner != .omux) try std.testing.expectError(error.RenewalNotOwned, store.beginRotation(test_context, "forbidden-takeover"));
+            try std.testing.expectEqual(@as(u64, 2), try store.commit(1, "{\"phase\":\"same_writer\"}", &.{.{ .put = .{ .context = next, .plaintext = "synthetic-successor", .renewal_owner = owner } }}));
+        }
+        var reopened = try Store.open(std.testing.io, allocator, path, key);
+        defer reopened.close();
+        const status = (try reopened.readGrantStatus(next.account_id, next.grant_id)).?;
+        try std.testing.expectEqual(owner, status.renewal_owner);
+        try std.testing.expectEqual(@as(u64, 2), status.generation);
+        try std.testing.expectEqual(GrantState.ready, status.state);
+        var successor = try reopened.loadGrant(next);
+        defer successor.deinit();
+        try std.testing.expectEqualStrings("synthetic-successor", successor.bytes);
+        try std.testing.expectEqual(@as(u64, 1), (try reopened.readGrantStatus(independent.account_id, independent.grant_id)).?.generation);
+        try std.testing.expect((try reopened.readOperation("forbidden-takeover")) == null);
+    }
+}
+
 test "missing initialized custody records fail closed and are never recreated" {
     const allocator = std.testing.allocator;
     const key: envelope.Key = @splat(36);
@@ -1727,4 +2465,265 @@ test "database records the exact vault root and rejects identity fallback" {
     var secret = try store.loadGrant(custom_context);
     defer secret.deinit();
     try std.testing.expectEqualStrings("custom-root", secret.bytes);
+}
+
+test "sealed commit checks original deadline before SQL and before irreversible recovery publication" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const Held = struct {
+        io: std.Io,
+        until: std.Io.Clock.Timestamp,
+        refuse_at: CommitStage,
+        calls: usize = 0,
+        reached: bool = false,
+        fn check(context: *anyopaque, stage: CommitStage) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (stage == self.refuse_at) {
+                self.reached = true;
+                const remaining = self.until.durationFromNow(self.io).raw.toNanoseconds();
+                if (remaining > 0) try self.io.sleep(.fromNanoseconds(remaining + 20_000_000), .awake);
+            }
+            if (self.until.durationFromNow(self.io).raw.toNanoseconds() <= 0) return error.FixtureOriginalDeadline;
+        }
+    };
+    for ([_]CommitStage{ .before_begin, .before_reservation, .before_commit }) |stage| {
+        var directory = std.testing.tmpDir(.{});
+        defer directory.cleanup();
+        const path = try testPath(a, directory);
+        defer a.free(path);
+        var store = try Store.open(io, a, path, @splat(0x68));
+        defer store.close();
+        var original = try store.readSnapshot();
+        const original_revision = original.revision;
+        original.deinit();
+        // Tiny real payloads still pass actual entropy/encryption and each
+        // staged SQL/checkpoint path; delay belongs to the retained fence and
+        // never replaces its original clock with a new deadline.
+        var held: Held = .{ .io = io, .until = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(2) }), .refuse_at = stage };
+        try std.testing.expectError(error.FixtureOriginalDeadline, store.commitFenced(original_revision, "{}", &.{.{ .put = .{ .context = test_context, .plaintext = "synthetic-fenced-payload", .renewal_owner = .omux } }}, .{ .context = &held, .check = Held.check }));
+        try std.testing.expect(held.calls > 0 and held.reached);
+        if (stage == .before_commit) {
+            // Durable recovery reservation has begun: refuse, poison, and
+            // never turn this return into an unissued retry or ready custody.
+            try std.testing.expect(store.poisoned);
+        } else {
+            try std.testing.expect(!store.poisoned);
+            var saved = try store.readSnapshot();
+            defer saved.deinit();
+            try std.testing.expectEqual(original_revision, saved.revision);
+            try std.testing.expect((try store.readGrantStatus(test_context.account_id, test_context.grant_id)) == null);
+            try std.testing.expectEqual(@as(u64, 0), try store.scalar("SELECT count(*) FROM grant_generations;"));
+        }
+    }
+}
+
+// These real SQLite models prove the paired writer primitive, not token issuer
+// authority. Actor models separately construct its sealed ticket and proof.
+const OwnedPairStorageModel = struct {
+    const Allow = struct {
+        fn check(_: *anyopaque, _: CommitStage) !void {}
+    };
+    fn tuple(key_id: []const u8, generation: u64, operation: []const u8) OwnedPairRotation {
+        return .{ .operation_id = operation, .access = .{ .key_id = key_id, .account_id = "synthetic-pair-account", .grant_id = "synthetic-pair-access", .generation = generation, .purpose = "request", .scope = "https://api.openai.com/v1" }, .refresh = .{ .key_id = key_id, .account_id = "synthetic-pair-account", .grant_id = "synthetic-pair-refresh", .generation = generation, .purpose = "renewal", .scope = "https://api.openai.com/v1" } };
+    }
+    fn seed(store: *Store, pair: OwnedPairRotation) !u64 {
+        return store.commit(0, "{}", &.{ .{ .put = .{ .context = pair.access, .plaintext = "{\"access_token\":\"synthetic-first-access\"}", .renewal_owner = .omux } }, .{ .put = .{ .context = pair.refresh, .plaintext = "{\"refresh_token\":\"synthetic-first-refresh\",\"client_id\":\"oaiapp_synthetic_pair\"}", .renewal_owner = .omux } } });
+    }
+    fn successor(pair: OwnedPairRotation) OwnedPairSuccessor {
+        var access = pair.access;
+        access.generation += 1;
+        var refresh = pair.refresh;
+        refresh.generation += 1;
+        return .{ .access = access, .refresh = refresh, .access_plaintext = "{\"access_token\":\"synthetic-successor-access\"}", .refresh_plaintext = "{\"refresh_token\":\"synthetic-successor-refresh\",\"client_id\":\"oaiapp_synthetic_pair\"}" };
+    }
+};
+
+test "paired SQLite rotation commits both generations and snapshot once and rejects second writer or replay" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(a, tmp);
+    defer a.free(path);
+    var store = try Store.open(std.testing.io, a, path, @splat(91));
+    defer store.close();
+    const M = OwnedPairStorageModel;
+    const operation: [64]u8 = @splat('1');
+    const other: [64]u8 = @splat('2');
+    const pair = M.tuple(store.key_id, 1, &operation);
+    var cookie: u8 = 0;
+    const fence: CommitFence = .{ .context = &cookie, .check = M.Allow.check };
+    var revision = try M.seed(&store, pair);
+    revision = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &fence);
+    try std.testing.expectError(error.PairIssueAlreadyAdmitted, store.beginOwnedPairRotation(revision, "{}", pair, &fence));
+    try std.testing.expectError(error.PairRotationConflict, store.beginOwnedPairRotation(revision, "{}", M.tuple(store.key_id, 1, &other), &fence));
+    try std.testing.expectEqual(GrantState.ready, (try store.readGrantStatus(pair.access.account_id, pair.access.grant_id)).?.state);
+    try std.testing.expectError(error.RotationInProgress, store.loadGrant(pair.refresh));
+    const next = M.successor(pair);
+    revision = try store.completeOwnedPairRotation(revision, "{\"paired\":\"completed\"}", pair, next, &fence);
+    var saved = try store.readSnapshot();
+    defer saved.deinit();
+    try std.testing.expectEqual(revision, saved.revision);
+    try std.testing.expectEqualStrings("{\"paired\":\"completed\"}", saved.json);
+    var access = try store.loadGrant(next.access);
+    defer access.deinit();
+    var refresh = try store.loadGrant(next.refresh);
+    defer refresh.deinit();
+    try std.testing.expectEqualStrings(next.access_plaintext, access.bytes);
+    try std.testing.expectEqualStrings(next.refresh_plaintext, refresh.bytes);
+    try std.testing.expectError(error.PairRotationConflict, store.completeOwnedPairRotation(revision, "{}", pair, next, &fence));
+    try std.testing.expectError(error.StaleGeneration, store.loadGrant(pair.refresh));
+    try std.testing.expectEqual(RotationStatus.completed, (try store.readOperation(&operation)).?.status);
+}
+
+test "paired successor fences after sealing and reservation preserve rollback versus poisoned uncertainty" {
+    const M = OwnedPairStorageModel;
+    const Held = struct {
+        stage: CommitStage,
+        checks: usize = 0,
+        fn check(raw: *anyopaque, stage: CommitStage) !void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            self.checks += 1;
+            if (stage == self.stage) return error.FixtureOriginalDeadline;
+        }
+    };
+    for ([_]CommitStage{ .before_begin, .before_reservation, .before_commit }) |stage| {
+        const a = std.testing.allocator;
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const path = try testPath(a, tmp);
+        defer a.free(path);
+        var store = try Store.open(std.testing.io, a, path, @splat(92));
+        defer store.close();
+        const operation: [64]u8 = @splat('3');
+        const pair = M.tuple(store.key_id, 1, &operation);
+        var cookie: u8 = 0;
+        const allow: CommitFence = .{ .context = &cookie, .check = M.Allow.check };
+        var revision = try M.seed(&store, pair);
+        revision = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &allow);
+        const checkpoint = store.checkpoint;
+        var held: Held = .{ .stage = stage };
+        const fence: CommitFence = .{ .context = &held, .check = Held.check };
+        try std.testing.expectError(error.FixtureOriginalDeadline, store.completeOwnedPairRotation(revision, "{\"paired\":\"completed\"}", pair, M.successor(pair), &fence));
+        try std.testing.expect(held.checks > 0);
+        if (stage == .before_commit) {
+            try std.testing.expect(store.poisoned);
+            try std.testing.expectError(error.DatabasePoisoned, store.readSnapshot());
+        } else {
+            try std.testing.expect(!store.poisoned and std.meta.eql(checkpoint, store.checkpoint));
+            var saved = try store.readSnapshot();
+            defer saved.deinit();
+            try std.testing.expectEqual(revision, saved.revision);
+            try std.testing.expectEqualStrings("{\"paired\":\"issued\"}", saved.json);
+            try std.testing.expectEqual(@as(u64, 1), (try store.readGrantStatus(pair.access.account_id, pair.access.grant_id)).?.generation);
+            try std.testing.expectEqual(GrantState.refreshing, (try store.readGrantStatus(pair.refresh.account_id, pair.refresh.grant_id)).?.state);
+            try std.testing.expectEqual(RotationStatus.started, (try store.readOperation(&operation)).?.status);
+            try std.testing.expectError(error.PairIssueAlreadyAdmitted, store.beginOwnedPairRotation(revision, "{}", pair, &allow));
+        }
+    }
+}
+
+test "paired rotation cycles keep finite last operations and reopen never reconstructs an issued refresh" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(a, tmp);
+    defer a.free(path);
+    const key: envelope.Key = @splat(93);
+    const M = OwnedPairStorageModel;
+    var cookie: u8 = 0;
+    const fence: CommitFence = .{ .context = &cookie, .check = M.Allow.check };
+    const pending: [64]u8 = @splat('f');
+    {
+        var store = try Store.open(std.testing.io, a, path, key);
+        defer store.close();
+        const first: [64]u8 = @splat('1');
+        var revision = try M.seed(&store, M.tuple(store.key_id, 1, &first));
+        for (1..33) |generation| {
+            const operation = std.fmt.bytesToHex(@as([32]u8, @splat(@intCast(generation))), .lower);
+            const pair = M.tuple(store.key_id, @intCast(generation), &operation);
+            revision = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &fence);
+            revision = try store.completeOwnedPairRotation(revision, "{\"paired\":\"completed\"}", pair, M.successor(pair), &fence);
+            try std.testing.expectEqual(@as(u64, 1), try store.scalar("SELECT count(*) FROM operations;"));
+        }
+        const pair = M.tuple(store.key_id, 33, &pending);
+        _ = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &fence);
+    }
+    var reopened = try Store.open(std.testing.io, a, path, key);
+    defer reopened.close();
+    const pair = M.tuple(reopened.key_id, 33, &pending);
+    var saved = try reopened.readSnapshot();
+    defer saved.deinit();
+    _ = try reopened.quarantineOwnedPairRotation(saved.revision, "{\"paired\":\"unknown\"}", pair);
+    try std.testing.expectEqual(GrantState.quarantined, (try reopened.readGrantStatus(pair.access.account_id, pair.access.grant_id)).?.state);
+    try std.testing.expectEqual(GrantState.quarantined, (try reopened.readGrantStatus(pair.refresh.account_id, pair.refresh.grant_id)).?.state);
+    try std.testing.expectError(error.PairIssueAlreadyAdmitted, reopened.beginOwnedPairRotation(saved.revision + 1, "{}", pair, &fence));
+    try std.testing.expectError(error.GrantQuarantined, reopened.loadGrant(pair.refresh));
+}
+
+test "actor paired recovery coverage refuses missing duplicate wrong and unrelated actual SQL obligations without effects" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(a, tmp);
+    defer a.free(path);
+    var store = try Store.open(io, a, path, @splat(94));
+    defer store.close();
+    const M = OwnedPairStorageModel;
+    const operation: [64]u8 = @splat('7');
+    const foreign: [64]u8 = @splat('8');
+    const pair = M.tuple(store.key_id, 1, &operation);
+    var cookie: u8 = 0;
+    const fence: CommitFence = .{ .context = &cookie, .check = M.Allow.check };
+    var revision = try M.seed(&store, pair);
+    revision = try store.beginOwnedPairRotation(revision, "{\"paired\":\"issued\"}", pair, &fence);
+    // This is only the actual SQL obligation primitive, not a provider-qualified
+    // actor profile. Production also requires full sealed snapshot/AEAD joins.
+    try store.requireOnlyPairedRecovery(&.{pair});
+    const first_checkpoint = store.checkpoint;
+    try std.testing.expectError(error.SnapshotAdmissionMigrationRequired, store.requireOnlyPairedRecovery(&.{}));
+    try std.testing.expectError(error.SnapshotAdmissionMigrationRequired, store.requireOnlyPairedRecovery(&.{ pair, pair }));
+    try std.testing.expectError(error.RecordMissing, store.requireOnlyPairedRecovery(&.{M.tuple(store.key_id, 1, &foreign)}));
+    try std.testing.expect(std.meta.eql(first_checkpoint, store.checkpoint));
+    try std.testing.expectEqual(RotationStatus.started, (try store.readOperation(&operation)).?.status);
+    const extra: envelope.Context = .{ .key_id = store.key_id, .account_id = "synthetic-extra-owner", .grant_id = "synthetic-extra-refresh", .generation = 1, .purpose = "renewal", .scope = "https://api.openai.com/v1" };
+    _ = try store.commit(revision, "{\"paired\":\"issued\"}", &.{.{ .put = .{ .context = extra, .plaintext = "synthetic-unpaired-rotation", .renewal_owner = .omux } }});
+    try std.testing.expect((try store.beginRotation(extra, "synthetic-unpaired-operation")).may_issue);
+    // Primitive setup deliberately has no actor State envelope. Compare the
+    // actual snapshot/checkpoints and bounded ciphertext SQL tuples directly;
+    // actor-only custodyObservation must still refuse this synthetic metadata.
+    const Observe = struct {
+        fn rows(selected: *Store, until: std.Io.Clock.Timestamp) ![32]u8 {
+            var hash: ObservationHash = .{ .mac = .init(&selected.key), .io = selected.io, .until = until };
+            defer std.crypto.secureZero(u8, std.mem.asBytes(&hash));
+            try selected.observeRows(&hash, "SELECT id,key_id,key_check FROM custody ORDER BY id;", &.{ .integer, .text, .blob });
+            try selected.observeRows(&hash, "SELECT account_id,grant_id,generation,purpose,scope,renewal_owner,state,ciphertext FROM grants ORDER BY account_id COLLATE BINARY,grant_id COLLATE BINARY;", &.{ .text, .text, .integer, .text, .text, .text, .text, .blob });
+            try selected.observeRows(&hash, "SELECT account_id,grant_id,generation FROM grant_generations ORDER BY account_id COLLATE BINARY,grant_id COLLATE BINARY;", &.{ .text, .text, .integer });
+            try selected.observeRows(&hash, "SELECT account_id FROM tombstones ORDER BY account_id COLLATE BINARY;", &.{.text});
+            try selected.observeRows(&hash, "SELECT operation_id,account_id,grant_id,generation,state,committed_revision FROM operations ORDER BY operation_id COLLATE BINARY;", &.{ .text, .text, .text, .integer, .text, .optional_integer });
+            var commitment: [32]u8 = undefined;
+            hash.mac.final(&commitment);
+            return commitment;
+        }
+    };
+    const until: std.Io.Clock.Timestamp = .fromNow(io, .{ .clock = .awake, .raw = .fromSeconds(3) });
+    var before = try store.readSnapshot();
+    defer before.deinit();
+    const before_checkpoint = store.checkpoint;
+    const before_authority = try store.authority.?.read();
+    const before_rows = try Observe.rows(&store, until);
+    try std.testing.expectError(error.SnapshotAdmissionMigrationRequired, store.requireOnlyPairedRecovery(&.{pair}));
+    var after = try store.readSnapshot();
+    defer after.deinit();
+    const after_rows = try Observe.rows(&store, until);
+    try std.testing.expectEqual(before.revision, after.revision);
+    try std.testing.expectEqualSlices(u8, before.json, after.json);
+    try std.testing.expect(before_checkpoint.eql(store.checkpoint));
+    try std.testing.expect(before_checkpoint.eql(try store.readCheckpoint()));
+    try std.testing.expect(before_authority.eql(try store.authority.?.read()));
+    try std.testing.expectEqualSlices(u8, &before_rows, &after_rows);
+    try std.testing.expectEqual(RotationStatus.started, (try store.readOperation(&operation)).?.status);
+    try std.testing.expectEqual(RotationStatus.started, (try store.readOperation("synthetic-unpaired-operation")).?.status);
+    try std.testing.expectEqual(GrantState.refreshing, (try store.readGrantStatus(extra.account_id, extra.grant_id)).?.state);
 }

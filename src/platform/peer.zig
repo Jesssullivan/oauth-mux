@@ -58,7 +58,11 @@ const RawContext = extern struct { socket_fd: c_int, pidfd: c_int, owns_socket: 
 extern "c" fn omux_peer_enable(c_int) c_int;
 extern "c" fn omux_peer_capture(c_int, u32, *RawContext) c_int;
 extern "c" fn omux_peer_receive(*RawContext, [*]u8, usize, c_int, *usize) c_int;
+extern "c" fn omux_peer_receive_descriptor(*RawContext, [*]u8, usize, *usize, *c_int) c_int;
 extern "c" fn omux_peer_alive(*const RawContext) c_int;
+extern "c" fn omux_peer_verify_bundled_image(*const RawContext, c_int, c_int) c_int;
+extern "c" fn omux_peer_inspect_bundled_mappings(*const RawContext, c_int, c_int) c_int;
+extern "c" fn omux_peer_verify_executable_image(*const RawContext, c_int) c_int;
 extern "c" fn omux_peer_duplicate(*const RawContext, *RawContext) c_int;
 extern "c" fn omux_peer_close(*RawContext) void;
 
@@ -78,6 +82,9 @@ fn check(status: c_int) !void {
         11 => error.Interrupted,
         12 => error.PeerSystemFailure,
         13 => error.PeerConnectionClosed,
+        14 => error.PeerImageMismatch,
+        15 => error.PeerImageMalformed,
+        16 => error.PeerImageUnavailable,
         else => error.InvalidPeerEvidence,
     };
 }
@@ -110,6 +117,21 @@ pub const Context = struct {
     pub fn alive(self: *const Context) !void {
         try check(omux_peer_alive(&self.raw));
     }
+    /// Retired boundary. Backend executable mappings can be decoys; this API
+    /// always refuses and cannot qualify source acquisition.
+    pub fn verifyBundledImage(self: *const Context, loader_fd: std.c.fd_t, backend_fd: std.c.fd_t) !void {
+        try check(omux_peer_verify_bundled_image(&self.raw, loader_fd, backend_fd));
+    }
+    /// Mapping diagnostics only; never grants acquisition/source authority.
+    pub fn inspectBundledMappings(self: *const Context, loader_fd: std.c.fd_t, backend_fd: std.c.fd_t) !void {
+        try check(omux_peer_inspect_bundled_mappings(&self.raw, loader_fd, backend_fd));
+    }
+    /// Actual primary executable must be the held authenticated backend role.
+    /// Caller also authenticates a supported direct-main launch profile,
+    /// selection, consent and original deadline before/after every exchange.
+    pub fn verifyExecutableImage(self: *const Context, backend_fd: std.c.fd_t) !void {
+        try check(omux_peer_verify_executable_image(&self.raw, backend_fd));
+    }
     pub fn witness(self: *const Context) Witness {
         const raw = self.raw.witness;
         return .{
@@ -125,6 +147,19 @@ pub const Context = struct {
     }
     pub fn receivePacket(self: *Context, buffer: []u8) !usize {
         return self.receive(buffer, true);
+    }
+    /// Only the authenticated opt-in acquisition response uses this boundary.
+    /// Caller owns descriptor on success and must close on every later refusal.
+    /// Sealing authenticates immutable container shape, not credential authority.
+    pub fn receivePacketDescriptor(self: *Context, buffer: []u8) !struct { bytes: usize, descriptor: c_int } {
+        if (buffer.len == 0 or buffer.len > maximum_packet) {
+            @memset(buffer, 0);
+            return error.InvalidPeerMessageSize;
+        }
+        var count: usize = 0;
+        var descriptor: c_int = -1;
+        try check(omux_peer_receive_descriptor(&self.raw, buffer.ptr, buffer.len, &count, &descriptor));
+        return .{ .bytes = count, .descriptor = descriptor };
     }
     pub fn receiveSegment(self: *Context, buffer: []u8) !usize {
         return self.receive(buffer, false);
@@ -146,4 +181,10 @@ test "saved witness validates structure without providing live context" {
     changed = good;
     changed.boot_id = @splat(0);
     try std.testing.expectError(error.InvalidPeerWitness, validateSavedWitness(changed));
+}
+
+test "native image refusals remain distinct at the Zig boundary" {
+    try std.testing.expectError(error.PeerImageMismatch, check(14));
+    try std.testing.expectError(error.PeerImageMalformed, check(15));
+    try std.testing.expectError(error.PeerImageUnavailable, check(16));
 }

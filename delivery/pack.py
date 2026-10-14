@@ -77,7 +77,8 @@ def make_bundle(binary: Path, daemon: Path, reference: Path, systemd_template: P
                 runtime_files: list[Path] | None = None, patchelf: Path | None = None,
                 ca_bundle: Path | None = None, control: Path | None = None,
                 qt_plugins: list[Path] | None = None, resolution_witness: dict | None = None,
-                qt_runtime_files: list[Path] | None = None, channel: str | None = None) -> bytes:
+                qt_runtime_files: list[Path] | None = None, channel: str | None = None,
+                action_deadline: float | None = None) -> bytes:
     if channel is not None and channel not in {"development", "release"}:
         raise ValueError("unsupported artifact channel")
     if channel is not None and runtime_files is None:
@@ -124,12 +125,14 @@ def make_bundle(binary: Path, daemon: Path, reference: Path, systemd_template: P
     if runtime_files is not None or patchelf is not None or control is not None or qt_plugins is not None or qt_runtime_files is not None:
         if runtime_files is None or patchelf is None or ca_bundle is None or not target.endswith("-linux"):
             raise ValueError("portable Linux assembly requires declared runtime files, trust bundle and patchelf")
-        from portable import assemble_linux
+        from portable import assemble_linux, desktop_entry, desktop_file
         runtime_payload, runtime = assemble_linux(binary, daemon, runtime_files, patchelf, target, ca_bundle,
                                                   control=control, qt_plugins=qt_plugins,
                                                   resolution_witness=resolution_witness, qt_runtime_files=qt_runtime_files,
-                                                  channel=channel)
+                                                  channel=channel, action_deadline=action_deadline)
         files.update(runtime_payload)
+        if control is not None and channel is not None:
+            files[desktop_file(channel)] = desktop_entry(channel)
         distribution = "portable-linux"
     manifest = {
         "schemaVersion": 1,
@@ -162,7 +165,8 @@ def make_bundle(binary: Path, daemon: Path, reference: Path, systemd_template: P
     return result.getvalue()
 
 
-def verify_bundle(payload: bytes, require_publishable: bool = False) -> tuple[dict, dict[str, bytes]]:
+def archive_contents(payload):
+    """Bounded public archive extraction, without executing or importing its loader."""
     if len(payload) > MAX_BYTES:
         raise ValueError("archive exceeds bounded compressed size")
     files: dict[str, bytes] = {}
@@ -190,6 +194,11 @@ def verify_bundle(payload: bytes, require_publishable: bool = False) -> tuple[di
             if len(files[name]) != member.size:
                 raise ValueError("truncated archive payload")
             modes[name] = member.mode
+    return files, modes
+
+
+def verify_bundle(payload: bytes, require_publishable: bool = False) -> tuple[dict, dict[str, bytes]]:
+    files, modes = archive_contents(payload)
     if not REQUIRED_FILES.issubset(files):
         raise ValueError("archive members do not match development distribution")
     manifest = json.loads(files["release-manifest.json"])

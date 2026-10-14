@@ -77,8 +77,16 @@ def parse(payload):
 class Coordinator:
     def __init__(self, *, profile, manager, arguments, proof_id, proof_root, source_socket,
                  uid, deadline_ns, input_digests, vault_wrapper_authority, source_root, source_files_sha256,
-                 now=time.monotonic_ns, inspector=display.inspect_endpoint):
-        require(profile == "yoga-toolbar" and manager == "system" and arguments == ["run", LABEL], "profile_invalid")
+                 now=time.monotonic_ns, inspector=display.inspect_endpoint, original_entry_ns=None):
+        self.reserved_entry = None
+        if profile == 'yoga-toolbar-reserved':
+            import guard_yoga_toolbar_reserved as reservation
+            reservation.finite(manager, arguments)
+            reservation.clock({reservation.CLOCK: original_entry_ns, 'deadlineMonotonicNs': deadline_ns})
+            self.reserved_entry = original_entry_ns
+        else:
+            require(profile == "yoga-toolbar" and manager == "system" and arguments == ["run", LABEL]
+                and original_entry_ns is None, "profile_invalid")
         require(type(proof_id) is str and UUID.fullmatch(proof_id), "proof_id_invalid")
         require(type(input_digests) is dict and set(input_digests) == INPUTS
                 and all(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) for value in input_digests.values()), "input_digest_invalid")
@@ -156,7 +164,12 @@ class Coordinator:
         expected_wrapper_sha = hashlib.sha256(json.dumps(self.vault_wrapper_authority, sort_keys=True,
             separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode('ascii')).hexdigest()
         require(checked_wrapper_authority_sha256 == expected_wrapper_sha, 'wrapper_authority_invalid')
-        require(all(properties.get(key) == value for key, value in LIMITS.items()), "aggregate_unqualified")
+        if self.reserved_entry is not None:
+            import guard_yoga_toolbar_reserved as reservation
+            require(hasattr(self, 'reserved_runtime'), 'aggregate_unqualified')
+            reservation.verify_properties(properties, LIMITS, self.reserved_entry, self.deadline, self.reserved_runtime)
+        else:
+            require(all(properties.get(key) == value for key, value in LIMITS.items()), "aggregate_unqualified")
         require(type(coordinator) is dict and set(coordinator) == {"pid", "cgroupPath", "device", "inode"}
                 and all(type(coordinator[key]) is int and coordinator[key] > 1 for key in ("pid", "device", "inode"))
                 and type(coordinator["cgroupPath"]) is str

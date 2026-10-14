@@ -7,7 +7,7 @@ export const MAX_MESSAGE_BYTES = 262144;
 export const MAX_SECRET_BYTES = 8192;
 export const MAX_CAPSULE_BYTES = 131072;
 export const SOURCE_METHODS = Object.freeze(["browser.connect", "browser.importGrant", "browser.observation", "browser.reconcile", "browser.disconnect"]);
-const METHODS = new Set([...SOURCE_METHODS, "browser.health"]);
+const METHODS = new Set([...SOURCE_METHODS, "browser.health", "browser.connectOutcome"]);
 const TEXT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const SAME_SITES = new Set(["no_restriction", "lax", "strict", "unspecified"]);
 const UNITS = new Set(["calls", "bytes", "seconds", "count", "bytes_per_second"]);
@@ -28,6 +28,10 @@ function seconds(value) { if (!Number.isSafeInteger(value) || value < 0) fail("i
 function number(value) { if (typeof value !== "number" || !Number.isFinite(value) || value < 0) fail("invalid_number"); }
 function optional(value, key, check) { if (Object.hasOwn(value, key)) check(value[key]); }
 function boolean(value) { if (typeof value !== "boolean") fail("invalid_boolean"); }
+export function authorityNumber(value, positive = false) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > 18446744073709551615n || (positive && value === "0")) fail("invalid_native_response");
+  return value;
+}
 
 function validateProvenance(provenance) {
   fields(provenance, ["browser", "extensionId", "channel"], ["browser", "extensionId", "channel"]);
@@ -116,8 +120,15 @@ export function validateEnvelope(envelope, { allowFixture = false } = {}) {
     if (new TextEncoder().encode(JSON.stringify(envelope)).length > MAX_MESSAGE_BYTES) fail("message_too_large");
     return envelope;
   }
-  const extra = envelope.method === "browser.importGrant" ? ["capsule"] : envelope.method === "browser.observation" ? ["observation"] : [];
-  fields(envelope.params, ["sourceId", "adapter", "origin", "provenance", ...extra], ["sourceId", "adapter", "origin", "provenance", ...extra]);
+  const required = envelope.method === "browser.importGrant" ? ["capsule"] : envelope.method === "browser.observation" ? ["observation"] : envelope.method === "browser.connectOutcome" ? ["operationId"] : [];
+  const extra = ["browser.connect", "browser.connectOutcome"].includes(envelope.method) ? ["operationId", "expectedRevision"] : envelope.method === "browser.disconnect" ? ["expectedGeneration", "operationId", "expectedRevision"] : required;
+  fields(envelope.params, ["sourceId", "adapter", "origin", "provenance", ...extra], ["sourceId", "adapter", "origin", "provenance", ...required]);
+  optional(envelope.params, "operationId", value => id(value, 64));
+  if (envelope.params.operationId === envelope.id) fail("invalid_fields");
+  optional(envelope.params, "expectedRevision", authorityNumber);
+  optional(envelope.params, "expectedGeneration", value => authorityNumber(value, true));
+  if (["browser.connect", "browser.disconnect"].includes(envelope.method) && Object.hasOwn(envelope.params, "operationId") !== Object.hasOwn(envelope.params, "expectedRevision")) fail("invalid_fields");
+  if (envelope.method === "browser.disconnect" && Object.hasOwn(envelope.params, "operationId") && !Object.hasOwn(envelope.params, "expectedGeneration")) fail("invalid_fields");
   id(envelope.params.sourceId);
   let adapter;
   try { adapter = getAdapter(envelope.params.adapter, { allowFixture }); } catch { fail("unsupported_adapter"); }
@@ -163,6 +174,23 @@ export function makeHealthEnvelope(requestId, provenance) {
   return validateEnvelope({ version: PROTOCOL_VERSION, id: requestId, method: "browser.health", params: { provenance: { channel: CHANNEL, ...provenance } } });
 }
 
+export function validateConnectOutcome(response, requestId, sourceId, operationId) {
+  validateResponse(response, requestId);
+  const result = response.result;
+  const keys = ["outcome", "source_id", "operation_id", "connect_generation", "connect_revision", "current_generation", "current_revision", "source_status", "authorized"];
+  fields(result, keys, keys);
+  if (result.source_id !== sourceId || result.operation_id !== operationId || !["unknown", "committed"].includes(result.outcome) || !["absent", "connected", "detached", "disconnected"].includes(result.source_status) || typeof result.authorized !== "boolean") fail("invalid_native_response");
+  authorityNumber(result.current_revision);
+  if (result.current_generation !== null) authorityNumber(result.current_generation, true);
+  if (result.outcome === "committed") {
+    authorityNumber(result.connect_generation, true);
+    authorityNumber(result.connect_revision, true);
+    if (BigInt(result.connect_revision) > BigInt(result.current_revision)) fail("invalid_native_response");
+  } else if (result.connect_generation !== null || result.connect_revision !== null) fail("invalid_native_response");
+  if (result.authorized && (result.source_status !== "connected" || result.current_generation === null)) fail("invalid_native_response");
+  return result;
+}
+
 export function validateHealthResponse(response, requestId, expectedChannel = CHANNEL) {
   // Browser health schema v1 is exactly the daemon's six-field, provider-free
   // readiness result. Source connection is a bridge capability; disabled export
@@ -171,7 +199,8 @@ export function validateHealthResponse(response, requestId, expectedChannel = CH
   const result = response.result;
   fields(result, ["status", "custody_available", "provider_access", "protocolVersion", "channel", "capabilities"], ["status", "custody_available", "provider_access", "protocolVersion", "channel", "capabilities"]);
   if (result.protocolVersion !== PROTOCOL_VERSION || result.channel !== expectedChannel) fail("incompatible_native_host");
-  fields(result.capabilities, ["source_connection", "production_export"], ["source_connection", "production_export"]);
+  fields(result.capabilities, ["source_connection", "production_export", "connect_recovery"], ["source_connection", "production_export"]);
+  optional(result.capabilities, "connect_recovery", boolean);
   if (!["ready", "repair_required"].includes(result.status) || typeof result.custody_available !== "boolean" || result.custody_available !== (result.status === "ready") || result.provider_access !== false || result.capabilities.source_connection !== true || result.capabilities.production_export !== false) fail("invalid_native_response");
-  return { status: result.status, custody_available: result.custody_available, provider_access: false, protocolVersion: result.protocolVersion, channel: result.channel, capabilities: { source_connection: true, production_export: false } };
+  return { status: result.status, custody_available: result.custody_available, provider_access: false, protocolVersion: result.protocolVersion, channel: result.channel, capabilities: { source_connection: true, production_export: false, ...(Object.hasOwn(result.capabilities, "connect_recovery") ? { connect_recovery: result.capabilities.connect_recovery } : {}) } };
 }

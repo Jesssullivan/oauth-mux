@@ -14,6 +14,12 @@
       </section>
       <label class="consent"><input type="checkbox" id="consent"> <span>Allow Omux to read this provider in the selected browser context and automatically enroll identities it verifies there. This permission does not authorize application requests.</span></label>
       <div class="actions"><button type="button" data-command="connect">Connect context</button><button type="button" data-command="reconcile">Refresh context</button><button type="button" data-command="disconnect">Disconnect context</button></div>
+      <section aria-label="Saved context removal">
+        <label id="stored-context-label" for="stored-context">Saved provider context to disconnect</label>
+        <select id="stored-context"><option value="">Select a saved context</option></select>
+        <p id="removal-note">Choose a saved connection to disconnect without provider read access. These local records are not verified accounts.</p>
+        <button type="button" data-command="disconnect" data-stored-context>Disconnect saved context</button>
+      </section>
       <p class="help">Disconnect ends acquisition from this context and removes its retained access credentials. Other sources and native history are preserved. It does not revoke access at the provider.</p>
       <p id="status" role="status" aria-live="polite">Checking selected context…</p>
     </main>

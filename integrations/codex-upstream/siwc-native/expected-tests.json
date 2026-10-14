@@ -1,0 +1,27 @@
+{
+  "binary_target": "//codex-rs/core:core-unit-tests-bin",
+  "coverage": "all15 exact names must pass with zero ignored; full unfiltered core-unit-tests includes unchanged legacy regression; do not infer 15-only libtest summary",
+  "default_build_target": "//codex-rs/core:core",
+  "default_regression_target": "//codex-rs/core:core-unit-tests",
+  "expected": [
+    "auth_broker::tests::unix_transport::actual_private_siwc_ticket_binds_request_expiry_and_distinct_replacement_method",
+    "auth_broker::tests::unix_transport::actual_private_structured_siwc_reject_records_literal_cause_and_stop_without_refresh_or_alternate",
+    "auth_broker::tests::unix_transport::actual_responses_client_encodes_fixed_route_and_bearer_then_classifies_only_before_stream_open",
+    "auth_broker::tests::unix_transport::actual_responses_open_stream_usage_failure_never_becomes_replacement_authority",
+    "auth_broker::tests::unix_transport::actual_siwc_receipt_validator_refuses_stale_or_expired_or_second_attempt_tickets",
+    "auth_broker::tests::unix_transport::legacy_private_materialization_refuses_typed_siwc_authority",
+    "auth_broker::tests::unix_transport::siwc_materialization_refuses_old_grant_wrong_authority_and_extra_account_header",
+    "auth_broker::tests::unix_transport::siwc_private_request_joins_distinct_profile_and_bearer_without_native_account_header",
+    "auth_broker::tests::unix_transport::structured_siwc_classifier_refuses_status_only_policy_duplicate_unknown_and_open_stream_errors",
+    "broker_request_profile::tests::actual_request_keeps_full_history_and_moves_only_supported_tools_to_additional_tools",
+    "broker_request_profile::tests::actual_typed_function_and_custom_audio_or_encrypted_outputs_refuse_before_any_mutation",
+    "broker_request_profile::tests::actual_typed_function_and_custom_text_and_image_outputs_preserve_their_original_bodies",
+    "broker_request_profile::tests::current_native_provider_and_siwc_audiences_remain_distinct",
+    "broker_request_profile::tests::exact_siwc_provider_refuses_ambient_credentials_native_auth_websockets_and_endpoint_drift",
+    "broker_request_profile::tests::unsupported_native_history_and_hosted_tools_are_refused_without_history_rewrite"
+  ],
+  "kind": "native-siwc-exact-model-names-v1",
+  "schema_version": 1,
+  "status": "DECLARED-UNRUN",
+  "target": "//codex-rs/core:core-unit-tests"
+}

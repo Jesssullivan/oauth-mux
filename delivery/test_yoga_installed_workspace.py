@@ -1,0 +1,340 @@
+"""Provider-free installed-workspace models; intended Bazel-only execution."""
+import copy
+import os
+from pathlib import Path
+import stat
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+import yoga_installed_workspace as installed
+
+
+class InstalledWorkspaceTests(unittest.TestCase):
+    def test_root_index_matches_legacy_ancestor_and_descendant_fences(self):
+        roots = (Path('/nix/store/' + 'a' * 32 + '-one'),
+            Path('/nix/store/' + 'b' * 32 + '-two'), Path('/srv/selected/file'),
+            Path('/srv/selected/nested'), Path('/srv/selected'), Path('/relative/../literal'))
+        index = installed.resolver_roots(roots)
+        candidates = {Path('/'), Path('/nix/store/unselected'), Path('/srv/selected-sibling')}
+        for root in roots:
+            candidates.update((root, *root.parents, root/'child', root/'child/grandchild'))
+        for candidate in candidates:
+            parents = tuple(candidate.parents)
+            with self.subTest(candidate=candidate):
+                legacy = any(candidate == root or root in candidate.parents or candidate in root.parents for root in roots)
+                final = any(candidate == root or root in candidate.parents for root in roots)
+                self.assertEqual(index.related(candidate, parents), legacy)
+                self.assertEqual(index.contains(candidate, parents), final)
+
+    def test_reused_index_never_enumerates_closed_roots_during_leaf_resolution(self):
+        roots = frozenset('/nix/store/' + 'a' * 32 + '-selected-' + str(i) for i in range(1024))
+        snapshot = installed.resolver_roots(roots)
+        class NoScan(frozenset):
+            def __iter__(self):
+                raise AssertionError('per-leaf root/ancestor enumeration')
+        # Test-only immutable membership instrument; no production constructor bypass.
+        guarded = tuple.__new__(installed._ResolverRoots, (NoScan(snapshot[0]), NoScan(snapshot[1])))
+        directory = type('Info', (), {'st_mode': stat.S_IFDIR | 0o555})()
+        with patch.object(installed.os, 'lstat', return_value=directory):
+            for i in range(40):
+                target = '/nix/store/' + 'a' * 32 + '-selected-' + str(i) + '/bin/tool'
+                self.assertEqual(installed.safe_resolve(target, guarded), Path(target))
+        with self.assertRaises(TypeError): guarded[0] = frozenset()
+        with self.assertRaises(AttributeError): guarded.extra = 'mutable'
+
+    def test_root_snapshot_does_not_cache_alias_or_admit_later_foreign_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            allowed = Path(directory)/'selected'; allowed.mkdir()
+            chosen = allowed/'payload'; chosen.write_bytes(b'synthetic selected bytes')
+            alias = allowed/'alias'; alias.symlink_to(chosen)
+            supplied = {str(allowed)}
+            index = installed.resolver_roots(supplied)
+            self.assertEqual(installed.safe_resolve(str(alias), index), chosen)
+            foreign = Path(directory)/'unselected-never-created'
+            supplied.add(str(foreign)); supplied.remove(str(allowed))
+            alias.unlink(); alias.symlink_to(foreign/'payload')
+            original_lstat = os.lstat
+            def guarded(path):
+                self.assertFalse(Path(path) == foreign or foreign in Path(path).parents)
+                return original_lstat(path)
+            with patch.object(installed.os, 'lstat', side_effect=guarded), self.assertRaises(ValueError):
+                installed.safe_resolve(str(alias), index)
+            self.assertEqual(chosen.read_bytes(), b'synthetic selected bytes')
+
+    def test_indexed_symlink_loop_keeps_exact_64_hop_readlink_bound(self):
+        root = '/nix/store/' + 'a' * 32 + '-selected'
+        index = installed.resolver_roots((root,))
+        directory = type('Info', (), {'st_mode': stat.S_IFDIR | 0o555})()
+        link = type('Info', (), {'st_mode': stat.S_IFLNK | 0o777})()
+        def metadata(path):
+            self.assertTrue(str(path) == root+'/loop' or Path(path) in Path(root+'/loop').parents)
+            return link if str(path) == root+'/loop' else directory
+        with patch.object(installed.os, 'lstat', side_effect=metadata), \
+                patch.object(installed.os, 'readlink', return_value='loop') as readlink, self.assertRaises(ValueError):
+            installed.safe_resolve(root+'/loop', index)
+        self.assertEqual(readlink.call_count, 64)
+
+    def projection(self):
+        # Actual closed public projection of BUILD464e, not a qualifying fake RUN.
+        return {'id': installed.BUILD_ID, 'artifact_epoch': installed.BUILD_ID,
+            'source_commit': installed.SOURCE_COMMIT, 'source_dirty': 'false',
+            'graph_sha256': installed.SOURCE_GRAPH, 'profile': 'standard', 'verb': 'build',
+            'targets': [installed.LABEL], 'exit': 0, 'workload_exit': 0, 'descendants_empty': True,
+            'controller_failure': None, 'output_base': installed.OUTPUT_BASE,
+            'cache_reuse_requested': True, 'cache_policy': 2,
+            'cache_key': '39f2eb3574f1f88de5326867c7d8ef4bc518faba8cb6b2048f84613edac8947d',
+            'cleanup': {'ownership': 'unproved', 'readback_attempts': 0, 'state': 'empty', 'stop': 'not-requested'}}
+
+    def controller_selection(self):
+        # Schema shape only: pinned public historical fields, synthetic file hashes.
+        launcher = installed.OUTPUT_BASE + '/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_toolbar_consent_proof.sh'
+        files = {'execution_guard.py', 'guard_yoga_profile.py', 'guard_yoga_installed_workspace.py',
+            'yoga_session_qualification.py', 'yoga_operator_coordinator.py', 'yoga_operator_launch.py',
+            'yoga_proof_inputs.py', 'yoga_display_binding.py', 'guard_cache.py', 'system_mask_policy.py',
+            'yoga_installed_controller_support.py'}
+        value = {'schemaVersion': 2, 'scope': installed.support.SELECTION_SCOPE,
+            'buildReceipt': {'path': installed.BUILD_RECEIPT, 'sha256': installed.BUILD_SHA},
+            'launcher': {'path': launcher, 'sha256': installed.LAUNCHER_SHA},
+            'runfilesManifest': {'path': launcher+'.runfiles_manifest', 'sha256': installed.MANIFEST_SHA},
+            'inputPaths': {name: installed.OUTPUT_BASE+'/execroot/_main/bazel-out/fixture/'+name
+                           for name in installed.payload.INPUTS},
+            'inputSha256': {name: installed.ARTIFACTS[name][0] if name in installed.ARTIFACTS else 'a'*64
+                            for name in installed.payload.INPUTS},
+            'nativeManifest': installed.OUTPUT_BASE+'/external/+omux_nix_repository+omux_nix/native.json',
+            'nativeManifestSha256': 'b'*64, 'fileSha256': {'fixture': 'c'*64},
+            'controllerPackage': {'root': str(installed.support.TOOLS),
+                'files': {name: {'sha256': 'd'*64, 'bytes': 17} for name in files}},
+            'controllerDelivery': {'root': str(installed.support.DELIVERY), 'files': {
+                'codex_device_acquisition_component.py': {'sha256': 'e'*64, 'bytes': 19}}}}
+        for name, digest in installed.INVENTORY_SHA.items():
+            filename = 'browser-inventory.json' if name == 'browserInventory' else 'controller-inventory.json'
+            value[name] = {'path': installed.PUBLIC_STAGING+'/'+filename, 'sha256': digest}
+        return value
+
+    def test_current_physical_controller_selection_and_legacy_source_family(self):
+        value = self.controller_selection()
+        self.assertEqual(installed.support.ROOT, Path(installed.support.__file__).resolve().parent.parent)
+        self.assertIs(installed.selected(value), value)
+        old = copy.deepcopy(value); old.update(schemaVersion=1, scope='yoga-installed-toolbar-selection-v1')
+        old.pop('controllerDelivery'); old['controllerPackage']['root']='/srv/fast-local/jess/git/oauth-mux-fixture/tools'
+        self.assertIs(installed.selected(old), old)
+        old['controllerPackage']['root']=str(installed.support.TOOLS)
+        if str(installed.support.TOOLS).startswith('/home/'):
+            with self.assertRaises(ValueError): installed.selected(old)
+
+    def test_mixed_checkout_controller_and_support_refuse_before_capture(self):
+        value = self.controller_selection(); root = installed.support.ROOT
+        for field, foreign in (('controllerPackage', str(root.parent/(root.name+'-foreign')/'tools')),
+                ('controllerDelivery', str(root.parent/(root.name+'-foreign')/'delivery')),
+                ('controllerPackage', '/srv/fast-local/jess/git/oauth-mux-fixture/tools')):
+            bad = copy.deepcopy(value); bad[field]['root'] = foreign
+            with self.subTest(field=field), patch.object(installed.os, 'open') as opened:
+                with self.assertRaises(ValueError): installed.selected(bad)
+                opened.assert_not_called()
+        bad = copy.deepcopy(value); bad['controllerPackage']['files'].pop('yoga_installed_controller_support.py')
+        with self.assertRaises(ValueError): installed.selected(bad)
+
+    def test_actual_build_projection_keeps_unstamped_artifact_truth_separate(self):
+        result = installed.origin(self.projection())
+        self.assertEqual(result['source_dirty'], 'false')
+        self.assertEqual(result['cleanup']['ownership'], 'unproved')
+        self.assertNotIn('embeddedArtifactProvenance', result)
+
+    def test_test_dirty_wrong_types_and_pointer_substitution_refuse(self):
+        for key, value in [('verb', 'test'), ('source_dirty', False), ('source_dirty', 'true'),
+                ('exit', False), ('cache_policy', True), ('descendants_empty', 1),
+                ('output_base', installed.OUTPUT_BASE + '-other'), ('source_commit', 'f' * 40),
+                ('targets', [installed.LABEL, '//:foreign'])]:
+            picked = self.projection(); picked[key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                installed.origin(picked)
+
+    def lines(self):
+        return ''.join('_main/' + name + ' ' + installed.SOURCE_ROOT + '/' + name + '\n'
+                       for name in sorted(installed.ORIGIN_FILES))
+
+    def test_runfiles_required_sources_duplicate_and_unjustified_escape_marker(self):
+        value = installed.manifest(self.lines().encode())
+        self.assertEqual(len(value), len(installed.ORIGIN_FILES))
+        for content in [self.lines() + self.lines().splitlines()[0] + '\n',
+                        ' ' + self.lines(), self.lines().split('\n', 1)[1],
+                        self.lines() + '../outside /srv/public\n']:
+            with self.assertRaises(ValueError):
+                installed.manifest(content.encode())
+
+    def test_actual_pinned_hrtf_and_alsa_record_shapes_decode_without_omission(self):
+        # Public selected manifest lines5903/13698; pure parser data only.
+        prefix = '+cached_site_repository+omux_cached_site/closure/'
+        cases = (
+            '2ahpi3w4gh6l039bs3ai7isv7ga4n0y6-openal-soft-1.24.3/share/openal/hrtf/Default HRTF.mhr',
+            '3innqpmxwvmr2vc8h51g47aqdl6zj2b4-alsa-lib-1.2.15.3/share/alsa/ucm2/NXP/iMX8/Librem_5/Librem 5.conf',
+        )
+        extra = ''
+        expected = installed.manifest(self.lines().encode())
+        for suffix in cases:
+            key = prefix + suffix
+            target = installed.OUTPUT_BASE + '/external/' + key
+            extra += ' ' + key.replace(' ', '\\s') + ' ' + target + '\n'
+            expected[key] = target
+        self.assertEqual(installed.manifest((self.lines() + extra).encode()), expected)
+        self.assertEqual(len(expected), len(installed.ORIGIN_FILES) + 2)
+        with self.assertRaises(ValueError):
+            installed.manifest((self.lines() + extra + extra.splitlines()[0] + '\n').encode())
+
+    def test_manifest_escape_grammar_and_decoded_unsafe_paths_refuse(self):
+        bad = (
+            ' +repo/file\\q /srv/public/file',
+            ' +repo/file\\ /srv/public/file',
+            ' +repo/file\\bname /srv/public/file',
+            ' +repo/file\\nname /srv/public/file',
+            ' /absolute\\skey /srv/public/file',
+            ' +repo/../unsafe\\skey /srv/public/file',
+            ' +repo/file\\sname /srv/public/file\\nname',
+            ' +repo/file\\sname /srv/public/file\\bname',
+            ' +repo/file\\sname /srv/public/file\\sname',
+            ' +repo/file\\sname relative/file',
+            '  +repo/file\\sname /srv/public/file',
+        )
+        for record in bad:
+            with self.subTest(record=record), self.assertRaises(ValueError):
+                installed.manifest((self.lines() + record + '\n').encode())
+        # Decoding is not custody: a syntactically valid personal selector is
+        # still refused by the existing namespace fence before metadata reads.
+        value = installed.manifest((self.lines() + ' +repo/file\\sname /home/private/file name\n').encode())
+        with patch.object(installed.os, 'lstat') as observed, self.assertRaises(ValueError):
+            installed.safe_resolve(value['+repo/file name'], frozenset())
+        observed.assert_not_called()
+
+    def test_original_repo_mapping_and_launcher_are_omitted_only_by_exact_key(self):
+        content = self.lines() + '_repo_mapping ' + installed.OUTPUT_BASE + '/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_toolbar_consent_proof.sh.repo_mapping\n'
+        content += '_main/delivery/yoga_toolbar_consent_proof.sh ' + installed.OUTPUT_BASE + '/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/yoga_toolbar_consent_proof.sh\n'
+        self.assertEqual(installed.manifest(content.encode()), installed.manifest(self.lines().encode()))
+        with self.assertRaises(ValueError):
+            installed.manifest(content.replace('.sh.repo_mapping', '.foreign').encode())
+
+    def test_foreign_private_path_is_refused_before_any_metadata_consult(self):
+        with patch.object(installed.os, 'lstat') as observed, self.assertRaises(ValueError):
+            installed.safe_resolve('/home/private/auth.json', frozenset())
+        observed.assert_not_called()
+
+    def test_capture_personal_and_runtime_metadata_refuses_before_open(self):
+        for path in ('/home/private/selection.json', '/run/user/1000/input.json',
+                     '/srv/other/selection.json'):
+            with self.subTest(path=path), patch.object(installed.payload, 'parent') as parent, \
+                 patch.object(installed.os, 'open') as opened, self.assertRaises(ValueError):
+                installed.PhysicalCapture(path, 'a' * 64, 64, time.monotonic() + 10)
+            parent.assert_not_called(); opened.assert_not_called()
+        self.assertEqual(installed.public_capture_path(installed.BUILD_RECEIPT),
+                         Path(installed.BUILD_RECEIPT))
+
+    def test_symlink_hop_cannot_consult_foreign_runtime(self):
+        base = '/nix/store/' + 'a' * 32 + '-selected'
+        directory = type('Info', (), {'st_mode': stat.S_IFDIR | 0o555})()
+        link = type('Info', (), {'st_mode': stat.S_IFLNK | 0o777})()
+        def observed(path):
+            self.assertFalse(str(path).startswith('/run/'))
+            return link if str(path) == base + '/alias' else directory
+        with patch.object(installed.os, 'lstat', side_effect=observed), \
+             patch.object(installed.os, 'readlink', return_value='/run/user/1000/private'), \
+             self.assertRaises(ValueError):
+            installed.safe_resolve(base + '/alias', frozenset({base}))
+
+    def test_fixed_rule_deduplicates_alias_assets_and_preserves_actual_arguments(self):
+        mapping = {'_main/delivery/a': '/srv/a', '_main/delivery/b': '/srv/a'}
+        files = installed.build_files(mapping, {'f000000': 'data/a', 'f000001': 'data/a'}, {})
+        module, build = files['MODULE.bazel'].decode(), files['delivery/BUILD.bazel'].decode()
+        self.assertNotIn('bazel_dep(', module)
+        self.assertEqual(build.count("'//:data/a'"), 1)
+        self.assertIn(repr(installed.LAUNCH_ARGS), build)
+        self.assertNotIn('rules_zig', build)
+        self.assertIn('int(index)', installed.RULE)
+        self.assertNotIn('ctx.execute', installed.REPOSITORY)
+
+    def test_subpackage_sources_have_declared_package_labels(self):
+        mapping = {'_main/delivery/reader.py': '/srv/public-reader'}
+        files = installed.build_files(mapping, {'f000000': 'delivery/reader.py'}, {})
+        self.assertNotIn('delivery/reader.py', files['BUILD.bazel'].decode())
+        self.assertIn("'//delivery:reader.py'", files['delivery/BUILD.bazel'].decode())
+        self.assertIn("exports_files(['reader.py'])", files['delivery/BUILD.bazel'].decode())
+
+    def test_physical_capture_does_not_re_resolve_a_replaced_authorized_alias(self):
+        # The authorized path is opened no-follow; alias rechecks are separate.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); public = root / 'public'
+            public.symlink_to('/unselected/private')
+            parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with patch.object(installed.payload, 'parent', side_effect=lambda _: os.dup(parent)), \
+                     patch.object(Path, 'resolve', side_effect=AssertionError('no unrestricted alias resolution')), \
+                     self.assertRaises(OSError):
+                    installed.PhysicalCapture(installed.SOURCE_ROOT + '/delivery/public',
+                                              'a' * 64, 64, time.monotonic() + 10)
+            finally:
+                os.close(parent)
+
+    def test_real_output_readback_refuses_extra_content_modes_and_symlinks(self):
+        # Only output descriptors are modeled here; no production ancestor exemption.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); path = root / 'public.txt'
+            path.write_bytes(b'selected'); path.chmod(0o444)
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                expected = {'public.txt': b'selected'}
+                installed.verify_output(fd, expected, {}, time.monotonic() + 10)
+                path.chmod(0o644)
+                with self.assertRaises(ValueError):
+                    installed.verify_output(fd, expected, {}, time.monotonic() + 10)
+                path.chmod(0o444)
+                (root / 'extra').write_bytes(b'unselected')
+                with self.assertRaises(ValueError):
+                    installed.verify_output(fd, expected, {}, time.monotonic() + 10)
+                (root / 'extra').unlink(); path.unlink(); path.symlink_to('/does-not-exist')
+                with self.assertRaises(ValueError):
+                    installed.verify_output(fd, expected, {}, time.monotonic() + 10)
+            finally:
+                os.close(fd)
+
+
+    def test_reserved_third_launcher_is_declared_without_rewriting_origin_target(self):
+        mapping={'_main/tools/yoga_reserved_session_qualification.py':'/srv/root/tools/yoga_reserved_session_qualification.py'}
+        copied={'f000000':'tools/yoga_reserved_session_qualification.py'}
+        original=installed.build_files(mapping,copied,{})
+        reserved=installed.build_files(mapping,copied,{},reserved=True)
+        self.assertNotIn(b'yoga_reserved_session_qualification.sh',original['BUILD.bazel'])
+        self.assertIn(b'yoga_reserved_session_qualification.sh',reserved['BUILD.bazel'])
+        self.assertIn(b'name = \'yoga_reserved_session_qualification\'',reserved['tools/BUILD.bazel'])
+        self.assertEqual(reserved['delivery/BUILD.bazel'],original['delivery/BUILD.bazel'])
+        self.assertEqual(installed.SOURCE_COMMIT,'c106a52523d2161063a6a58d6d29a8f86039f827')
+
+    def test_constructor_target_preserves_native_origin_and_exact_copied_asset_index(self):
+        mapping = {'_main/tools/yoga_installed_console_prepare.py': '/srv/model/tools/yoga_installed_console_prepare.py',
+                   '_main/tools/yoga_installed_console_selection.py': '/srv/model/tools/yoga_installed_console_selection.py',
+                   '_main/tools/yoga_local_parent_envelope.py': '/srv/model/tools/yoga_local_parent_envelope.py'}
+        copied = {'f%06d' % index: 'tools/'+key.rsplit('/',1)[1] for index,key in enumerate(sorted(mapping))}
+        before = installed.build_files(mapping, copied, {}, reserved=True, console=True)
+        after = installed.build_files(mapping, copied, {}, reserved=True, console=True, prepare=True)
+        self.assertEqual(after['delivery/BUILD.bazel'], before['delivery/BUILD.bazel'])
+        self.assertEqual(after['installed-store-files.json'], before['installed-store-files.json'])
+        self.assertEqual(after['MODULE.bazel'], before['MODULE.bazel'])
+        self.assertIn(b'yoga_installed_console_prepare.sh', after['BUILD.bazel'])
+        self.assertIn(b"name = 'yoga_installed_console_prepare'", after['tools/BUILD.bazel'])
+        for key in mapping:
+            self.assertIn(key.encode(), after['tools/BUILD.bazel'])
+        with self.assertRaises(ValueError):
+            installed.build_files(mapping, copied, {}, reserved=True, prepare=True)
+
+    def test_console_fourth_target_requires_reserved_and_preserves_origin(self):
+        mapping={'_main/tools/yoga_local_console_qualification.py':'/srv/root/tools/yoga_local_console_qualification.py'}
+        copied={'f000000':'tools/yoga_local_console_qualification.py'}
+        original=installed.build_files(mapping,copied,{},reserved=True)
+        console=installed.build_files(mapping,copied,{},reserved=True,console=True)
+        self.assertNotIn(b'yoga_local_console_qualification.sh',original['BUILD.bazel'])
+        self.assertIn(b'yoga_local_console_qualification.sh',console['BUILD.bazel'])
+        self.assertIn(b"name = 'yoga_local_console_qualification'",console['tools/BUILD.bazel'])
+        self.assertEqual(console['delivery/BUILD.bazel'],original['delivery/BUILD.bazel'])
+        with self.assertRaises(ValueError): installed.build_files(mapping,copied,{},console=True)
+
+if __name__ == '__main__':
+    unittest.main()

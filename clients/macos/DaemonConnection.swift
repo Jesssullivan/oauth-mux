@@ -81,7 +81,7 @@ final class DaemonConnection: @unchecked Sendable {
 
     private func isRead(_ method: String, params: [String: JSONValue]) -> Bool {
         if method == "setup.refresh" { return params.isEmpty }
-        return ["state.snapshot", "events.watch", "accounts.list", "sources.list", "usage.summary",
+        return ["system.handshake", "state.snapshot", "events.watch", "accounts.list", "sources.list", "usage.summary",
          "integrations.status", "integrations.discover", "policy.get", "operation.status", "system.health", "reliability.export", "sources.catalog", "setup.readiness"].contains(method)
     }
 

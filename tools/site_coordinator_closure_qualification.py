@@ -7,13 +7,14 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import stat
 import subprocess
 
 from cached_nix_inventory import MAX_REFS, snapshot_inventory
-from site_coordinator_qualification import file_bytes
+from site_coordinator_qualification import file_bytes, declared_site_version
 from verify_cached_nars import MAX_INPUT, MAX_PATHS, STORE, parse_inventory, verify
 
 STATE = Path('/home/jess/.local/state/omux-execution-20261005')
@@ -23,7 +24,6 @@ CANDIDATE = TESTLOGS / 'site_coordinator_settings_producer/test.outputs/site-coo
 CANDIDATE_SHA256 = '48253bf1b32bc341baadbe77e9fc983ad898c338166009e92e9e2f0047e7e55c'
 VERSION_RECEIPT = TESTLOGS / 'site_coordinator_binary_qualification/test.outputs/site-coordinator-qualification/site-coordinator-qualification.json'
 VERSION_RECEIPT_SHA256 = 'a1d7e2b974c6a548245b88c07a7cce921dd1fcb31758d0ee5c50511ca3780ccd'
-SITE = Path('/srv/fast-local/jess/git/omux.xoxd.ai')
 SOURCE = '/nix/store/l61vfkyy0qrnz9bmgx84fa7z3bjzhyp4-source'
 REVISION = '1c3fe55ad329cbcb28471bb30f05c9827f724c76'
 SOURCE_NAR = 'sha256-bxrdOn8SCOv8tN4JbTF/TXq7kjo9ag4M+C8yzzIRYbE='
@@ -76,7 +76,7 @@ def selected_receipt(path, selected_digest, expected_digest):
     return decode(content)
 
 
-def validate_evidence(candidate, version, inputs, site_version):
+def validate_evidence(candidate, version, inputs, site_version, *, candidate_origin=CANDIDATE):
     require(type(candidate) is dict and candidate.get('schema_version') == 1 and
             candidate.get('status') == 'candidate-settings-only', 'candidate schema/status differs')
     expected = {'bazel': BAZEL, 'java_home': JDK, 'bazel_version': '9.0.1',
@@ -91,7 +91,7 @@ def validate_evidence(candidate, version, inputs, site_version):
             version.get('binary_versions_verified') is True and version.get('closure_verified') is False and
             version.get('execution_authority') is False, 'binary receipt claim boundary differs')
     require(all(version.get(key) == expected[key] for key in ('bazel', 'java_home', 'bazel_version', 'java_version')) and
-            version.get('candidate') == str(CANDIDATE) and version.get('candidate_sha256') == CANDIDATE_SHA256,
+            version.get('candidate') == str(candidate_origin) and version.get('candidate_sha256') == CANDIDATE_SHA256,
             'binary receipt candidate binding differs')
     require(version.get('binaries') == BINARIES and
             all(version.get(key) == facts for key, facts in WRAPPERS.items()), 'binary receipt native identities differ')
@@ -137,7 +137,8 @@ def current_binary_identities():
     return observed
 
 
-def closure_inventory(rows):
+def closure_inventory(rows, *, version_sha256=VERSION_RECEIPT_SHA256):
+    require(type(version_sha256) is str and re.fullmatch('[0-9a-f]{64}', version_sha256), 'version selection digest differs')
     require(type(rows) is list and 1 <= len(rows) <= MAX_PATHS, 'closure path bound')
     references = 0
     for row in rows:
@@ -151,7 +152,7 @@ def closure_inventory(rows):
     inventory = {'schemaVersion': 1, 'system': 'x86_64-linux',
                  'mode': 'local-sqlite-readonly-snapshot', 'roots': list(ROOTS), 'paths': rows,
                  'provenance': {'candidateSha256': CANDIDATE_SHA256,
-                                'binaryQualificationSha256': VERSION_RECEIPT_SHA256,
+                                'binaryQualificationSha256': version_sha256,
                                 'inputSha256': INPUTS},
                  'contentRehashed': False, 'realized': False, 'published': False}
     content = (json.dumps(inventory, sort_keys=True, separators=(',', ':')) + '\n').encode()
@@ -170,9 +171,9 @@ def closure_inventory(rows):
     return inventory, content, digest
 
 
-def qualify_closure(rows, nix, verifier=verify, observer=immutable_store_object):
+def qualify_closure(rows, nix, verifier=verify, observer=immutable_store_object, *, version_sha256=VERSION_RECEIPT_SHA256):
     require(nix == NIX, 'NAR serializer pin differs')
-    inventory, content, digest = closure_inventory(rows)
+    inventory, content, digest = closure_inventory(rows, version_sha256=version_sha256)
     prior = {row['path']: observer(row['path']) for row in inventory['paths']}
     receipt = verifier(content, digest, nix)
     require(type(receipt) is dict and receipt.get('schemaVersion') == 1 and receipt.get('passed') is True and
@@ -200,29 +201,38 @@ def write_exclusive(directory, name, content):
         os.close(descriptor)
 
 
+def declared_site_inputs(paths, version_path):
+    require(type(paths) is dict and set(paths) == set(INPUTS), 'complete declared site input set required')
+    values = {name: file_bytes(Path(paths[name]).resolve(strict=True), 1024 * 1024)[0] for name in INPUTS}
+    version, _ = declared_site_version(version_path)
+    return values, version
+
+
 def produce(nix, candidate_sha256, version_sha256, output, snapshotter=snapshot_inventory,
-            verifier=verify, observer=immutable_store_object):
-    candidate = selected_receipt(CANDIDATE, candidate_sha256, CANDIDATE_SHA256)
-    version = selected_receipt(VERSION_RECEIPT, version_sha256, VERSION_RECEIPT_SHA256)
-    require(SITE.resolve(strict=True) == SITE, 'site source alias rejected')
-    inputs = {name: file_bytes(SITE / name, 1024 * 1024)[0] for name in INPUTS}
-    site_version = file_bytes(SITE / '.bazelversion', 64)[0]
-    validate_evidence(candidate, version, inputs, site_version)
+            verifier=verify, observer=immutable_store_object, *, site_inputs, site_version_path,
+            candidate_path=CANDIDATE, version_path=VERSION_RECEIPT, candidate_origin=None, version_origin=None):
+    expected_version_sha256 = VERSION_RECEIPT_SHA256 if version_origin is None else version_sha256
+    candidate_origin = str(candidate_origin or CANDIDATE)
+    version_origin = str(version_origin or VERSION_RECEIPT)
+    require(type(version_sha256) is str and re.fullmatch('[0-9a-f]{64}', version_sha256), 'version digest required')
+    candidate = selected_receipt(Path(candidate_path).resolve(strict=True), candidate_sha256, CANDIDATE_SHA256)
+    version = selected_receipt(Path(version_path).resolve(strict=True), version_sha256, expected_version_sha256)
+    inputs, site_version = declared_site_inputs(site_inputs, site_version_path)
+    validate_evidence(candidate, version, inputs, site_version, candidate_origin=candidate_origin)
     resolved_nix = str(Path(nix).resolve(strict=True))
     require(resolved_nix == NIX, 'declared Nix pin differs')
     nix_bytes, nix_facts = file_bytes(NIX, 256 * 1024 * 1024, immutable=True)
     require(nix_bytes.startswith(b'\x7fELF') and int(nix_facts['mode'], 8) & 0o111, 'NAR serializer is not immutable native executable')
     identities = current_binary_identities()
     rows = snapshotter(DATABASE, list(ROOTS))
-    inventory, content, digest, nar = qualify_closure(rows, resolved_nix, verifier, observer)
+    inventory, content, digest, nar = qualify_closure(rows, resolved_nix, verifier, observer, version_sha256=version_sha256)
     require(current_binary_identities() == identities, 'coordinator native identity changed')
     # Rebind mutable retained evidence and site inputs after the bounded NAR pass.
-    require(selected_receipt(CANDIDATE, candidate_sha256, CANDIDATE_SHA256) == candidate and
-            selected_receipt(VERSION_RECEIPT, version_sha256, VERSION_RECEIPT_SHA256) == version,
+    require(selected_receipt(Path(candidate_path).resolve(strict=True), candidate_sha256, CANDIDATE_SHA256) == candidate and
+            selected_receipt(Path(version_path).resolve(strict=True), version_sha256, expected_version_sha256) == version,
             'selected evidence changed')
-    validate_evidence(candidate, version,
-                      {name: file_bytes(SITE / name, 1024 * 1024)[0] for name in INPUTS},
-                      file_bytes(SITE / '.bazelversion', 64)[0])
+    inputs_after, version_after = declared_site_inputs(site_inputs, site_version_path)
+    validate_evidence(candidate, version, inputs_after, version_after, candidate_origin=candidate_origin)
     report = {'schema_version': 1, 'status': 'verified-site-toolchain',
               'bazel': BAZEL, 'bazel_executable': BAZEL_NATIVE, 'java_home': JDK,
               'bazel_version': '9.0.1', 'java_version': '21.0.10+7',
@@ -231,8 +241,8 @@ def produce(nix, candidate_sha256, version_sha256, output, snapshotter=snapshot_
               'roots': list(ROOTS), 'inventory': 'coordinator-inventory.json',
               'inventory_sha256': digest, 'verified_paths': len(rows),
               'verified_nar_bytes': nar['verifiedNarBytes'], 'nar_verification': nar,
-              'candidate': str(CANDIDATE), 'candidate_sha256': CANDIDATE_SHA256,
-              'binary_qualification': str(VERSION_RECEIPT), 'binary_qualification_sha256': VERSION_RECEIPT_SHA256,
+              'candidate': candidate_origin, 'candidate_sha256': CANDIDATE_SHA256,
+              'binary_qualification': version_origin, 'binary_qualification_sha256': version_sha256,
               'source': SOURCE, 'source_revision': REVISION, 'source_nar_hash': SOURCE_NAR,
               'source_binding': 'exact-retained-offline-candidate-receipt; not freshly rehashed here',
               'input_sha256': INPUTS, 'site_bazelversion_sha256': SITE_VERSION_SHA256,
@@ -254,12 +264,27 @@ def produce(nix, candidate_sha256, version_sha256, output, snapshotter=snapshot_
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--nix', required=True)
-    parser.add_argument('--candidate-sha256', required=True)
-    parser.add_argument('--binary-qualification-sha256', required=True)
+    parser.add_argument('--selection', required=True)
+    parser.add_argument('--selection-sha256-file', required=True)
+    parser.add_argument('--candidate-file', required=True)
+    parser.add_argument('--version-file', required=True)
+    parser.add_argument('--site-flake', required=True)
+    parser.add_argument('--site-lock', required=True)
+    parser.add_argument('--site-roots', required=True)
+    parser.add_argument('--site-selection', required=True)
+    parser.add_argument('--site-version', required=True)
     args = parser.parse_args()
+    from site_coordinator_selection import projected
     try:
+        selected = projected(args.selection, args.selection_sha256_file, args.candidate_file, args.version_file)
         output = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR']).resolve(strict=True) / 'site-coordinator-closure-qualification'
-        result = produce(args.nix, args.candidate_sha256, args.binary_qualification_sha256, output)
+        result = produce(args.nix, selected['candidate']['sha256'], selected['version']['sha256'], output,
+                         site_inputs={'flake.nix': args.site_flake, 'flake.lock': args.site_lock,
+                                      'tools/offline-site-roots.json': args.site_roots,
+                                      'tools/tool-selection.nix': args.site_selection},
+                         site_version_path=args.site_version,
+                         candidate_path=args.candidate_file, version_path=args.version_file,
+                         candidate_origin=selected['candidate']['path'], version_origin=selected['version']['path'])
         print(json.dumps(result, sort_keys=True))
         return 0
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError, KeyboardInterrupt):

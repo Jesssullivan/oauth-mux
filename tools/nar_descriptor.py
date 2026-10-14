@@ -184,6 +184,37 @@ def serialize(descriptor, emit, opener=open_regular, deadline=None):
     return emitted
 
 
+
+def serialized_size(descriptor, *, deadline):
+    """Metadata-only canonical wire size; this is not a content/hash proof."""
+    by_path, children = validate_descriptor(descriptor)
+    def string_size(content):
+        size = len(os.fsencode(content))
+        return 8 + size + (-size % 8)
+    def node_size(path):
+        if time.monotonic() >= deadline:
+            raise ValueError('nar-output-or-deadline-bound')
+        item = by_path[path]
+        count = string_size('(') + string_size('type') + string_size(item['type'])
+        if item['type'] == 'directory':
+            for name in children.get(path, []):
+                count += sum(string_size(token) for token in ('entry', '(', 'name', name, 'node', ')'))
+                count += node_size(path + '/' + name if path else name)
+        elif item['type'] == 'symlink':
+            count += string_size('target') + string_size(item['target'])
+        else:
+            if item['executable']:
+                count += string_size('executable') + string_size('')
+            count += string_size('contents') + 8 + item['size'] + (-item['size'] % 8)
+        count += string_size(')')
+        if count > MAX_BYTES:
+            raise ValueError('nar-output-or-deadline-bound')
+        return count
+    count = string_size('nix-archive-1') + node_size('')
+    if count > MAX_BYTES or time.monotonic() >= deadline:
+        raise ValueError('nar-output-or-deadline-bound')
+    return count
+
 def hash_descriptor(descriptor, opener=open_regular, deadline=None):
     digest = hashlib.sha256()
     count = serialize(descriptor, digest.update, opener=opener, deadline=deadline)

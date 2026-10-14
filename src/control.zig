@@ -9,11 +9,13 @@ pub const Method = struct { name: []const u8, summary: []const u8, channel: Chan
 pub const methods = [_]Method{
     .{ .name = "system.handshake", .summary = "Negotiate the implemented local protocol and capabilities." },
     .{ .name = "setup.readiness", .summary = "Inspect independent installation and account readiness without provider access." },
-    .{ .name = "setup.applicationReadiness", .summary = "Read selected application and caller-declared demand diagnostics with independent source, identity, authority, renewal and capacity facts; ordinary launch remains unknown." },
+    .{ .name = "setup.applicationReadiness", .summary = "Read global application or negotiated selected-account request diagnostics at an exact revision; recorded renewal ownership is separate from unknown actual writer and live process." },
     .{ .name = "setup.refresh", .summary = "Refresh bounded readiness diagnostics; optional operation_id and expected_revision record verification completion, not installation or continuity." },
     .{ .name = "setup.evidence", .summary = "Read cached bounded installation probes, diagnostic failures and freshness without provider access." },
     .{ .name = "setup.plan", .summary = "Read ownership-aware setup actions without altering managed files." },
     .{ .name = "system.health", .summary = "Read local health without initiating provider access." },
+    .{ .name = "custody.reopen", .summary = "Explicitly retry locked startup custody after normal platform unlock; no source enrollment or provider request." },
+    .{ .name = "custody.observation", .summary = "Read bounded exact committed custody schemas, checkpoint and keyed preservation commitment; no update fence, artifact compatibility or deployment authority." },
     .{ .name = "reliability.lifecycle", .summary = "Read retained terminal counts and explicit setup-verification facts; timing and coverage remain partial, with no achieved SLO." },
     .{ .name = "reliability.export", .summary = "Export redacted diagnostic counters and typed timing bounds; no achieved reliability claim." },
     .{ .name = "sources.catalog", .summary = "Read supported source purposes and acquisition constraints." },
@@ -30,12 +32,21 @@ pub const methods = [_]Method{
     .{ .name = "account.resume", .summary = "Make a paused account eligible again." },
     .{ .name = "account.drain", .summary = "Stop new leases while accepted requests finish." },
     .{ .name = "account.forget", .summary = "Remove retained authorization and prevent automatic re-enrollment." },
+    .{ .name = "oauth.enrollment.prepare.v1", .summary = "Record distinct fresh Codex OAuth intent and encrypted PKCE custody at an exact revision; unqualified registration prevents browser/provider IO and grant activation." },
+    .{ .name = "oauth.enrollment.pending.v1", .summary = "Read at most sixteen redacted live owned enrollment handles for client recovery; unavailable custody is Unknown and no flow is reconstructed or renewed." },
+    .{ .name = "oauth.enrollment.descriptor.v1", .summary = "Read the implemented experimental owned OSS enrollment profile, fixed browser URL policy and finite flow contract; no provider or native proof." },
+    .{ .name = "oauth.enrollment.status.v1", .summary = "Read transaction-scoped redacted actual enrollment and paired Store status; unavailable custody is Unknown and never renews the flow." },
+    .{ .name = "oauth.enrollment.prepare.siwc.v1", .summary = "Explicitly authorize fresh Omux OSS Sign in with ChatGPT enrollment with an owned loopback listener and encrypted PKCE/nonce custody; this is separate API Responses authority, not native Codex authentication." },
+    .{ .name = "oauth.enrollment.authorization.v1", .summary = "Deliver the original prepared authorization URL once after consent commit; state and nonce are never cached or retained in control history." },
+    .{ .name = "oauth.enrollment.retire.v1", .summary = "Retire an unissued fresh OAuth transaction and erase its encrypted capsules without changing enrolled grants." },
+    .{ .name = "oauth.enrollment.withdraw.v1", .summary = "Withdraw fresh OAuth consent at an exact revision; issued work remains uncertain and no upstream revocation or token restoration is claimed." },
     .{ .name = "enrollment.start", .summary = "Reconcile the selected authorized source; this method does not start provider sign-in." },
     .{ .name = "repair.start", .summary = "Reconcile an account's authorized sources and report readiness without restoring spent credentials." },
     .{ .name = "operation.cancel", .summary = "Cancel an unissued enrollment or repair job." },
     .{ .name = "integrations.status", .summary = "Inspect implemented and unproven native integration capabilities." },
     .{ .name = "integrations.discover", .summary = "Inspect bounded authenticated native owner inventory in the selected integration context; hook compatibility is experimental and native support remains false." },
     .{ .name = "integrations.nativeRequestAudit", .summary = "Read at most six retained request fences for one exact native owner attachment and thread, with opaque account handles and pending-state facts; no replay or continuity claim." },
+    .{ .name = "integrations.nativeFileCoordinationReadiness", .summary = "Refusal-only query for an explicit File coordination intent; never records consent or issues enrollment." },
     .{ .name = "integrations.install", .summary = "Install a reversible integration after proving its prerequisites." },
     .{ .name = "integrations.remove", .summary = "Restore owned settings; Codex retains custody until reachable native threads detach safely." },
     .{ .name = "integrations.attach", .summary = "Attach a compatible native Codex hook to selected or discovered loaded threads." },
@@ -45,6 +56,9 @@ pub const methods = [_]Method{
     .{ .name = "credential.import", .summary = "Verify and retain a purpose-scoped grant through an authorized acquisition channel.", .channel = .adapter },
     .{ .name = "adapter.owner.register", .summary = "Register socket-verified native owner custody before authorization or thread readiness.", .channel = .adapter },
     .{ .name = "adapter.acquire", .summary = "Acquire a request-scoped route lease for a trusted native adapter.", .channel = .adapter },
+    .{ .name = "adapter.siwcCatalog", .summary = "Observe bounded account-scoped SIWC model metadata; Unknown does not change grant readiness or authorize a request.", .channel = .adapter },
+    .{ .name = "adapter.siwcReject", .summary = "Record exact-lease structured pre-stream SIWC rejection without inferring refresh, quota reset or retry authority.", .channel = .adapter },
+    .{ .name = "adapter.siwcAcquireReplacement", .summary = "Refuse unqualified SIWC replacement tickets; status and model parameters do not establish independent capacity authority.", .channel = .adapter },
     .{ .name = "adapter.materialize", .summary = "Materialize only the access credential authorized by an unexpired lease.", .channel = .adapter },
     .{ .name = "adapter.report", .summary = "Report acceptance, safe rejection or completion at the native boundary.", .channel = .adapter },
     .{ .name = "adapter.metadata", .summary = "Inspect a native binding's redacted account and lease authority.", .channel = .adapter },
@@ -191,7 +205,7 @@ pub fn expectedRevision(params: std.json.Value) !u64 {
 }
 
 pub fn isMutation(method: []const u8) bool {
-    const names = [_][]const u8{ "source.connect", "source.reconcile", "source.disconnect", "account.pause", "account.resume", "account.drain", "account.forget", "enrollment.start", "repair.start", "operation.cancel", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach", "policy.set" };
+    const names = [_][]const u8{ "oauth.enrollment.prepare.v1", "oauth.enrollment.prepare.siwc.v1", "oauth.enrollment.retire.v1", "oauth.enrollment.withdraw.v1", "source.connect", "source.reconcile", "source.disconnect", "account.pause", "account.resume", "account.drain", "account.forget", "enrollment.start", "repair.start", "operation.cancel", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach", "policy.set" };
     for (names) |name| if (std.mem.eql(u8, method, name)) return true;
     return false;
 }
@@ -242,4 +256,14 @@ test "mutation and adapter authority identifiers are explicit and distinct from 
     try std.testing.expectError(error.InvalidParams, operationId(missing.params));
     try std.testing.expectError(error.InvalidParams, requestId(missing.params));
     try std.testing.expectError(error.InvalidParams, expectedRevision(missing.params));
+}
+
+test "selected account readiness is read-only and revision decoding preserves exact integer intent" {
+    var selected = try parse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"setup.applicationReadiness\",\"params\":{\"account_id\":\"opaque-account\",\"application\":\"codex\",\"expected_revision\":9007199254740993,\"demand\":{}}}");
+    defer selected.deinit();
+    try std.testing.expectEqual(@as(u64, 9007199254740993), try expectedRevision(selected.params));
+    try std.testing.expect(!isMutation(selected.method) and !hasOperationAuthority(selected.method, selected.params));
+    var rounded_kind = try parse(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"setup.applicationReadiness\",\"params\":{\"expected_revision\":9007199254740993.0}}");
+    defer rounded_kind.deinit();
+    try std.testing.expectError(error.InvalidParams, expectedRevision(rounded_kind.params));
 }

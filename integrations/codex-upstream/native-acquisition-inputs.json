@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "kind": "omux-native-source-acquisition-input-configuration-v1",
+  "status": "actual-ninth-source-pinned",
+  "source": {
+    "root": "/home/jess/.local/state/omux-execution-20261005/7cf215c2-a7eb-4983-bc7b-3f29cd20b5ba/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_source_acquisition_source_producer/test.outputs/native-source-acquisition-source",
+    "receipt_sha256": "9e18ed5731a4474d0e9981cfb08da6e3f3e130014615a2dd9a8e26f06246e344",
+    "inventory_sha256": "8542cbe124d74046f20c92df2e304661cd2a9bd9bc5b2df1bc700ce7bf867762",
+    "producer": {
+      "receipt": "/home/jess/.local/state/omux-execution-20261005/7cf215c2-a7eb-4983-bc7b-3f29cd20b5ba/receipt.json",
+      "sha256": "aca09b36789bb78759a3fffecbeda6625e8735af41a60aa121bbdcece0397ccc",
+      "source_commit": "b2b82620de96676901944a852582234dca31b148",
+      "graph_sha256": "bc8456643603297b194726e5c55869888cc701b3138fbe7e00bd8f5c81745838"
+    }
+  },
+  "binding": {
+    "path": "/home/jess/.local/state/omux-execution-20261005/afddd8a5-0e26-4483-87ab-601d81f19c2c/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_acquisition_binding_producer/test.outputs/native-acquisition-binding/receipt.json",
+    "sha256": "506e05870f323c7c148bc50c99b7f2422db39f669c460074e0770f67a1329a84",
+    "producer": {
+      "receipt": "/home/jess/.local/state/omux-execution-20261005/afddd8a5-0e26-4483-87ab-601d81f19c2c/receipt.json",
+      "sha256": "0b932a23f115fbc9f8076aff17b6531355813db5a8d220debc8c12af4580710b",
+      "source_commit": "c35bfba68469374618c1b8fe89af7df8bbd5bbf8",
+      "graph_sha256": "7ab36223c9af7e498f361665604c9af185461005ba11ece21e04da298bce972d"
+    }
+  },
+  "metadata": null,
+  "sdk": null,
+  "compile": null
+}

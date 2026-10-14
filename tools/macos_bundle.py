@@ -119,7 +119,7 @@ def _expand_path(path, loader, executable):
     raise ValueError("Unsupported relative Mach-O search path")
 
 
-def plan_relocation(roots, custody, architecture, *, read_binary=_read_binary, canonicalize=_canonical, sdk_file_exists=lambda path: Path(path).is_file()):
+def plan_relocation(roots, custody, architecture, *, read_binary=_read_binary, canonicalize=_canonical, sdk_file_exists=lambda path: Path(path).is_file(), channel_entrypoints=None):
     """Resolve actual load commands into a closed, deterministic relocation plan.
 
     Reader/canonicalizer injection permits byte-fixture tests on Linux. Runtime
@@ -132,6 +132,17 @@ def plan_relocation(roots, custody, architecture, *, read_binary=_read_binary, c
     closure = set(custody["store_paths"])
     sdk_root = custody["developer_dir"]
     root_paths = {name: canonicalize(str(path)) for name, path in roots.items()}
+    if channel_entrypoints is None:
+        # Preserve the original unbound development-bundle alias contract.
+        root_paths["omux-native-host"] = root_paths["omux"]
+    else:
+        # Only the separate experimental channel-launcher graph uses these
+        # additional roots. Every launcher/backend gets normal dependency and
+        # embedded-signature inspection; no alias inherits another's checks.
+        expected = {"omux-native-host", "OmuxControls", "omux-runtime", "omux-daemon-runtime"}
+        if not isinstance(channel_entrypoints, dict) or set(channel_entrypoints) != expected:
+            raise ValueError("Channel delivery requires its exact signed entrypoint/backend set")
+        root_paths.update({name: canonicalize(str(path)) for name, path in channel_entrypoints.items()})
     root_sources = set(root_paths.values())
     metadata = {}
     entries = {}
@@ -392,7 +403,7 @@ def assemble(output, binary, cli, daemon, info, helper, product, custody):
     manifest["CFBundleExecutable"] = "Omux"
     with open(root / "Contents" / "Info.plist", "wb") as handle:
         plistlib.dump(manifest, handle, fmt=plistlib.FMT_XML, sort_keys=True)
-    for name, source in (("Omux", binary), ("omux", cli), ("omuxd", daemon)):
+    for name, source in (("Omux", binary), ("omux", cli), ("omuxd", daemon), ("omux-native-host", cli)):
         shutil.copyfile(source, macos / name)
         os.chmod(macos / name, 0o755)
     with open(agents / Path(helper).name, "wb") as handle:

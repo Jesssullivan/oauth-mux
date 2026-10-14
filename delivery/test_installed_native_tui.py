@@ -2,8 +2,11 @@
 
 Uses an installed daemon, genuine disposable Secret Service and the exact SDK
 archive. A PTY exercises ordinary native commands; no turns, accounts, synthetic
-history or guessed attachment authority are supplied. Native /export materializes
-the original empty rollout before /rename; an empty export need not write Markdown.
+history or guessed attachment authority are supplied. The retained ordinary-first
+variant requests native /rename, then requires actual complete empty history.
+After /export input is submitted to the PTY, it observes snapshot/PID/attachment
+preservation; command dispatch/processing/completion is not acknowledged. An
+empty export need not write Markdown; input submission never proves persistence.
 Cold resume is a separate new native process, never evidence of same-process
 account handoff or accepted nonempty history.
 """
@@ -238,11 +241,24 @@ def wait_loaded(home, terminal):
     raise ValueError("ordinary native attachment deadline exceeded")
 
 
+class MetadataRowCardinality(ValueError):
+    """One closed negative category from the actual selected-thread query."""
+    def __init__(self, count):
+        require(type(count) is int and (count == 0 or count > 1),
+                "native metadata cardinality observation changed")
+        self.category = "metadata-row-absent" if count == 0 else "metadata-row-ambiguous"
+        # Preserve the old public failure message and classification. Store no
+        # count, rows, thread identifier, database/path or query text.
+        super().__init__("native metadata row is absent or ambiguous")
+
+
 def metadata(home, thread, *, expected_name=FIXTURE_NAME):
     database = home / "state_5.sqlite"
     with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=1)) as connection:
         rows = connection.execute("SELECT id,rollout_path,source,cwd,history_mode,cli_version,name,"
                                   "tokens_used,has_user_event FROM threads WHERE id=?", (thread,)).fetchall()
+    if len(rows) != 1:
+        raise MetadataRowCardinality(len(rows))
     require(len(rows) == 1, "native metadata row is absent or ambiguous")
     row = rows[0]
     require(row[0] == thread and row[6] == expected_name and row[7:] == (0, 0),
@@ -284,11 +300,11 @@ def resumed_history(before, resumed, thread):
         before[3], resumed[3][len(before[3]):], thread, before[0][3])
 
 
-def wait_resumed_checkpoint(home, thread, terminal, before):
+def wait_resumed_checkpoint(home, thread, terminal, before, *, history_reader=None):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         terminal.alive()
-        observed = metadata(home, thread)
+        observed = metadata(home, thread) if history_reader is None else history_reader(home, thread, before)
         # Only the exact unchanged original history is a pending checkpoint.
         # Changed identity, original bytes or unexpected appends fail promptly.
         require(observed[:2] == before[:2] and observed[3].startswith(before[3]),
@@ -387,10 +403,12 @@ def inspect_durable(state, observations, operations, endpoints, witnesses, threa
                 "sealed original native process attribution changed")
 
 
-def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_reader=None):
+def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_reader=None, ordinary_first=False):
     global PHASE
     require(os.environ.get("OMUX_ISOLATED_VAULT_PROOF") == "private-bus-private-xdg",
             "disposable genuine vault context required")
+    require(type(ordinary_first) is bool and (not ordinary_first or live is None),
+            "ordinary-first cannot fabricate live history")
     PHASE = "runtime-verification"
     require(runtime_reader is None or (live is None and callable(runtime_reader)),
             "ordinary runtime reader conflicts with live fixture")
@@ -482,6 +500,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
                                "capabilities": {"experimentalApi": False, "requestAttestation": False}})
         bootstrap_native.send("initialized", {})
         endpoint = support.owned_endpoint(codex_home, bootstrap_native)
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(bootstrap_native,binary)
         PHASE = "integration-install"
         installed = cli("integrations.install", {"adapter": "codex", "config_path": str(config), "native_socket": str(endpoint),
                         "operation_id": os.urandom(32).hex(), "expected_revision": cli("system.health")["revision"]})
@@ -500,25 +520,49 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
                                    cli_overrides=live.cli_overrides if live is not None else ())
         first_pid = terminal.process.pid
         endpoint, thread, first = wait_loaded(codex_home, terminal)
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(terminal,binary)
         first_endpoint, first_witness = endpoint, process_witness(first_pid)
         PHASE = "native-history-materialization"
         # Paginated zero-turn /rename only updates metadata; it cannot create
         # the rollout. The real export command hydrates history and falls back
         # to thread/read(includeTurns=true), which persists the original thread.
         # Do not seed a SessionMeta or treat empty-export Markdown as success.
-        terminal.send("/export omux-native-resume-fixture.md\r")
-        wait_metadata(codex_home, thread, terminal, expected_name=None)
+        if ordinary_first:
+            # The V3 persistence barrier must materialize genuine native SQL
+            # AND complete empty rollout before any export input is submitted.
+            PHASE = "native-rename"
+            terminal.send("/rename " + FIXTURE_NAME + "\r")
+            before = wait_metadata(codex_home, thread, terminal)
+            require(before[0][4] == "paginated", "ordinary-first history mode differs")
+            terminal.send("/export omux-native-resume-fixture.md\r")
+            exported = wait_metadata(codex_home, thread, terminal)
+            require(exported == before and process_witness(first_pid) == first_witness,
+                    "ordinary-first export submission changed original history or process")
+        elif live is None:
+            terminal.send("/export omux-native-resume-fixture.md\r")
+            wait_metadata(codex_home, thread, terminal, expected_name=None)
+        else:
+            accepted = live.first_accepted_history(cli, codex_home, thread, terminal, endpoint, first)
         terminal.alive()
         require(terminal.process.pid == first_pid and status(endpoint, thread) == first,
                 "native history materialization changed process or attachment authority")
         PHASE = "native-rename"
-        terminal.send("/rename " + FIXTURE_NAME + "\r")
-        before = wait_metadata(codex_home, thread, terminal)
+        if ordinary_first:
+            require(metadata(codex_home, thread) == before, "ordinary-first metadata changed")
+        elif live is None:
+            terminal.send("/rename " + FIXTURE_NAME + "\r")
+            before = wait_metadata(codex_home, thread, terminal)
+        else:
+            before = live.history(codex_home, thread, accepted)
         PHASE = "selected-detach"
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(terminal,binary)
         first_operation = detach(cli, endpoint, thread, first)
         PHASE = "native-preservation"
         terminal.alive()
-        require(terminal.process.pid == first_pid and metadata(codex_home, thread) == before,
+        inspect_history = metadata if live is None else lambda home, thread: live.history(home, thread, before)
+        require(terminal.process.pid == first_pid and inspect_history(codex_home, thread) == before,
                 "selected detach changed native process or persistent state")
         require(support.private_file(config, 1024 * 1024) == configured
                 and support.private_file(capability_path, 128) == capability,
@@ -530,24 +574,28 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
         PHASE = "ordinary-clean-exit"
         terminal.close(require_success=True)
         terminal = None
-        require(metadata(codex_home, thread) == before and not endpoint.exists(),
+        require(inspect_history(codex_home, thread) == before and not endpoint.exists(),
                 "clean native exit changed persistent metadata")
         PHASE = "cold-native-resume"
         terminal = TerminalProcess(binary, environment, work, resume=thread,
                                    cli_overrides=live.cli_overrides if live is not None else ())
         require(terminal.process.pid != first_pid, "cold native resume reused original process")
         endpoint, resumed_thread, second = wait_loaded(codex_home, terminal)
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(terminal,binary)
         second_witness = process_witness(terminal.process.pid)
         require(resumed_thread == thread and second["nativeRef"] != first["nativeRef"]
                 and second["ownerId"] != first["ownerId"], "cold native resume lost original thread or reused authority")
         PHASE = "resumed-preservation"
         # Native startup appends its explicit settings checkpoint. The exact
         # original byte prefix/inode and stable metadata remain preserved.
-        resumed = wait_resumed_checkpoint(codex_home, thread, terminal, before)
+        resumed = wait_resumed_checkpoint(codex_home, thread, terminal, before,
+                                         history_reader=None if live is None else live.history)
         require(support.private_file(config, 1024 * 1024) == configured
                 and support.private_file(capability_path, 128) == capability,
                 "cold native resume changed retained history or configuration")
         if live is not None:
+            live.verify_accepted_resume(before, resumed, thread, terminal, second)
             result, completed = live.prove(cli, codex_home, thread, terminal, endpoint,
                                            second, resumed, candidate, receipt)
             # Raw encrypted native history retains the existing detach/reentry refusal.
@@ -571,6 +619,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
             print(json.dumps(result, sort_keys=True, separators=(",", ":")))
             return
         PHASE = "resumed-detach"
+        if callable(getattr(runtime_reader,"verify_process",None)):
+            runtime_reader.verify_process(terminal,binary)
         second_operation = detach(cli, endpoint, thread, second)
         terminal.alive()
         require(metadata(codex_home, thread) == resumed, "resumed selected detach changed retained history")
@@ -614,7 +664,25 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_read
         require(not failed, "owned private terminal process cleanup failed")
 
 
-def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=()):
+def private_child_environment(root, child_environment=None):
+    environment = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": "/nonexistent", "HOME": str(root),
+                   "OMUX_ISOLATED_VAULT_PROOF": "private-bus-private-xdg"}
+    for name, child in (("XDG_RUNTIME_DIR", "r"), ("XDG_DATA_HOME", "d"), ("XDG_CONFIG_HOME", "c"),
+                        ("XDG_CACHE_HOME", "k"), ("XDG_STATE_HOME", "s")):
+        directory = root / child
+        directory.mkdir(mode=0o700)
+        environment[name] = str(directory)
+    if child_environment is not None:
+        require(type(child_environment) is dict and set(child_environment)=={
+            "OMUX_NATIVE_ORDINARY_MODE","OMUX_NATIVE_ORDINARY_ENTRY_NS","OMUX_NATIVE_ORDINARY_DEADLINE_NS","TEST_SRCDIR"},
+            "ordinary child clock transport differs")
+        require(type(child_environment["TEST_SRCDIR"]) is str
+                and Path(child_environment["TEST_SRCDIR"]).is_absolute()
+                and Path(child_environment["TEST_SRCDIR"]).is_dir(), "declared runfiles root missing")
+        environment.update(child_environment)
+    return environment
+
+def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=(), original_deadline=None, child_environment=None, ordinary_first=False):
     if len(sys.argv) >= 5 and sys.argv[1] == "--pty-exec":
         binary, cwd = (Path(value).resolve(strict=True) for value in sys.argv[2:4])
         # The PTY needs a separate controlling-terminal session. Bind its
@@ -649,19 +717,13 @@ def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=()):
         command.extend(["--no-alt-screen", "--strict-config"])
         os.execve(str(binary), command, os.environ)
     if len(sys.argv) == 7 and sys.argv[1] == "--inside":
-        inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]), runtime_reader=runtime_reader)
+        inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]), runtime_reader=runtime_reader, ordinary_first=ordinary_first)
         return 0
     require(len(sys.argv) == 7, "declared Omux/native archives, receipt and vault tools required")
     bundle, candidate, receipt, session, bus, keyring = (Path(value).resolve(strict=True) for value in sys.argv[1:])
     with tempfile.TemporaryDirectory(prefix="omux-t-", dir="/tmp") as temporary:
         root = Path(temporary)
-        environment = {"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": "/nonexistent", "HOME": str(root),
-                       "OMUX_ISOLATED_VAULT_PROOF": "private-bus-private-xdg"}
-        for name, child in (("XDG_RUNTIME_DIR", "r"), ("XDG_DATA_HOME", "d"), ("XDG_CONFIG_HOME", "c"),
-                            ("XDG_CACHE_HOME", "k"), ("XDG_STATE_HOME", "s")):
-            directory = root / child
-            directory.mkdir(mode=0o700)
-            environment[name] = str(directory)
+        environment = private_child_environment(root, child_environment)
         configuration = root / "bus.conf"
         configuration.write_text('<busconfig><type>session</type><listen>unix:abstract=omux-native-' + root.name
                                  + '</listen><auth>EXTERNAL</auth><policy context="default">'
@@ -675,7 +737,10 @@ def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=()):
                                     "--inside", str(bundle), str(candidate), str(receipt), str(keyring), str(root)],
                                    env=environment, start_new_session=True, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, umask=0o077)
-        code, output, diagnostics = support.bounded_private_session(process)
+        if original_deadline is None:
+            code, output, diagnostics = support.bounded_private_session(process)
+        else:
+            code, output, diagnostics = support.bounded_private_session(process, absolute_deadline=original_deadline-30.0)
         if code == 0:
             require(output == MARKER, "ordinary native terminal proof marker missing")
             print(MARKER.decode("ascii"), end="")
@@ -694,3 +759,4 @@ if __name__ == "__main__":
     except Exception:
         print("installed native terminal proof failed at " + PHASE, file=sys.stderr)
         sys.exit(1)
+

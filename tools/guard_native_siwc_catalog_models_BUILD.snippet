@@ -1,0 +1,8 @@
+# Add guard_native_siwc_catalog_models_reserved.py to _RESIDENT_GUARD_SOURCES
+# before dependent source groups, preserving all prior entries.
+python_test(
+    name = "guard_native_siwc_catalog_models_reserved_test",
+    main = "guard_native_siwc_catalog_models_reserved_test.py",
+    srcs = _NATIVE_ACQUISITION_MODEL_SOURCES,
+    target_compatible_with = ["@platforms//os:linux"],
+)

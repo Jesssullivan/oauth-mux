@@ -1,0 +1,16 @@
+load("//tools:rules.bzl", "python_test")
+
+package(default_visibility = ["//visibility:public"])
+exports_files(["artifact.py", "bundle.py", "seal.py", "seal_rules.bzl"])
+filegroup(name = "public_sources", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.md"], allow_empty = True))
+
+# Real byte parser + real seal/consumer functions; all Mach-O inputs are inert
+# fixtures. Passing these models cannot establish Apple signing or execution.
+python_test(
+    name = "artifact_test",
+    main = "artifact_test.py",
+    srcs = ["artifact.py"],
+    data = ["//tools:macho.py", "//tools:macos_bundle.py", "//clients/macos/darwin_delivery:channel_launcher.c"],
+    args = ["$(location //tools:macho.py)", "$(location //tools:macos_bundle.py)",
+            "$(location //clients/macos/darwin_delivery:channel_launcher.c)"],
+)

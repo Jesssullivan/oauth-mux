@@ -1,6 +1,8 @@
 """Carrier and private-context predicates; these tests launch no processes."""
+import io
 import json
 import os
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -55,6 +57,136 @@ class RestartCarrierTest(unittest.TestCase):
         self.assertEqual(os.readlink(self.fixture.root / "current"), current)
         self.assertFalse((self.destination / "current").exists())
         self.assertFalse((self.destination / "bin").exists())
+
+    def complete_generation(self):
+        fixture,inputs = self.fixture.complete_inputs()
+        outcome = self.fixture.complete_stage(fixture,inputs)
+        self.fixture.receipt = outcome.receipt
+        self.fixture.generation = outcome.generation
+        self.fixture.directory = self.fixture.root / "generations" / outcome.generation
+        self.fixture.receipt_path = self.fixture.directory / "receipt.json"
+        self.fixture.receipt_sha256 = outcome.receipt_sha256
+        self.expected = dict(outcome.receipt["artifacts"])
+        return inputs
+
+    def test_optional_control_pin_is_strict_and_preserves_three_artifact_interface(self):
+        legacy = SimpleNamespace(**{name+"_sha256":value for name,value in self.expected.items()})
+        self.assertEqual(restart.expected_artifacts(legacy),self.expected)
+        legacy.control_sha256 = None
+        self.assertEqual(restart.expected_artifacts(legacy),self.expected)
+        legacy.control_sha256 = "b"*64
+        self.assertEqual(restart.expected_artifacts(legacy),{**self.expected,"control":"b"*64})
+        for value in ("",True,64,1.0,"A"*64,"b"*63,"../control"):
+            with self.subTest(value=value):
+                legacy.control_sha256 = value
+                with self.assertRaisesRegex(restart.RestartError,"^expected-artifact-digest-shape$"):
+                    restart.expected_artifacts(legacy)
+        common = ["--stage-root",str(self.fixture.root),"--generation",self.fixture.generation,
+            "--receipt-sha256",self.fixture.receipt_sha256,"--session","/declared/session",
+            "--bus","/declared/bus","--keyring","/declared/keyring",
+            "--tool-manifest","/declared/native.json"]
+        for name,value in self.expected.items():
+            common.extend(["--"+name+"-sha256",value])
+        self.assertEqual(restart.expected_artifacts(restart.parser().parse_args(common)),self.expected)
+        self.assertEqual(restart.expected_artifacts(restart.parser().parse_args(
+            common+["--control-sha256","b"*64])),{**self.expected,"control":"b"*64})
+
+    def test_complete_carrier_binds_four_inputs_control_and_genuine_qt_namespace_without_current(self):
+        self.complete_generation()
+        original = self.fixture.receipt_path.read_bytes()
+        current = self.fixture.root / "current"
+        current.unlink()
+        current.symlink_to("/unrelated/not-selected")
+        selected = self.carrier()
+        self.assertEqual(dict(selected.artifact_sha256),self.expected)
+        self.assertEqual(selected.control,selected.directory / "bin/omux-control")
+        self.assertEqual((selected.directory / "receipt.json").read_bytes(),original)
+        self.assertEqual((selected.directory / "source/control").read_bytes(),
+            (self.fixture.directory / "source/control").read_bytes())
+        loader = self.fixture.receipt["runtime"]["details"]["qt"]["loader"]
+        self.assertEqual((selected.directory / "runtime" / loader).stat().st_mode & 0o777,0o700)
+        self.assertEqual(os.readlink(current),"/unrelated/not-selected")
+        facts = restart.restart_facts(selected.generation,selected.receipt_sha256,self.expected,
+            startup_revision_delta=3)
+        self.assertEqual(facts["artifacts"],self.expected)
+        for field in ("browserReloaded","nativeContinuityProved","serviceActivated",
+            "providerAccess","liveExecutableAttributed","atomicExecutionWitness"):
+            self.assertFalse(facts[field])
+
+    def test_complete_carrier_refuses_missing_wrong_control_pin_and_changed_qt_before_destination(self):
+        self.complete_generation()
+        complete = self.expected.copy()
+        for expected in ({name:value for name,value in complete.items() if name != "control"},
+                {**complete,"control":"0"*64}):
+            self.expected = expected
+            with self.assertRaisesRegex(generation.GenerationError,"source-artifact-mismatch"):
+                self.carrier()
+            self.assertFalse(self.destination.exists())
+        self.expected = complete
+        qt = self.fixture.receipt["runtime"]["details"]["qt"]
+        loader = self.fixture.directory / "runtime" / qt["loader"]
+        loader.chmod(0o600)
+        self.fixture.repin(update_inventory=True)
+        with self.assertRaisesRegex(generation.GenerationError,"control-runtime-binding"):
+            self.carrier()
+        self.assertFalse(self.destination.exists())
+        loader.chmod(0o700)
+        control = self.fixture.directory / "source/control"
+        control.write_bytes(control.read_bytes()+b"unselected structural ELF tail")
+        self.fixture.repin(update_inventory=True)
+        with self.assertRaisesRegex(generation.GenerationError,"generation-source-binding"):
+            self.carrier()
+        self.assertFalse(self.destination.exists())
+
+    def test_actual_outer_main_propagates_four_pins_to_child_and_refuses_wrong_pin_before_launch(self):
+        self.complete_generation()
+        args,_ = self.declared_wrappers()
+        args.stage_root,args.generation,args.receipt_sha256,args.inside = (
+            self.fixture.root,self.fixture.generation,self.fixture.receipt_sha256,None)
+        for name,value in self.expected.items():
+            setattr(args,name+"_sha256",value)
+        manifest_sha = generation.digest(args.tool_manifest.read_bytes())
+        facts = restart.restart_facts(args.generation,args.receipt_sha256,self.expected,
+            manifest_sha,startup_revision_delta=3)
+        # Actual input qualification (apart from synthetic immutable-store
+        # availability), private environment, carrier and closed result join
+        # remain enabled. Only child process/collection are injected; no process
+        # or service is launched, and these modeled replies are not live proof.
+        with mock.patch.object(restart,"parser") as selected_parser, \
+                mock.patch.object(restart,"available_store_executable"), \
+                mock.patch.object(restart.subprocess,"Popen") as launched, \
+                mock.patch.object(restart,"collect",return_value=(0,json.dumps(facts).encode(),b"")), \
+                mock.patch.object(restart.sys,"stdout",new_callable=io.StringIO) as output:
+            selected_parser.return_value.parse_args.return_value = args
+            self.assertEqual(restart.main(),0)
+            argv = launched.call_args.args[0]
+            self.assertEqual(argv.count("--control-sha256"),1)
+            for name,value in self.expected.items():
+                self.assertEqual(argv[argv.index("--"+name+"-sha256")+1],value)
+            self.assertEqual(generation.parse(output.getvalue()),facts)
+            launched.reset_mock()
+            args.control_sha256 = "0"*64
+            with self.assertRaisesRegex(generation.GenerationError,"source-artifact-mismatch"):
+                restart.main()
+            launched.assert_not_called()
+
+    def test_inner_complete_generation_is_checked_before_private_keyring_or_daemon_launch(self):
+        self.complete_generation()
+        with tempfile.TemporaryDirectory(prefix="omux-g-",dir="/tmp") as temporary:
+            root = Path(temporary)
+            selected = restart.carrier(self.fixture.root,self.fixture.generation,
+                self.fixture.receipt_sha256,self.expected,root / "carrier")
+            environment = restart.private_environment(root)
+            environment["DBUS_SESSION_BUS_ADDRESS"] = "unix:abstract=omux-selected-"+root.name
+            args = SimpleNamespace(stage_root=root / "carrier",generation=selected.generation,
+                receipt_sha256=selected.receipt_sha256,keyring=Path("/declared/unexecuted-keyring"))
+            loader = self.fixture.receipt["runtime"]["details"]["qt"]["loader"]
+            (selected.directory / "runtime" / loader).chmod(0o600)
+            with mock.patch.dict(os.environ,environment,clear=True), \
+                    mock.patch.object(restart.subprocess,"Popen") as launched:
+                with self.assertRaises(generation.GenerationError):
+                    restart.inside(args,root,self.expected)
+                launched.assert_not_called()
 
     def test_carrier_never_consults_mutable_current(self):
         current = self.fixture.root / "current"

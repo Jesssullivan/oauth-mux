@@ -29,8 +29,11 @@ class CopyTests(unittest.TestCase):
         self.addCleanup(self.pins.stop)
 
     def copy(self):
-        return subject.copy_retained(self.archive, self.manifest, self.receipt,
-                                     self.outputs, time.monotonic_ns() + 10**9)
+        # These byte/custody models exercise real IO, independently of scheduler
+        # delay. Deadline enforcement has its own expiry and advancing-clock cases.
+        with patch.object(subject.time, "monotonic_ns", return_value=10**9):
+            return subject.copy_retained(self.archive, self.manifest, self.receipt,
+                                         self.outputs, time.monotonic_ns() + 10**9)
 
     def test_exact_copy_preserves_source_and_separates_receipt(self):
         before = subject.identity(self.archive.stat())
@@ -93,6 +96,33 @@ class CopyTests(unittest.TestCase):
         with patch.object(subject.os, "write", side_effect=lambda fd, data: original(fd, data[:7])):
             self.copy()
         self.assertEqual((self.outputs / subject.ARCHIVE_SHA / subject.NAME).read_bytes(), self.archive.read_bytes())
+
+    def test_mid_copy_deadline_expiry_removes_partial_archive_without_success_receipt(self):
+        original_write = os.write
+        now = [10**9]
+        before = subject.identity(self.archive.stat())
+        original_bytes = self.archive.read_bytes()
+        written_bytes = []
+
+        def write_then_expire(fd, data):
+            written = original_write(fd, data[:7])
+            written_bytes.append(written)
+            now[0] = 2 * 10**9
+            return written
+
+        with patch.object(subject.time, "monotonic_ns", side_effect=lambda: now[0]), \
+                patch.object(subject.os, "write", side_effect=write_then_expire) as write:
+            with self.assertRaisesRegex(ValueError, "retained-input-deadline"):
+                subject.copy_retained(self.archive, self.manifest, self.receipt,
+                                      self.outputs, 2 * 10**9)
+        write.assert_called_once()
+        self.assertEqual(written_bytes, [7])
+        self.assertLess(written_bytes[0], subject.ARCHIVE_BYTES)
+        self.assertFalse((self.outputs / subject.ARCHIVE_SHA).exists())
+        self.assertFalse((self.outputs / "codex-owner-runtime-input-receipt.json").exists())
+        self.assertEqual(list(self.outputs.iterdir()), [])
+        self.assertEqual(self.archive.read_bytes(), original_bytes)
+        self.assertEqual(subject.identity(self.archive.stat()), before)
 
     def test_write_failure_has_no_archive_or_success_receipt(self):
         with patch.object(subject.os, "write", side_effect=OSError("synthetic")):

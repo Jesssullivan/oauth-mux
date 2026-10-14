@@ -2,6 +2,7 @@
   "schema_version": 1,
   "architecture": "docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md",
   "current": [
+    "docs/agent-notes/2026-10-14-retained-sdk-tree-dependency-PROPOSED.md",
     "docs/agent-notes/2026-10-07-native-staged-compilation.md",
     "docs/agent-notes/2026-10-07-native-core-compiler-policy.md",
     "AGENTS.md",
@@ -115,7 +116,17 @@
     "docs/agent-notes/2026-10-05-sting-omux-storage-handoff.md",
     "docs/tracker-updates/live-account-proof-2026-10-07.json",
     "docs/agent-notes/2026-10-07-sess-omux-live-account-proof.md",
-    "docs/agent-notes/2026-10-07-sdk-alias-and-controller-import.md"
+    "docs/agent-notes/2026-10-07-sdk-alias-and-controller-import.md",
+    "docs/agent-notes/2026-10-08-installed-runtime-continuation.md",
+    "docs/agent-notes/2026-10-10-native-peer-lifecycle-implementation.md",
+    "docs/agent-notes/2026-10-10-acquisition-and-application-corrections.md",
+    "docs/agent-notes/2026-10-11-estate-review-and-priorities.md",
+    "docs/agent-notes/2026-10-11-native-input-and-lifecycle-progress.md",
+    "docs/agent-notes/2026-10-11-product-reality-and-work-order.md",
+    "docs/agent-notes/2026-10-11-product-reality-reattachment-index.json",
+    "docs/agent-notes/2026-10-11-1757UTC-current-product-checkpoint.md",
+    "docs/agent-notes/2026-10-12-omux-cache-maintenance.md",
+    "docs/agent-notes/2026-10-12-runtime-enrollment-checkpoint.md"
   ],
   "historical_inventory": "docs/history/retired-design-inventory.md",
   "historical_extra": [

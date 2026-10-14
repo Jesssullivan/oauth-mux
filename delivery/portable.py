@@ -15,6 +15,8 @@ import re
 import struct
 import subprocess
 import tempfile
+import time
+import math
 from pathlib import Path
 
 # Pure ELF/closure validation is importable without packaging inputs.
@@ -229,7 +231,7 @@ def linux_launcher(loader: str, backend: str, channel: str | None = None, *,
     return template + bytes(record)
 
 def _patch(path: Path, metadata: dict, patchelf: Path, backend: bool,
-           rpath: str = "$ORIGIN") -> None:
+           rpath: str = "$ORIGIN", *, action_deadline: float | None = None) -> None:
     args = [str(patchelf)]
     for needed in metadata["needed"]:
         if "/" in needed:
@@ -241,9 +243,16 @@ def _patch(path: Path, metadata: dict, patchelf: Path, backend: bool,
             args.extend(["--set-interpreter", _BACKEND_INTERPRETER])
         args.extend(["--force-rpath", "--set-rpath", rpath])
     args.append(str(path))
+    timeout = 60
+    if action_deadline is not None:
+        if type(action_deadline) not in (int, float) or not math.isfinite(action_deadline):
+            raise ValueError("invalid declared packaging work cutoff")
+        timeout = min(timeout, action_deadline - time.monotonic())
+        if timeout <= 0:
+            raise ValueError("declared packaging work cutoff expired")
     try:
         subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       check=True, timeout=60, env={"LC_ALL": "C", "PATH": "/nonexistent"})
+                       check=True, timeout=timeout, env={"LC_ALL": "C", "PATH": "/nonexistent"})
     except (OSError, subprocess.SubprocessError) as error:
         raise ValueError("declared patchelf could not patch the runtime") from error
 
@@ -309,7 +318,7 @@ def _assemble_namespace(binary: Path, daemon: Path, runtime_files: list[Path], p
                         qt_plugins: list[Path] | None = None,
                         resolution_witness: dict | None = None,
                         namespace: str = _RUNTIME, *,
-                        backend_max_bytes: int = _MAX_FILE, channel: str | None = None) -> tuple[dict[str, bytes], dict]:
+                        backend_max_bytes: int = _MAX_FILE, channel: str | None = None, action_deadline: float | None = None) -> tuple[dict[str, bytes], dict]:
     """Select and patch one process's closure without merging other processes."""
     backend_max_bytes = _file_limit(backend_max_bytes)
     if target not in _MACHINES:
@@ -484,9 +493,9 @@ def _assemble_namespace(binary: Path, daemon: Path, runtime_files: list[Path], p
             # The loader itself is invoked directly and normally has neither
             # an interpreter nor a search path.  Avoid modifying its bootstrap.
             if name in plugin_sources:
-                _patch(destination, info, patchelf, False, _QT_PLUGIN_RPATH)
+                _patch(destination, info, patchelf, False, _QT_PLUGIN_RPATH, action_deadline=action_deadline)
             elif backend or source.resolve() != loader.resolve():
-                _patch(destination, info, patchelf, backend)
+                _patch(destination, info, patchelf, backend, action_deadline=action_deadline)
             maximum = backend_max_bytes if backend else _MAX_FILE
             patched = _read(destination, max_bytes=maximum)
             check = elf_metadata(patched, max_bytes=maximum)
@@ -532,7 +541,7 @@ def assemble_linux(binary: Path, daemon: Path, runtime_files: list[Path], patche
                    qt_plugins: list[Path] | None = None,
                    resolution_witness: dict | None = None,
                    qt_runtime_files: list[Path] | None = None, *,
-                   backend_max_bytes: int = _MAX_FILE, channel: str | None = None) -> tuple[dict[str, bytes], dict]:
+                   backend_max_bytes: int = _MAX_FILE, channel: str | None = None, action_deadline: float | None = None) -> tuple[dict[str, bytes], dict]:
     """Assemble separate CLI/daemon and Qt process namespaces from declared inputs."""
     backend_max_bytes = _file_limit(backend_max_bytes)
     channel_instance(channel)
@@ -546,10 +555,10 @@ def assemble_linux(binary: Path, daemon: Path, runtime_files: list[Path], patche
     if control is not None and not qt_runtime_files:
         raise ValueError("Qt control requires its declared runtime closure")
     files, runtime = _assemble_namespace(binary, daemon, runtime_files, patchelf, target, ca_bundle,
-                                         backend_max_bytes=backend_max_bytes, channel=channel)
+                                         backend_max_bytes=backend_max_bytes, channel=channel, action_deadline=action_deadline)
     if control is not None:
         qt_files, qt_runtime = _assemble_namespace(control, control, qt_runtime_files, patchelf, target, ca_bundle,
-                                                   control, plugins, resolution_witness, _QT_RUNTIME, channel=channel)
+                                                   control, plugins, resolution_witness, _QT_RUNTIME, channel=channel, action_deadline=action_deadline)
         if set(qt_files) & set(files):
             raise ValueError("Qt process namespace overlaps the CLI namespace")
         files.update(qt_files)
@@ -667,10 +676,45 @@ def verify_linux_runtime(files: dict[str, bytes], manifest: dict) -> None:
         raise ValueError("portable daemon does not match the confined launcher")
 
 
+def desktop_file(channel: str) -> str:
+    if channel not in {"development", "release"}:
+        raise ValueError("desktop entry requires an explicit artifact channel")
+    identity = "ai.xoxd.omux.dev" if channel == "development" else "ai.xoxd.omux"
+    return "share/applications/" + identity + ".desktop"
+
+
+def desktop_entry(channel: str, executable: str | None = None) -> bytes:
+    """Canonical channel metadata; installed Exec is one literal argument.
+
+    Exec has two decoding layers: Desktop Entry string escapes, then quoted
+    command-line escapes. Percent is a field-code escape, not shell syntax.
+    No shell, caller arguments or environment assignments are introduced.
+    """
+    desktop_file(channel)
+    command = "omux-control"
+    if executable is not None:
+        if (not executable.startswith("/") or "=" in executable
+                or any(not 32 <= ord(char) <= 126 for char in executable)):
+            raise ValueError("desktop executable must be an ASCII absolute path without '=' or control characters")
+        quoted = "".join("\\" + char if char in '\\"`$' else char for char in executable)
+        command = '"' + quoted.replace("\\", "\\\\").replace("%", "%%") + '"'
+    name = "Omux (Development)" if channel == "development" else "Omux"
+    return ("[Desktop Entry]\nType=Application\nName=" + name
+            + "\nComment=Manage accounts and routes in the Omux user service\nExec=" + command
+            + "\nIcon=network-server\nTerminal=false\nCategories=Utility;Network;\n").encode()
+
+
 def verify_linux(files: dict[str, bytes], manifest: dict) -> None:
     """Retain full-archive metadata requirements and validate its actual runtime."""
     documents = {"share/omux/reference.json", "share/omux/services/omux.service.in",
                  "share/omux/services/dev.xoxd.omux.plist.in", "release-manifest.json", "SHA256SUMS"}
     if not documents <= set(files):
         raise ValueError("archive has missing or undeclared portable runtime files")
+    desktops = {name for name in files if name.startswith("share/applications/")}
+    if desktops:
+        channel = manifest.get("channel")
+        if (channel not in {"development", "release"} or "bin/omux-control" not in files
+                or desktops != {desktop_file(channel)} or files[desktop_file(channel)] != desktop_entry(channel)):
+            raise ValueError("archive has an invalid channel desktop entry")
+        documents |= desktops
     verify_linux_runtime({name: value for name, value in files.items() if name not in documents}, manifest)

@@ -2,6 +2,19 @@
 let
   inherit (lib) mkOption mkEnableOption types mkIf;
   cfg = config.programs.omux;
+  # Explicit locators only; runtime protection and retained independent inputs
+  # establish authority. No environment/current HOME observation selects them.
+  absoluteLocator = types.addCheck types.str (path:
+    builtins.stringLength path <= 4096 && lib.hasPrefix "/" path && path != "/" && !lib.hasSuffix "/" path
+    && builtins.match "[^[:cntrl:]]*" path != null
+    && builtins.all (part: part != "" && part != "." && part != "..")
+      (lib.tail (lib.splitString "/" path)));
+  # systemd ExecStart has its own quoting, specifier and environment expansion.
+  systemdArgument = value: "\"" + builtins.replaceStrings
+    [ "\\" "\"" "%" "$" ] [ "\\\\" "\\\"" "%%" "$$" ] value + "\"";
+  deploymentArguments = selected: if selected == null then "" else
+    " --native-package-root ${systemdArgument selected.registeredPackageRoot}"
+    + " --native-installation-root ${systemdArgument selected.installationRoot}";
   channels = lib.filterAttrs (_: instance: instance.enable) cfg.instances;
   identity = channel: if channel == "development" then "ai.xoxd.omux.dev" else "ai.xoxd.omux";
   witnesses = lib.mapAttrs (channel: instance:
@@ -85,7 +98,23 @@ in {
             type = types.package;
             description = "Digest-bound package returned by consume-bazel-artifact.nix; no source builds.";
           };
-          extensionId = mkOption {
+          nativeDeployment = mkOption {
+          default = null;
+          description = "Explicit registered native deployment and reversible installation locators; absent selection remains unsupported. Runtime protected readers establish authority, not these strings.";
+          type = types.nullOr (types.submodule {
+            options = {
+              registeredPackageRoot = mkOption {
+                type = absoluteLocator;
+                description = "Operator-selected registered Nix deployment root containing share/omux/native/codex/deployment.json.";
+              };
+              installationRoot = mkOption {
+                type = absoluteLocator;
+                description = "Operator-selected reversible installed native integration root; never inferred from HOME or startup observations.";
+              };
+            };
+          });
+        };
+        extensionId = mkOption {
             type = types.strMatching "[a-p]{32}";
             description = "One exact Chromium extension ID; no wildcard origin enrollment.";
           };
@@ -113,12 +142,23 @@ in {
       message = "Omux ${channel} package must come from the matching digest-bound Bazel consumer.";
     }) channels;
     home.packages = builtins.attrValues launchers;
+    # Home Manager owns the user menu entries. Use its immutable channel/XDG
+    # launcher rather than the raw archive's PATH-based portable entry.
+    xdg.desktopEntries = lib.mapAttrs' (channel: _:
+      lib.nameValuePair (identity channel) {
+        name = if channel == "development" then "Omux (Development)" else "Omux";
+        comment = "Manage accounts and routes in the Omux user service";
+        exec = "${launchers.${channel}}/bin/omux-control${if channel == "development" then "-dev" else ""}";
+        icon = "network-server";
+        terminal = false;
+        categories = [ "Utility" "Network" ];
+      }) channels;
     xdg.configFile = browserFiles // witnessFiles // serviceRecordFiles;
     systemd.user.services = lib.mapAttrs' (channel: instance:
       lib.nameValuePair (identity channel) {
         Unit = { Description = "Omux ${channel} resident account daemon"; After = [ "dbus.service" ]; };
         Service = {
-          ExecStart = "${launchers.${channel}}/bin/omuxd${if channel == "development" then "-dev" else ""} daemon";
+          ExecStart = "${launchers.${channel}}/bin/omuxd${if channel == "development" then "-dev" else ""} daemon${deploymentArguments instance.nativeDeployment}";
           Restart = "on-failure";
           RestartSec = 3;
           UMask = "0077";

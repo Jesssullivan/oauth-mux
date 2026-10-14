@@ -400,8 +400,13 @@ def validate_receipt(receipt_bytes, frozen_sha):
     return receipt
 
 
-def verify_artifact(root, receipt_bytes, independently_frozen_sha256, *, deadline_seconds=120):
-    deadline = deadline_for(deadline_seconds)
+def verify_artifact(root, receipt_bytes, independently_frozen_sha256, *, deadline_seconds=120, deadline=None):
+    local_end = deadline_for(deadline_seconds)
+    if deadline is not None:
+        require(type(deadline) in (int, float) and deadline == deadline
+                and deadline not in (float("inf"), float("-inf")), "artifact-deadline-bound")
+    deadline = local_end if deadline is None else min(local_end, deadline)
+    acquired.check_deadline(deadline)
     receipt = validate_receipt(receipt_bytes, independently_frozen_sha256)
     root = acquired.physical_path(os.fspath(root))
     files, nodes, facts, nar_hash, nar_size = tree_bytes(root, deadline)

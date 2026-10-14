@@ -1,0 +1,27 @@
+# Maintained native model delta inputs only; no acquisition or execution target.
+load("//tools:codex_native_file_writer_model_source_inputs.bzl", "inert_model_preimages")
+exports_files([
+    "native-source-controls.json",
+    "native-model-target.patch",
+    "native-model-manifest.json",
+    "expected-tests.json",
+])
+
+filegroup(
+    name = "inputs",
+    srcs = [
+        "native-source-controls.json",
+        "native-model-target.patch",
+        "native-model-manifest.json",
+        "expected-tests.json",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["qualified-parent.json", "BUILD.bazel"])
+filegroup(name = "model_preimages", srcs = inert_model_preimages([
+    "model-preimages/codex-rs/login/BUILD.bazel.preimage",
+    "model-preimages/codex-rs/login/Cargo.toml",
+    "model-preimages/codex-rs/login/src/auth/default_client.rs",
+    "model-preimages/codex-rs/login/src/auth/revoke.rs",
+]), visibility = ["//tools:__pkg__"])

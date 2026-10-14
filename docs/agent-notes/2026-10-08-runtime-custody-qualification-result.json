@@ -1,0 +1,186 @@
+{
+  "kind": "actual_composed_runtime_custody_qualification_result",
+  "recorded_at": "2026-10-08T14:57:16.051966+00:00",
+  "authority": "User integrated implementation; AGENTS.md/R-N13",
+  "source_commit": "5811c5aee9ab31b85c4003dab6cbd588981fb701",
+  "source_tree": "a246f1bb290b21bd89c62435bf2e835186503159",
+  "source_dirty": false,
+  "epoch": "6670a89e-2122-43a1-8945-73974ace9afa",
+  "executor_session": 67875,
+  "exit": 0,
+  "workload_exit": 0,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "limits": {
+    "CPUQuotaPerSecUSec": "2s",
+    "KillMode": "control-group",
+    "MemoryMax": "4294967296",
+    "MemorySwapMax": "0",
+    "OOMPolicy": "kill",
+    "RuntimeMaxUSec": "20min",
+    "SendSIGKILL": "yes",
+    "TasksMax": "512",
+    "TimeoutStopUSec": "10s"
+  },
+  "receipt": {
+    "path": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/6670a89e-2122-43a1-8945-73974ace9afa/receipt.json",
+    "bytes": 23348,
+    "sha256": "2c18a3e307fc7c9e9294288e2a01a8cfbcbcb73a92ff6020acccca9255441291"
+  },
+  "test_evidence": {
+    "path": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/6670a89e-2122-43a1-8945-73974ace9afa/test-evidence.json",
+    "bytes": 4559,
+    "sha256": "430601399d60d69714c159cd402b74e8b97d3225d099fb3961ed42019e5379f6"
+  },
+  "results": [
+    {
+      "target": "//:engine_test",
+      "method_count": 251,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 26862,
+          "file": "e9b0c830b86ce340eb9dd3a313973d94c614e6e4cf0c3c6b79256d688f35a6b3.evidence",
+          "sha256": "cc3e1882ef9d12432c2468d2d8ebfd509a6c3b642a07fc6619e4af1377fc1a19",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 27223,
+          "file": "4305be9637b69fa25bb0ed4820306f2455d82c7f3e3c8117d05dd470dbffc602.evidence",
+          "sha256": "e6d78bcbd261d8a04064f494270ba7a6cba64efecfd8d0b44f68b8fc00f658f1",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ]
+    },
+    {
+      "target": "//:daemon_test",
+      "method_count": 258,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 27501,
+          "file": "9987e1fcf5eb8a8ad53af6eacdeb42e1f058294bb40030e76cfd729e912a3619.evidence",
+          "sha256": "a80d57ed9f9e088a107d2ddd7060d1181f9ce488355411d710c3ffa1073580e8",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 27862,
+          "file": "b31e1e97e66f928f8124980596ec0870e5ebae053add9767f3d039871363a5a1.evidence",
+          "sha256": "34477bd69e797f8c3b850480a6eb8a0ce93bdd71c6a323c86117bfddb586645d",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ]
+    },
+    {
+      "target": "//delivery:cli_test",
+      "method_count": 22,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 285,
+          "file": "d35344720fe3cc5656c56e7365f9dafd6038ef461febd777b0cf4178a6770245.evidence",
+          "sha256": "9f1c914ecad0b00d7d31a68cbfafa6d5bc0c8c334b7239daf0043e3920e1713f",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 662,
+          "file": "d4482b81c7ad80aa5bebb613e6258e2af5aa3f05aba784935d3c7fc838c55c21.evidence",
+          "sha256": "2e64e95f5c4185aff0841aba8233305a0d49efa7885832d88cdb4e815e9284de",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ]
+    },
+    {
+      "target": "//delivery:delivery_test",
+      "method_count": 88,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 356,
+          "file": "1740132a128fd5eacec1eeb752a816e2625eae1f8e254122602b063e1fa6e979.evidence",
+          "sha256": "39ca5f93743597f146730c2e83447c7b0c7063d1f277bb08271f06efb09e5ba9",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 743,
+          "file": "597f8ac2becbe9746149054bc5d77bc5ff234a08e8993e2c10025b93a580f63b.evidence",
+          "sha256": "917d0bfb79b2209f6e9f22937892e9a5df05ec99678cfc3be8b53f1afcd88ad6",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ]
+    },
+    {
+      "target": "//:snapshot_import_test",
+      "method_count": 11,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 1531,
+          "file": "b6b910c992ebe7ef92801bc861ede175827b3db988050efbac6aad1547966bfe.evidence",
+          "sha256": "c58cc886c0631e79ad541da21d25350e7b83fbf2192fde06ec31148670924ce0",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 1910,
+          "file": "a6be0cd7004170b900895dbd81e503079b8e1f7e8dc8f26a8992e6ac21055910.evidence",
+          "sha256": "cda13e3925a3a7f2ba7c2d12329d78ab87fb552dad7a847d9c3306236a20b319",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ]
+    },
+    {
+      "target": "//:enrollment_wait_test",
+      "method_count": 3,
+      "success_XML_verified": true,
+      "verified_files": [
+        {
+          "bytes": 504,
+          "file": "cb283bab3b5683dc2557846d7a1cad9f5762807d86a9f395cc1bb089cd3a9795.evidence",
+          "sha256": "7946015e7b4cf1e72a13764f5adb9436e19836bdfacc1ab584c32fda9a2c7383",
+          "source": "test.log",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        },
+        {
+          "bytes": 879,
+          "file": "6939ced4e2971169e168aa2200a576c0e844250c60551228cfdaebed695e9f23.evidence",
+          "sha256": "0f0bef5db658862db80e9a8761454bdcc7eaadc56cf1310671558c7f0295f7d2",
+          "source": "test.xml",
+          "state": "copied",
+          "actual_bytes_and_sha256_verified": true
+        }
+      ]
+    }
+  ],
+  "whole_selected_batch_succeeded": true,
+  "scope": "Actual composed locked-vault actor diagnostics/refusals, original synthetic custody preservation/restart, source-grant readiness, CLI/transport/import generation fences and filesystem/archive installer ownership. Not normal OS unlock, retained live accounts, actual new archive/install/native resume/continuity.",
+  "whole_goal_closed": false,
+  "no_clock_reset": true,
+  "native_failed_lane_reset": false
+}

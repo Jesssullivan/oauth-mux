@@ -1,0 +1,12 @@
+# Acquisition and application corrections — October 10
+Authority: user integrated Omux implementation, AGENTS and R-HOOK-CONVERGENCE-20261004/R-N11/R-N12/R-N13.
+
+The owned dependency acquisition route now retains original unit/process/cgroup identity, requires owned stop and repeated empty readbacks, and releases its actual scopes before adopting success under the original cutoff. Original generic modes, caps, consumers and clocks retain their semantics. V1–V3 source-blocked proposals remain preserved; only exact V4 passed independent source review.
+
+The Linux setup client now rejects a ready aggregate that contradicts any phase finding. Actual acquisition now safely refuses an exhausted route generation before binding, lease, request or SQLite mutation. The existing Qt socket and real isolated SQLite fixtures cover these behavior changes; they remain unrun at this source commit.
+
+Genuine native qualification QP3 (ae29929c-8118-451f-9376-cd252fb4984d) and same-source query registration QR3 (63e7246e-a500-40d4-a5e1-d95c48d6e8dc) both passed on preceding source70d1bf5, with original zero exits and two verified owned cleanup readbacks. Their evidence stays version-bound. The exact query selection is now published from those unchanged original receipts. Independently reviewed consumers accept systemd's valid compound duration while retaining the original bounds; malformed and oversized durations remain refused. Parser models and independent descriptor qualification remain unrun. Publishing the input configuration alone establishes no SDK/compiler readiness.
+
+Genuine acquisition HP2 retains failed outer/workload3, Bazel900-second timeout, copied evidence and unproved generic cleanup. Its artifact is not selected. The independently reviewed packed-only-v2 production route exports only five fixed metadata/pack files after original NAR, custody and durability proofs and original-cutoff private-forest deletion. Logical receipt binding and independent canonical reconstruction remain mandatory. The physical-forest-v1 default and its historical evidence retain their semantics. Eleven new transport regressions remain unrun.
+
+Next checks: declared guard/kernel/profile models, daemon engine regression, Linux transport/setup fixture and documentation. Native compilation, ordinary launch/resume, browser operator proof, normal vault enrollment, live handoff and Darwin remain unproved. No acceptance gate or achieved SLO is asserted by this source change.

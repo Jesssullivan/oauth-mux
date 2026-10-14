@@ -15,7 +15,7 @@
 namespace {
 bool mutationMethod(const QString &method, const QJsonObject &params = {}) {
     if (method == "setup.refresh") return params.contains("operation_id") || params.contains("expected_revision");
-    static const QStringList names {"source.connect", "source.reconcile", "source.disconnect", "account.pause", "account.resume", "account.drain", "account.forget", "enrollment.start", "repair.start", "operation.cancel", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach", "policy.set"};
+    static const QStringList names {"oauth.enrollment.prepare.siwc.v1", "oauth.enrollment.withdraw.v1", "source.connect", "source.reconcile", "source.disconnect", "account.pause", "account.resume", "account.drain", "account.forget", "enrollment.start", "repair.start", "operation.cancel", "integrations.install", "integrations.remove", "integrations.attach", "integrations.detach", "policy.set"};
     return names.contains(method);
 }
 bool validOperationID(const QString &id) {
@@ -38,7 +38,8 @@ bool verificationTerminal(const QJsonObject &result, const QString &operation) {
             && std::floor(value.toDouble()) == value.toDouble() && value.toInteger(-1) >= 0;
     };
     const auto outcome = result.value("outcome").toString();
-    if (!nonnegativeInteger(result.value("schema_version")) || result.value("schema_version").toInteger(-1) != 1
+    const auto version = result.value("schema_version").toInteger(-1);
+    if (!nonnegativeInteger(result.value("schema_version")) || (version != 1 && version != 2)
         || result.value("operation_id").toString() != operation
         || !nonnegativeInteger(result.value("generation")) || !nonnegativeInteger(result.value("observed_at"))
         || result.value("timing_scope").toString() != "admission_to_terminal_before_commit_process_local"
@@ -48,9 +49,9 @@ bool verificationTerminal(const QJsonObject &result, const QString &operation) {
     const bool refusal = outcome == "safe_refusal";
     if ((!completed && !refusal) || (completed && (!result.value("refusal").isNull() || result.value("generation").toInteger() == 0))
         || (refusal && (!QStringList{"busy", "installation_selection_required", "collection_timed_out"}.contains(result.value("refusal").toString())
-            || !result.value("elapsed_ns").isNull()))) return false;
+            || (version == 1 && !result.value("elapsed_ns").isNull())))) return false;
     const QStringList unknown {"observation_unknown", "observation_stale", "evidence_unobserved", "synthetic_only", "native_evidence_missing", "channel_unknown"};
-    const QStringList action {"channel_mismatch", "missing", "pending", "incompatible", "vault_locked", "vault_key_lost", "authority_expired", "browser_required", "native_unsupported"};
+    const QStringList action {"channel_mismatch", "missing", "pending", "incompatible", "vault_locked", "vault_key_lost", "vault_key_unavailable", "vault_access_denied", "vault_unavailable", "authority_expired", "browser_required", "native_unsupported"};
     for (const auto &value : result.value("phases").toArray()) {
         if (!value.isObject()) return false;
         const auto phase = value.toObject();
@@ -88,6 +89,14 @@ OmuxClient::OmuxClient(QString socketPath, QObject *parent)
                     disconnectWithReason("The service uses an unsupported control protocol.");
                     return;
                 }
+                enrollmentGeneration_ = result.value("capabilities").toObject().value("enrollment_generation_reply").isBool()
+                    && result.value("capabilities").toObject().value("enrollment_generation_reply").toBool();
+                custodyReopen_ = result.value("capabilities").toObject().value("custody_reopen").isBool()
+                    && result.value("capabilities").toObject().value("custody_reopen").toBool();
+                accountReadiness_ = result.value("capabilities").toObject().value("account_scoped_readiness_v2").isBool()
+                    && result.value("capabilities").toObject().value("account_scoped_readiness_v2").toBool();
+                siwcEnrollment_ = result.value("capabilities").toObject().value("owned_siwc_enrollment_v1").isBool()
+                    && result.value("capabilities").toObject().value("owned_siwc_enrollment_v1").toBool();
                 ready_ = true;
                 publishConnection(true, "Connected");
                 reconcileOperations();
@@ -170,6 +179,10 @@ void OmuxClient::connectToDaemon() {
 
 void OmuxClient::disconnectWithReason(const QString &reason) {
     ready_ = false;
+    custodyReopen_ = false;
+    accountReadiness_ = false;
+    siwcEnrollment_ = false;
+    enrollmentGeneration_ = false;
     connecting_ = false;
     buffer_.clear();
     // Clear before abort: Qt can deliver disconnected synchronously.
@@ -200,6 +213,14 @@ void OmuxClient::request(const QString &method, QJsonObject params, Reply reply)
     if (method == "state.snapshot" && !uncertain_.isEmpty()) reconcileOperations();
 }
 
+void OmuxClient::recoverMutation(const QString &operationID) {
+    if (operationID.size()!=64) return;
+    for (const auto c:operationID)
+        if (!((c>='0' && c<='9') || (c>='a' && c<='f'))) return;
+    uncertain_.insert(operationID,"A retained enrollment intent needs its original operation outcome.");
+    if (ready_) reconcileOperations();
+}
+
 QString OmuxClient::uncertaintyMessage() const {
     if (uncertain_.isEmpty()) return {};
     const auto held = uncertain_.constBegin();
@@ -214,7 +235,8 @@ void OmuxClient::send(const QString &method, const QJsonObject &params, Reply re
     const QByteArray frame = QJsonDocument(envelope).toJson(QJsonDocument::Compact) + '\n';
     if (frame.size() > maximumFrame) { reply({}, "Request is too large."); return; }
     const bool nativeOperation = method.startsWith("integrations.") && method != "integrations.status";
-    pending_.insert(id, {std::move(reply), clock_.elapsed() + (nativeOperation ? 20000 : 10000), params.value("operation_id").toString(), mutationMethod(method, params)});
+    const bool ownedEnrollment = method.startsWith("oauth.enrollment.");
+    pending_.insert(id, {std::move(reply), clock_.elapsed() + (ownedEnrollment ? 15000 : nativeOperation ? 20000 : 10000), params.value("operation_id").toString(), mutationMethod(method, params)});
     if (socket_.write(frame) != frame.size())
         disconnectWithReason("Could not send the service request.");
 }

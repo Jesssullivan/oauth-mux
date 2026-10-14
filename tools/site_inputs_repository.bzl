@@ -5,6 +5,7 @@ the chosen inventory/lock SHA256 digests when requesting inventory evidence.
 """
 
 _INPUTS = {
+    "bazelversion": ".bazelversion",
     "flake.lock": "flake.lock",
     "flake.nix": "flake.nix",
     "offline-site-roots.json": "tools/offline-site-roots.json",
@@ -30,7 +31,8 @@ def _implementation(ctx):
             fail("Declared public site input exceeds 1 MiB: " + relative)
         ctx.file(output, content, executable = False)
     ctx.file("BUILD.bazel", """package(default_visibility = ["//visibility:public"])
-exports_files(["flake.lock", "flake.nix", "offline-site-roots.json", "tool-selection.nix"])
+exports_files(["bazelversion", "flake.lock", "flake.nix", "offline-site-roots.json", "tool-selection.nix"])
+filegroup(name = "site_version", srcs = ["bazelversion"])
 filegroup(name = "site_lock", srcs = ["flake.lock"])
 filegroup(name = "site_flake", srcs = ["flake.nix"])
 filegroup(name = "site_roots", srcs = ["offline-site-roots.json"])

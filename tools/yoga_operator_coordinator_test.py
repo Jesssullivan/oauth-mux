@@ -202,6 +202,48 @@ class CoordinatorTests(unittest.TestCase):
         self.admit()
         self.assertFalse(self.coordinator.finish(workload_exit=0, aggregate_empty=True)["executionPassed"])
 
+    def reserved_coordinator(self):
+        import guard_yoga_toolbar_reserved as reservation
+        clock=patch.object(reservation.kernel.time, 'monotonic_ns', return_value=200*10**9)
+        clock.start();self.addCleanup(clock.stop)
+        self.coordinator = support.Coordinator(**dict(self.arguments, profile=reservation.PROFILE,
+            deadline_ns=1300*10**9, original_entry_ns=100*10**9, now=lambda:200*10**9))
+        self.coordinator.write = Mock()
+        self.coordinator.reserved_runtime = 1070
+        return {**reservation.properties(support.LIMITS), 'RuntimeMaxUSec':'17min 50s'}
+
+    def test_reserved_caps_keep_exact_session_and_require_human_cases(self):
+        values=self.reserved_coordinator()
+        original=dict(support.LIMITS)
+        self.admit(properties=values)
+        session=json.loads(self.coordinator.write.call_args_list[0].args[1])
+        self.assertEqual(session['scope'],'yoga-operator-local-toolbar-v1')
+        self.assertEqual(session['deadlineMonotonicNs'],1300*10**9)
+        self.assertNotIn('reservation',session)
+        self.assertEqual(support.LIMITS,original)
+        for case in support.STATEMENTS:
+            self.coordinator.accept_event(self.event(case))
+        result=self.coordinator.finish(workload_exit=0,aggregate_empty=True)
+        self.assertTrue(result['executionPassed']);self.assertFalse(result['toolbarConsentProved'])
+        self.reserved_coordinator();self.admit(properties=values)
+        self.assertFalse(self.coordinator.finish(workload_exit=0,aggregate_empty=True)['executionPassed'])
+
+    def test_reserved_old_caps_clock_or_missing_runtime_refuse_before_session(self):
+        import guard_yoga_toolbar_reserved as reservation
+        values=self.reserved_coordinator()
+        for name,value in (('MemoryMax','4294967296'),('TasksMax','512'),
+            ('CPUQuotaPerSecUSec','2s'),('RuntimeMaxUSec','1200s'),('RemainAfterExit','no')):
+            with self.assertRaises(ValueError):self.admit(properties={**values,name:value})
+        self.coordinator.write.assert_not_called()
+        del self.coordinator.reserved_runtime
+        with self.assertRaises(ValueError):self.admit(properties=values)
+        with patch.object(reservation.kernel.time,'monotonic_ns',return_value=200*10**9):
+            with self.assertRaises(ValueError):
+                support.Coordinator(**dict(self.arguments,profile=reservation.PROFILE,
+                    deadline_ns=1300*10**9,original_entry_ns=200*10**9,now=lambda:200*10**9))
+        with self.assertRaises(ValueError):
+            support.Coordinator(**dict(self.arguments,original_entry_ns=1))
+
 
 if __name__ == "__main__":
     unittest.main()

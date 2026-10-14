@@ -1,0 +1,9 @@
+# Root serial guard composition AFTER source-family BUILD composition:
+# add "guard_native_siwc_catalog_source_reserved.py" to _RESIDENT_GUARD_SOURCES
+# before every dependent source group is evaluated. Do not replace the old list.
+python_test(
+    name = "guard_native_siwc_catalog_source_reserved_test",
+    main = "guard_native_siwc_catalog_source_reserved_test.py",
+    srcs = _NATIVE_ACQUISITION_MODEL_SOURCES,
+    target_compatible_with = ["@platforms//os:linux"],
+)

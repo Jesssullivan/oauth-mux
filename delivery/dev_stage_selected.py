@@ -21,9 +21,11 @@ class SelectedStageError(ValueError):
     pass
 
 
-def input_hashes(core, daemon, extension):
-    return {name: digest(artifact(path)) for name, path in (
-        ("core", core), ("daemon", daemon), ("extension", extension))}
+def input_hashes(core, daemon, extension, control=None):
+    inputs = [("core",core),("daemon",daemon),("extension",extension)]
+    if control is not None:
+        inputs.append(("control",control))
+    return {name:digest(artifact(path)) for name,path in inputs}
 
 
 def encode(facts):
@@ -34,10 +36,11 @@ def encode(facts):
 
 
 def produce(root, core, daemon, extension, metadata_path, *, replace_owned=False,
-            runtime_files=None, patchelf=None, ca_bundle=None):
+            runtime_files=None, patchelf=None, ca_bundle=None,
+            control=None, qt_runtime_files=None, qt_plugins=None, resolution_witness=None):
     # Independent hashes come from the declared input files, not stage output
     # metadata. A second observation detects inputs drifting during assembly.
-    expected = input_hashes(core, daemon, extension)
+    expected = input_hashes(core, daemon, extension, control)
     metadata_bytes = artifact(metadata_path)
     if len(metadata_bytes) > MAX_RECEIPT:
         raise SelectedStageError("metadata-byte-bound")
@@ -45,8 +48,10 @@ def produce(root, core, daemon, extension, metadata_path, *, replace_owned=False
     if type(metadata) is not dict:
         raise SelectedStageError("metadata-shape")
     outcome = stage_generation(root, core, daemon, extension, metadata, replace_owned,
-                               runtime_files=runtime_files, patchelf=patchelf, ca_bundle=ca_bundle)
-    if input_hashes(core, daemon, extension) != expected:
+        runtime_files=runtime_files, patchelf=patchelf, ca_bundle=ca_bundle,
+        control=control, qt_runtime_files=qt_runtime_files, qt_plugins=qt_plugins,
+        resolution_witness=resolution_witness)
+    if input_hashes(core, daemon, extension, control) != expected:
         raise SelectedStageError("declared-inputs-changed")
     selected = select_generation(root, outcome.generation, outcome.receipt_sha256,
                                  expected_artifacts=expected, require_portable=True)
@@ -60,6 +65,8 @@ def produce(root, core, daemon, extension, metadata_path, *, replace_owned=False
              "channel": "development", "instance": "dev", "distribution": selected.distribution,
              "selectedBytesVerified": True, "daemonRestarted": False, "chromiumReloaded": False,
              "providerAccess": False, "liveExecutableAttributed": False, "atomicExecutionWitness": False}
+    if selected.control is not None:
+        facts["controlStaged"] = True
     encode(facts)
     return facts
 

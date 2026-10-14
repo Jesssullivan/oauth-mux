@@ -26,6 +26,8 @@ MAX_GRAPH_TOTAL = 64 * 1024 * 1024
 SELECTION_FIELDS = frozenset({"schemaVersion", "scope", "proofId", "deadlineMonotonicNs", "host", "seat",
     "operatorTerminal", "sourceRoot", "stateRoot", "sourceGraphSha256", "sourceFilesSha256", "sourceSocket",
     "inputPaths", "inputSha256", "controllerTools", "controllerInventory", "controllerNarProof", "vaultWrapperAuthority"})
+INSTALLED_SCOPE = 'yoga-local-installed-session-selection-v1'
+INSTALLED_FIELDS = SELECTION_FIELDS | {'installedWorkspace'}
 REASONS = frozenset({"selection_invalid", "deadline_exceeded", "local_identity_unqualified", "runtime_unqualified",
     "graph_unqualified", "source_changed", "display_unqualified", "output_unqualified", "cleanup_incomplete"})
 
@@ -67,8 +69,9 @@ def selectors(selection, output, deadline_ns):
 
 
 def validate_selection(value, deadline_ns, uid, home):
-    require(type(value) is dict and set(value) == SELECTION_FIELDS and type(value["schemaVersion"]) is int
-            and value["schemaVersion"] == 1 and value["scope"] == "yoga-local-session-selection-v1"
+    installed = type(value) is dict and value.get('scope') == INSTALLED_SCOPE
+    require(type(value) is dict and set(value) == (INSTALLED_FIELDS if installed else SELECTION_FIELDS) and type(value["schemaVersion"]) is int
+            and value["schemaVersion"] == 1 and value["scope"] == (INSTALLED_SCOPE if installed else "yoga-local-session-selection-v1")
             and type(value["deadlineMonotonicNs"]) is int and value["deadlineMonotonicNs"] == deadline_ns
             and type(value["proofId"]) is str and guard.coordinator.UUID.fullmatch(value["proofId"]), "selection_invalid")
     require(type(value["host"]) is dict and set(value["host"]) == {"machineIdSha256", "uid"}
@@ -99,6 +102,11 @@ def validate_selection(value, deadline_ns, uid, home):
                 and type(evidence["sha256"]) is str and guard.SHA.fullmatch(evidence["sha256"]), "selection_invalid")
         inputs.valid_path(evidence["path"])
     guard.wrapper_envelope_schema(value)
+    if installed:
+        pin = value['installedWorkspace']
+        require(type(pin) is dict and set(pin) == {'path','sha256'}
+                and pin['path'] == value['sourceRoot']+'/installed-workspace.json'
+                and type(pin['sha256']) is str and guard.SHA.fullmatch(pin['sha256']), 'selection_invalid')
     for name in ('companion', 'nativeManifest', 'registeredNativeManifest', 'controllerInventory', 'controllerNarProof'):
         require(not Path(value['vaultWrapperAuthority'][name]['path']).is_relative_to(home), 'selection_invalid')
     proof_root = value["stateRoot"] + "/" + value["proofId"]
@@ -299,11 +307,20 @@ def publish(path, payload, deadline_ns, verify, *, now=time.monotonic_ns):
 
 
 def produce(selection_path, selection_sha256, output_path, deadline_ns, *, terminal_descriptor=0):
+    return _produce(selection_path, selection_sha256, output_path, deadline_ns,
+                    terminal_descriptor=terminal_descriptor)
+
+
+def _produce(selection_path, selection_sha256, output_path, deadline_ns, *, terminal_descriptor=0, reserved=False):
     selectors(selection_path, output_path, deadline_ns)
+    selection_validator, receipt_validator = validate_selection, guard.schema
+    if reserved:
+        import guard_yoga_toolbar_reserved as reservation
+        selection_validator, receipt_validator = reservation.selection, reservation.schema
     require(deadline_ns - time.monotonic_ns() > guard.CLEANUP_RESERVE_NS, "deadline_exceeded")
     uid = os.getuid()
     home = Path(pwd.getpwuid(uid).pw_dir)
-    selection = checked("selection_invalid", validate_selection,
+    selection = checked("selection_invalid", selection_validator,
         checked("selection_invalid", read_selection, selection_path, selection_sha256, deadline_ns), deadline_ns, uid, home)
     guard.selectors(output_path, selection["stateRoot"], selection["sourceRoot"], home)
     proof_root = selection["stateRoot"] + "/" + selection["proofId"]
@@ -314,14 +331,31 @@ def produce(selection_path, selection_sha256, output_path, deadline_ns, *, termi
     host = checked("local_identity_unqualified", identity_capture, selection, deadline_ns, uid, terminal_descriptor)
     require(checked("graph_unqualified", graph_capture, selection["sourceRoot"], deadline_ns) == selection["sourceGraphSha256"], "graph_unqualified")
     witness, pin = checked("display_unqualified", display.capture_pinned, selection["sourceSocket"], proof_root + "/wayland.sock", proof_root, uid, deadline_ns)
+    installed_capture = None
     try:
         receipt = {key: selection[key] for key in guard.FIELDS if key in selection}
         receipt.update(schemaVersion=1, scope="yoga-local-guard-qualification-v1", hostAlias="yoga", host=host,
                        compositorSnapshot=witness["snapshot"])
-        guard.schema(receipt, deadline_ns, selection["sourceRoot"], selection["controllerTools"], selection["sourceGraphSha256"], uid)
+        if reserved or selection['scope'] == INSTALLED_SCOPE:
+            import guard_yoga_installed_workspace as installed
+            receipt['scope'] = reservation.QUALIFICATION_SCOPE if reserved else guard.INSTALLED_SCOPE
+            if reserved:
+                receipt[reservation.CLOCK] = selection[reservation.CLOCK]
+            receipt['installedWorkspace'] = selection['installedWorkspace']
+            installed_capture = checked('source_changed',installed.Capture,selection['sourceRoot'],
+                selection['installedWorkspace'],deadline_ns,guard.file_bytes)
+            checked('source_changed',installed_capture.qualify,receipt,selection['sourceGraphSha256'])
+            if reserved:
+                checked('source_changed',reservation.capture,
+                    {'receipt': receipt, 'installedCapture': installed_capture})
+        receipt_validator(receipt, deadline_ns, selection["sourceRoot"], selection["controllerTools"], selection["sourceGraphSha256"], uid)
         checked("runtime_unqualified", guard.runtime_qualification, receipt, deadline_ns)
         def verify():
             budget(deadline_ns)
+            if reserved:
+                checked('source_changed',reservation.clock, selection, deadline_ns)
+            if installed_capture is not None:
+                checked('source_changed',installed_capture.qualify,receipt,selection['sourceGraphSha256'])
             require(deadline_ns - time.monotonic_ns() > guard.CLEANUP_RESERVE_NS, "deadline_exceeded")
             require(checked("selection_invalid", read_selection, selection_path, selection_sha256, deadline_ns) == selection, "source_changed")
             require(checked("local_identity_unqualified", identity_capture, selection, deadline_ns, uid, terminal_descriptor) == host, "local_identity_unqualified")
@@ -329,9 +363,15 @@ def produce(selection_path, selection_sha256, output_path, deadline_ns, *, termi
             checked("runtime_unqualified", guard.runtime_qualification, receipt, deadline_ns)
             require(checked("display_unqualified", pin.check, witness) == receipt["compositorSnapshot"], "display_unqualified")
         digest = checked("output_unqualified", publish, output_path, canonical(receipt), deadline_ns, verify)
-        return {"scope": "yoga-session-qualification-produced", "receiptSha256": digest, "proofId": selection["proofId"],
-            "deadlineMonotonicNs": deadline_ns, "executionAuthority": False, "toolbarConsentProved": False}
+        result = {"scope": "yoga-reserved-session-qualification-produced" if reserved else "yoga-session-qualification-produced",
+            "receiptSha256": digest, "proofId": selection["proofId"], "deadlineMonotonicNs": deadline_ns,
+            "executionAuthority": False, "toolbarConsentProved": False}
+        if reserved:
+            result[reservation.CLOCK] = selection[reservation.CLOCK]
+        return result
     finally:
+        if installed_capture is not None:
+            installed_capture.close()
         pin.close()
 
 

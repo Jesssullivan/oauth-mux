@@ -297,7 +297,7 @@ def run_cli(command: list[str], environment: dict, params: dict, *, failure_obse
         process.stderr.close()
 
 
-def bounded_private_session(process: subprocess.Popen) -> tuple[int, bytes, bytes]:
+def bounded_private_session(process: subprocess.Popen, *, absolute_deadline=None) -> tuple[int, bytes, bytes]:
     """Bound output while preserving the owned group leader until cleanup.
 
     No poll/communicate/wait may reap this leader before group signaling. A
@@ -307,6 +307,10 @@ def bounded_private_session(process: subprocess.Popen) -> tuple[int, bytes, byte
     output, diagnostics = bytearray(), bytearray()
     deadline = time.monotonic() + DEADLINE_SECONDS
     try:
+        if absolute_deadline is not None:
+            require(type(absolute_deadline) is float and time.monotonic()<absolute_deadline,
+                    "private session original deadline exhausted")
+            deadline=min(deadline,absolute_deadline)
         for stream, destination in ((process.stdout, output), (process.stderr, diagnostics)):
             os.set_blocking(stream.fileno(), False)
             selector.register(stream, selectors.EVENT_READ, destination)

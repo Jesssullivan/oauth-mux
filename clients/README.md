@@ -3,8 +3,56 @@
 The macOS menu-bar app uses SwiftUI and the Linux tray/settings app uses Qt6.
 Both are clients of the per-user daemon's versioned local control API. They
 manage sources, account lifecycle, enrollment/repair actions and native
-integrations, and display active bindings and compatible capacity totals.
-Credential material is absent from the control protocol and UI.
+integrations, and display active bindings and retained observation totals.
+Credential material is absent from snapshots and status views. The negotiated
+daemon-owned SIWC enrollment flow delivers one private authorization URL once,
+directly to the default browser; it is never displayed or written to CLI output.
+
+Linux Accounts → Add account is the primary first-account journey when the
+daemon advertises the typed experimental SIWC descriptor. Native consent gives
+the flow one finite duration (1–3600 seconds). The daemon owns registration,
+loopback callback, provider identity verification, encrypted paired commit and
+renewal. This is separate API Responses authority, not native Codex sign-in or
+application continuity. The open panel automatically reads redacted transaction
+status within the original bound, stopping at terminal outcomes or closure.
+Status refresh and reconnect never extend consent or repeat authorization.
+Closing the controls leaves a valid flow with the daemon; pending opaque handles
+can be inspected when controls reopen. Paired enrollment and current request
+grant usability remain distinct. Vault-unavailable status is Unknown; unlock the
+normal OS vault, then explicitly Resume after vault unlock. No key is regenerated,
+no plaintext fallback is introduced, and the OS determines any required factor.
+
+The shared CLI exposes the same operations without credential JSON:
+`omux sign-in providers`, `omux sign-in start --consent-seconds 600 --confirm`,
+`omux sign-in pending`, `omux sign-in status <opaque-transaction-id>`, and
+`omux sign-in cancel <opaque-transaction-id>` (or `remove`). Browser delivery uses
+a private stdin pipe to the packaged Linux Qt control and its closed URL/profile
+policy; the URL is absent from CLI/helper process arguments and CLI stdout/stderr.
+The approved OS/browser handler receives the authorization URL. Raw RPC
+authorization output is refused. An unknown mutation retains its printed opaque
+operation; `omux operation status <opaque-operation-id>` reads that original
+outcome. No operation, authorization delivery or provider issue is replayed.
+Cancellation/removal targets only that enrollment/source's local consent and
+paired grants; issued work may have occurred and provider revocation is not
+claimed. New enrollment needs fresh explicit consent. CLI browser dispatch is
+Linux-only in this source proposal; Darwin UI/support remains unproved.
+
+Experimental native-profile acquisition and credential-JSON import remain
+separate external-source operations with their existing external renewal owner.
+They are not the default first-account sign-in and do not transfer renewal
+authority by copying native authentication files. All new source paths and
+declared fixtures require separate compiler, installed UI and live enrollment
+qualification; source and synthetic success do not prove provider/native support.
+
+The Linux Setup view's explicit "Resume after vault unlock" action uses the
+advertised `custody.reopen` capability. Unlock the normal platform vault first;
+the action retries custody initialization in the same daemon, without source
+enrollment, provider requests or a service restart. Older installed services
+without that capability report the required update. Startup-locked health is
+cached daemon state, not a fresh platform-lock observation. Its unloaded account
+count is null; a loaded count comes from the authenticated retained snapshot.
+This source boundary requires separately qualified package and installed proof;
+it supplies no native application continuity or Darwin unlock proof.
 
 The Integrations view asks the daemon to discover native owner endpoints in its
 selected Codex home; the controls do not scan sockets or select the legacy
@@ -43,9 +91,10 @@ that identity, but the CLI cannot gate independent future invocations. Explicit
 caller-provided operation IDs remain unchanged.
 Disconnection marks displayed data as potentially stale.
 Unknown observations remain unknown. The clients display per-account
-observations separately from daemon-computed compatible totals, without summing
-incompatible units or windows. Codex percentages and provider permission flags
-retain their custom units; unspecified shared buckets do not yield additive
+observations separately from daemon-computed retained totals. Totals describe
+observed capacity rather than request eligibility; only matching units, scopes
+and windows combine, and shared buckets count once. Codex percentages and provider
+permission flags retain their custom units; unspecified shared buckets do not yield additive
 quota or establish exact-model readiness.
 
 The Linux app falls back to a normal settings window when the desktop has no
@@ -65,8 +114,9 @@ places `ai.xoxd.omux.daemon.plist` in `Contents/Library/LaunchAgents` and the da
 in `Contents/MacOS/omux`. The Service tab registers that helper through
 `SMAppService`; registration is never performed merely by launching the app.
 
-Enrollment reconciles an existing connected authorized source through the
-daemon; it does not start provider sign-in. Reconcile can recheck a detached
+The existing-source Enrollment/Reconcile actions reconcile a connected
+authorized source through the daemon; those actions do not start provider
+sign-in. The separate Linux Add account journey above starts owned SIWC sign-in. Reconcile can recheck a detached
 authorized source. Pending verification and `needs_user` remain unfinished.
 These clients do not collect passwords, security-key responses, OTPs, browser
 storage or tokens. Unsupported acquisition and repair report the daemon's reason.

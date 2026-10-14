@@ -46,6 +46,7 @@ pub const Checkpoint = struct {
     }
 };
 
+pub const format_version: u32 = 2;
 const magic = "OMUXR002";
 const legacy_magic = "OMUXR001";
 const legacy_record_size = 112;

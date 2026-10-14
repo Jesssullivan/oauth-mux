@@ -8,6 +8,7 @@ struct StateRow: Identifiable {
     let id: String
     let value: JSONValue
     func text(_ field: String) -> String {
+        if field == "status", value["complete"].boolean != nil { return "—" }
         if field == "label", value["label"].string == "" { return value["id"].string ?? "Unnamed" }
         if field == "resource.target", value.at(field).string == "" { return value["resource"]["kind"].display }
         if field == "resource.unit", value.at(field).string == "custom" { return value["resource"]["unit_name"].display }
@@ -19,12 +20,16 @@ struct StateRow: Identifiable {
         }
         if field == "freshness", value["freshness"] == .null {
             if let complete = value["complete"].boolean {
-                return complete ? "Current" : "Partial: \(value["unknown_buckets"].display) unknown or stale buckets"
+                return complete ? "Complete at snapshot" : "Partial at snapshot: \(value["unknown_buckets"].display) unknown or stale buckets"
             }
-            guard value["status"].string != "unknown", let expiry = value["expires_at"].number else { return "Unknown" }
-            return expiry <= Date().timeIntervalSince1970 ? "Stale" : "Current"
+            let now = Date().timeIntervalSince1970
+            guard let status = value["status"].string, ["ready", "unavailable"].contains(status),
+                  let observed = value["observed_at"].number, let expiry = value["expires_at"].number,
+                  let start = value["window_start"].number, let end = value["window_end"].number,
+                  observed <= now, start <= now else { return "Unknown" }
+            return expiry <= now || end <= now ? "Stale" : "Current"
         }
-        if field == "remaining", value["status"].string == "unknown" { return "Unknown" }
+        if field == "remaining", text("freshness") == "Unknown" { return "Unknown" }
         if field == "remaining", value["complete"].boolean == false,
            value["buckets"].number == 0 { return "Unknown" }
         if field.hasSuffix("_at"), let timestamp = value.at(field).number {
@@ -43,6 +48,13 @@ final class DaemonStore: ObservableObject {
     @Published private(set) var integrations: [StateRow] = []
     @Published private(set) var connected = false
     @Published private(set) var custodyAvailable = false
+    @Published private(set) var snapshotCurrent = false
+    @Published private(set) var custodyGuidance = "Credential custody has not been observed."
+    @Published private(set) var reopeningCustody = false
+    private var custodyControlVerified = false
+    private var custodyHealthCurrent = false
+    private var custodyReopenSupported = false
+    private var custodyReopenEligible = false
     @Published private(set) var connectionMessage = "Connecting…"
     @Published private(set) var message = ""
     @Published private(set) var serviceStatus = "Not enabled"
@@ -81,7 +93,7 @@ final class DaemonStore: ObservableObject {
     var capacities: [StateRow] {
         let totals = rows("capacity").map { row -> StateRow in
             guard case .object(var fields) = row.value else { return row }
-            fields["provider"] = .string(row.text("provider") + " (compatible total)")
+            fields["provider"] = .string(row.text("provider") + " (retained observation total)")
             return StateRow(id: row.id, value: .object(fields))
         }
         let observations = rows("observations").map { row -> StateRow in
@@ -99,65 +111,174 @@ final class DaemonStore: ObservableObject {
     }
 
     var warmAlternatives: Bool { snapshot["policy"]["warm_alternatives"].boolean ?? true }
-    var canMutate: Bool { connected && custodyAvailable && uncertainOperations.isEmpty }
-    var canVerifySetup: Bool { connected && uncertainOperations.isEmpty && verificationOperationID == nil }
+    var canMutate: Bool { connected && custodyControlVerified && custodyAvailable && snapshotCurrent && !reopeningCustody && uncertainOperations.isEmpty }
+    var canReopenCustody: Bool {
+        connected && custodyControlVerified && custodyHealthCurrent && custodyReopenSupported && custodyReopenEligible
+            && !refreshing && !reopeningCustody
+    }
+    var canVerifySetup: Bool { canMutate && !refreshing && verificationOperationID == nil }
 
     func verifySetup() { action("setup.refresh") }
 
     func refresh() async {
-        guard !refreshing else { return }
+        guard !refreshing && !reopeningCustody else { return }
         refreshing = true
-        defer { refreshing = false }
+        defer { refreshing = false; updateServiceStatus() }
+        snapshotCurrent = false
+        custodyAvailable = false
+        custodyControlVerified = false
+        custodyHealthCurrent = false
+        custodyReopenSupported = false
+        custodyReopenEligible = false
+        connected = false
+        connectionMessage = "Service connection is unverified."
+        custodyGuidance = "Custody health is unverified. Refresh before requesting recovery; displayed account data may be stale."
+        do {
+            let handshake = try await connection.request("system.handshake")
+            guard handshake["protocol_version"].number == 2,
+                  handshake["service"].string == "omuxd",
+                  handshake["channel"].string == "control" else { throw ControlError.invalidFrame }
+            connected = true
+            custodyControlVerified = true
+            connectionMessage = "Connected; custody health is unverified"
+            custodyReopenSupported = handshake["capabilities"]["credential_free_control"].boolean == true
+                && handshake["capabilities"]["custody_reopen"].boolean == true
+        } catch {
+            connectionMessage = "The control connection could not be verified."
+        }
+        // Health and readiness remain independently visible when account data
+        // cannot be read. Neither observation requests unlock or custody reopen.
+        do {
+            let health = try await connection.request("system.health")
+            try applyCustodyHealth(health)
+            connected = true
+            connectionMessage = custodyAvailable ? "Connected" : "Connected; credential custody unavailable"
+        } catch {
+            custodyGuidance = "Custody health could not be verified. Refresh before requesting recovery; displayed account data may be stale."
+        }
+        do {
+            let result = try await connection.request("setup.readiness")
+            let report = try SetupReadinessReport.parse(result)
+            readiness = report.findings.map { StateRow(id: $0["phase"].display, value: $0) }
+            readinessMessage = report.ready
+                ? "Operational readiness reported; seamless handoff still requires separate evidence."
+                : "Setup has pending or unverified phases."
+        } catch {
+            readiness = []
+            readinessMessage = "Shared setup readiness is unavailable; account data and custody may still be inspected separately."
+        }
+        guard custodyAvailable else { return }
         do {
             let value = try await connection.request("state.snapshot")
+            guard case .object = value, value["custody_available"].boolean == true,
+                  case .array = value["accounts"], verificationInteger(value["revision"]) != nil else {
+                throw ControlError.invalidFrame
+            }
             snapshot = value
+            snapshotCurrent = true
             await reconcileOperations()
-            connected = true
-            custodyAvailable = value["custody_available"].boolean ?? false
-            connectionMessage = custodyAvailable ? "Connected" : "Connected; credential custody unavailable"
-            do {
-                let result = try await connection.request("setup.readiness")
-                let findings = result["findings"].array
-                let expected: Set<String> = ["artifact", "service", "vault", "source", "identity", "grant", "native"]
-                guard result["schema_version"].number == 1, findings.count == 7,
-                      Set(findings.compactMap { $0["phase"].string }) == expected,
-                      findings.allSatisfy({ $0["reason"].string != nil && $0["action"].string != nil }) else {
+        } catch {
+            // A refused account snapshot does not erase the independently
+            // acquired control health/readiness or turn retained rows into count0.
+            connectionMessage = "Connected; account data could not be refreshed"
+            return
+        }
+        do {
+            let result = try await connection.request("integrations.status")
+            let installed = result["installed"].array
+            let rawRows = result["integrations"] == .null ? result["adapters"].array.map { adapter -> JSONValue in
+                let id = adapter["id"].string ?? "unknown"
+                let capabilities = adapter["capabilities"].array
+                return .object([
+                    "id": .string(id), "adapter": .string(id), "installed": .bool(installed.contains(.string(id))),
+                    "capability": .string(capabilities.map { "\($0["name"].display) (\($0["proof"].display))" }.joined(separator: "; ")),
+                    "limitation": .string(capabilities.map { "\($0["name"].display): \($0["limitation"].display)" }.joined(separator: "\n"))
+                ])
+            } : result["integrations"].array
+            integrations = rawRows.enumerated().map { index, item in
+                StateRow(id: item["id"].string ?? "integration-\(index)", value: item)
+            }
+            integrationMessage = ""
+        } catch {
+            integrationMessage = "Integration status is unavailable. Displayed capabilities may be stale."
+        }
+    }
+
+    private func applyCustodyHealth(_ health: JSONValue) throws {
+        guard health["protocol_version"].number == 2,
+              let available = health["custody_available"].boolean,
+              let loaded = health["metadata_loaded"].boolean,
+              health["live_handoff_proven"].boolean == false else { throw ControlError.invalidFrame }
+        let status = health["status"].string
+        if loaded {
+            guard verificationInteger(health["account_count"]) != nil,
+                  status == (available ? "ready" : "repair_required") else { throw ControlError.invalidFrame }
+            custodyGuidance = available
+                ? "Custody is loaded. Source connection, verified identity and usable authority remain separate requirements."
+                : "The daemon reports a repair requirement. Retain the original installation and inspect its diagnostics; a vault unlock alone is not a repair."
+        } else {
+            guard !available, health["account_count"] == .null,
+                  health["provider_access"].boolean == false else { throw ControlError.invalidFrame }
+            let reason = health["custody_error"].string
+            let action = health["recovery_action"].string
+            if status == "vault_locked" {
+                guard health["custody_error"] == .null || reason == "Locked",
+                      action == "unlock_platform_vault_then_reopen_custody" else { throw ControlError.invalidFrame }
+            } else {
+                guard status == "vault_unavailable", let reason,
+                      ["Missing", "InvalidKey", "Denied", "Cancelled", "Unavailable", "Conflict", "BackendFailure", "InvalidRoot"].contains(reason),
+                      action == (["Missing", "InvalidKey"].contains(reason)
+                        ? "restore_original_vault_key_then_reopen_custody" : "restore_platform_vault_access_then_reopen_custody") else {
                     throw ControlError.invalidFrame
                 }
-                readiness = findings.map { StateRow(id: $0["phase"].display, value: $0) }
-                readinessMessage = result["ready"].boolean == true
-                    ? "Operational readiness reported; seamless handoff still requires separate evidence."
-                    : "Setup has pending or unverified phases."
-            } catch {
-                readiness = []
-                readinessMessage = "Shared setup readiness is unavailable; inspect each phase separately."
             }
-            do {
-                let result = try await connection.request("integrations.status")
-                let installed = result["installed"].array
-                let rawRows = result["integrations"] == .null ? result["adapters"].array.map { adapter -> JSONValue in
-                    let id = adapter["id"].string ?? "unknown"
-                    let capabilities = adapter["capabilities"].array
-                    return .object([
-                        "id": .string(id), "adapter": .string(id), "installed": .bool(installed.contains(.string(id))),
-                        "capability": .string(capabilities.map { "\($0["name"].display) (\($0["proof"].display))" }.joined(separator: "; ")),
-                        "limitation": .string(capabilities.map { "\($0["name"].display): \($0["limitation"].display)" }.joined(separator: "\n"))
-                    ])
-                } : result["integrations"].array
-                integrations = rawRows.enumerated().map { index, item in
-                    StateRow(id: item["id"].string ?? "integration-\(index)", value: item)
-                }
-                integrationMessage = ""
-            } catch {
-                integrationMessage = "Integration status is unavailable. Displayed capabilities may be stale."
+            let fresh = health["custody_origin"].string == "fresh"
+            if fresh {
+                custodyGuidance = "First initialization is pending. Make the normal default Keychain available through macOS, then explicitly reopen custody. No existing account count has been loaded."
+            } else if reason == "Missing" || reason == "InvalidKey" {
+                custodyGuidance = "Restore access to the original Keychain wrapping key, then explicitly reopen custody. Retain the encrypted installation. If that key is permanently lost, separate fresh-custody enrollment is not implemented in these controls; never replace its key."
+            } else if status == "vault_locked" {
+                custodyGuidance = "Unlock the original default Keychain through macOS, then explicitly reopen custody. This retained diagnosis does not establish the current OS lock state; no account count has been loaded."
+            } else {
+                custodyGuidance = "Restore access to the normal default Keychain, including its daemon permissions, then explicitly reopen custody. The retained access diagnosis does not establish current OS readiness; no account count has been loaded."
             }
-        } catch {
-            connected = false
-            readiness = []
-            readinessMessage = "Setup readiness is unverified while disconnected."
-            connectionMessage = error.localizedDescription
+            custodyGuidance = "Retained custody diagnosis: \(reason ?? "Locked"). " + custodyGuidance
         }
-        updateServiceStatus()
+        custodyAvailable = available
+        custodyReopenEligible = !loaded
+        custodyHealthCurrent = true
+        if custodyReopenEligible && !custodyReopenSupported {
+            custodyGuidance += " This service does not advertise supported custody reopen; a compatible service update is required."
+        }
+    }
+
+    func reopenCustody() {
+        guard canReopenCustody else { return }
+        reopeningCustody = true
+        snapshotCurrent = false
+        custodyHealthCurrent = false
+        Task {
+            do {
+                // Custody reopen is its existing empty-parameter operation,
+                // not a revisioned account mutation or an OS unlock request.
+                let result = try await connection.request("custody.reopen")
+                guard case .object(let fields) = result,
+                      Set(fields.keys) == Set(["reopened", "custody_available", "metadata_loaded", "account_count", "provider_request_initiated", "live_handoff_proven"]),
+                      result["reopened"].boolean != nil,
+                      result["custody_available"].boolean == true,
+                      result["metadata_loaded"].boolean == true,
+                      verificationInteger(result["account_count"]) != nil,
+                      result["provider_request_initiated"].boolean == false,
+                      result["live_handoff_proven"].boolean == false else { throw ControlError.invalidFrame }
+                message = "Custody is loaded. Account metadata will refresh; this does not enroll a source or prove application handoff."
+            } catch {
+                // No automatic replay. A new health read is required before
+                // the user can explicitly retry, including after a lost reply.
+                message = "Custody reopen was refused or its result could not be verified. Inspect refreshed health and normal Keychain access before explicitly retrying."
+            }
+            reopeningCustody = false
+            await refresh()
+        }
     }
 
     private var uncertainOperations: [String: String] = [:]
@@ -208,7 +329,7 @@ final class DaemonStore: ObservableObject {
     func action(_ method: String, params: [String: JSONValue] = [:]) {
         guard connected else { message = "The service is disconnected. Reconnect before requesting an action."; return }
         let verification = method == "setup.refresh"
-        guard custodyAvailable || verification else { message = "Credential custody is unavailable. Restore custody before changing accounts or routes."; return }
+        guard verification ? canVerifySetup : canMutate else { message = "Current account data and credential custody are required before requesting this action."; return }
         guard uncertainOperations.isEmpty else { message = "A previous action has an unknown outcome. Refresh to reconcile it."; return }
         let nativeOperation = method == "integrations.attach" || method == "integrations.detach"
             || (method == "integrations.remove" && (params["adapter"]?.string ?? "codex") == "codex")
@@ -230,6 +351,19 @@ final class DaemonStore: ObservableObject {
                     // Acknowledgement is not completion. Resolve this exact ID;
                     // periodic refresh only reads status and never starts work.
                     await reconcileOperations()
+                    await refresh()
+                    return
+                }
+                if method == "integrations.remove",
+                   result["removed"].boolean == false || result["pending_safe_detach"].boolean == true {
+                    let reason: String
+                    switch result["reason"].string {
+                    case "NativeRequestsPending": reason = "Accepted native work is still pending."
+                    case "NativeCustodyPending": reason = "Safe native detachment is still pending."
+                    default: reason = "Safe native detachment has not been verified."
+                    }
+                    message = "Integration removal did not complete. " + reason
+                        + " Native application history stays in place. Refresh status before explicitly requesting removal again."
                     await refresh()
                     return
                 }
@@ -271,7 +405,7 @@ final class DaemonStore: ObservableObject {
               result["timing_scope"].string == "admission_to_terminal_before_commit_process_local",
               result["phases"].array.count == 7 else { return false }
         let unknownReasons: Set<String> = ["observation_unknown", "observation_stale", "evidence_unobserved", "synthetic_only", "native_evidence_missing", "channel_unknown"]
-        let actionReasons: Set<String> = ["channel_mismatch", "missing", "pending", "incompatible", "vault_locked", "vault_key_lost", "authority_expired", "browser_required", "native_unsupported"]
+        let actionReasons: Set<String> = ["channel_mismatch", "missing", "pending", "incompatible", "vault_locked", "vault_key_lost", "vault_key_unavailable", "vault_access_denied", "vault_unavailable", "authority_expired", "browser_required", "native_unsupported"]
         switch result["outcome"].string {
         case "verification_completed":
             guard generation > 0, result["refusal"] == .null else { return false }
@@ -443,11 +577,31 @@ final class DaemonStore: ObservableObject {
 
     func updateServiceStatus() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let external = home + "/Library/LaunchAgents/" + RuntimePaths.serviceLabel + ".plist"
         // A fleet launch agent and the bundled SMAppService must never compete.
-        // Existing external definitions are reported, never rewritten here.
-        var metadata = stat()
-        let hasExternalDefinition = external.withCString { lstat($0, &metadata) == 0 }
+        // Legacy unqualified definitions cannot establish the selected instance;
+        // their presence conservatively blocks a second login service. Existing
+        // files are reported, never renamed, removed or treated as active proof.
+        let externalLabels = [RuntimePaths.serviceLabel, "dev.xoxd.omux", "ai.xoxd.omux.daemon"]
+        var hasExternalDefinition = false
+        for label in externalLabels {
+            var metadata = stat()
+            let path = home + "/Library/LaunchAgents/" + label + ".plist"
+            let (result, inspectionError) = path.withCString { pointer in
+                let result = lstat(pointer, &metadata)
+                return (result, errno)
+            }
+            if result == 0 {
+                hasExternalDefinition = true
+                break
+            }
+            guard inspectionError == ENOENT else {
+                serviceExternallyManaged = true
+                serviceRegistered = false
+                serviceStatus = "External service ownership is unverified"
+                serviceGuidance = "Omux could not inspect existing login-service definitions. Restore access or review the deployment configuration before enabling the bundled service."
+                return
+            }
+        }
         serviceExternallyManaged = hasExternalDefinition || RuntimePaths.isDevelopment
             || ProcessInfo.processInfo.environment["OMUX_SOCKET"] != nil
         if serviceExternallyManaged {

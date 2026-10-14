@@ -1,0 +1,45 @@
+{
+  "epoch": "cf1c3f9c-5376-46ad-b44a-a0c3d0cf106d",
+  "root": "/home/jess/.local/state/omux-execution-20261005/cf1c3f9c-5376-46ad-b44a-a0c3d0cf106d/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_source_context_source_producer/test.outputs/native-source-context-source",
+  "source_root": "/home/jess/.local/state/omux-execution-20261005/cf1c3f9c-5376-46ad-b44a-a0c3d0cf106d/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_source_context_source_producer/test.outputs/native-source-context-source/source",
+  "receipt_path": "/home/jess/.local/state/omux-execution-20261005/cf1c3f9c-5376-46ad-b44a-a0c3d0cf106d/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_native_source_context_source_producer/test.outputs/native-source-context-source/source-receipt.json",
+  "receipt_sha256": "fbe2e3d1cdb7c4d601b45144182fdb1cdb6858d8565032ba4f060dcf253bf4ed",
+  "receipt_bytes": 1592974,
+  "inventory_sha256": "e5a942044a811670987377679e83fb8b643ba882e65e2fbda507810e7aadb764",
+  "tracked_files": 8551,
+  "source_bytes": 84683541,
+  "parent_source_receipt_sha256": "a17c9b7294fd7b8018f60bd2210f14140598d4b04e10da05aa1733a9482f3eab",
+  "parent_source_inventory_sha256": "252599e5faafa05e2ff688e57e58d1890aea57ead0f35ce0633588754cae5030",
+  "kind": "omux-native-source-context-source-v1",
+  "status": "verified-seventh-native-context-source-uncompiled",
+  "patch_sha256": [
+    "5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6",
+    "3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53",
+    "84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5",
+    "b4dd868ac11d863f65e9fe3031d83b8fb7164a5551abca20dc46424c0465c48c",
+    "d6fa05a49dea0560a8204da1897329d2613530c76287440d7ab1d8b409fc64d2",
+    "2fde65504b83e1fd72684618a631409418a6b9841db33243ed60733f9f031d26",
+    "ff7e7971019bd4e7bbf80a6aa5b86c787fc6971f2df0cd60399471ef3783e4a2"
+  ],
+  "root_identity": {
+    "device": 64773,
+    "inode": 37390149,
+    "uid": 1000,
+    "mode": 365
+  },
+  "source_root_identity": {
+    "device": 64773,
+    "inode": 55133053,
+    "uid": 1000,
+    "mode": 365
+  },
+  "receipt_identity": {
+    "device": 64773,
+    "inode": 37391822,
+    "uid": 1000,
+    "mode": 365,
+    "nlink": 1
+  },
+  "all_future_qualification_false": true,
+  "whole_source_bytes_readback": "passed genuineBazelproducer; root independently reads/hashes metadata receipt and canonical inventory only"
+}

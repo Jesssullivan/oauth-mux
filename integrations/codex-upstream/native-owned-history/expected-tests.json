@@ -1,0 +1,57 @@
+{
+  "app_server_unit_tests": [
+    "request_processors::thread_processor::owned_persistence_barrier_tests::owner_barrier_does_not_commit_on_writer_error_or_changed_authority",
+    "request_processors::thread_processor::owned_persistence_barrier_tests::owner_barrier_requires_pre_and_post_authority_without_replay",
+    "request_processors::thread_processor::owned_persistence_barrier_tests::owner_barrier_cancellation_never_commits_or_retries",
+    "request_processors::thread_processor::owned_commit_guard_tests::final_authority_refusal_drops_membership_without_committing",
+    "request_processors::thread_processor::owned_commit_guard_tests::activation_owns_membership_until_commit_returns"
+  ],
+  "core_unit_tests": [
+    "codex_thread::owned_history_tests::owned_persist_requires_an_actual_writer",
+    "codex_thread::owned_history_tests::owned_persist_materializes_only_native_session_meta_and_is_idempotent",
+    "codex_thread::owned_history_tests::owned_persist_propagates_closed_writer_failure",
+    "codex_thread::owned_history_tests::owned_persist_propagates_actual_native_file_open_failure",
+    "codex_thread::owned_history_tests::owned_persist_refuses_ephemeral_even_with_no_writer",
+    "codex_thread::native_runtime_lifecycle_tests::actual_session_lifecycle_stop_serializes_after_synchronous_commit",
+    "codex_thread::native_runtime_lifecycle_tests::submission_exit_guard_cancellation_retires_actual_session_lifecycle",
+    "codex_thread::native_runtime_lifecycle_tests::lifecycle_panic_and_poison_remain_closed_without_masking_original_panic",
+    "codex_thread::native_runtime_lifecycle_tests::synchronous_owner_failure_releases_lifecycle_without_replay_or_false_stop",
+    "codex_thread::native_runtime_lifecycle_tests::unpolled_spawn_scope_retirement_cannot_leave_live_runtime_authority",
+    "native_peer::tests::packet_lease_is_one_shot_and_retains_real_descriptors_without_a_second_reader",
+    "native_peer::tests::packet_lease_rechecks_identity_deadline_and_connection_departure",
+    "native_peer::tests::unreceived_or_failed_packet_cannot_create_a_lease",
+    "native_peer::tests::packet_lease_refuses_actual_peer_process_exit",
+    "native_peer::tests::lease_failure_keeps_original_connection_owner_and_spent_packet",
+    "thread_manager::loaded_owner_membership_tests::loaded_membership_refuses_removal_during_last_activity_await",
+    "thread_manager::loaded_owner_membership_tests::loaded_membership_refuses_replacement_during_last_activity_await",
+    "thread_manager::loaded_owner_membership_tests::loaded_membership_excludes_queued_removal_through_final_await_and_commit",
+    "thread_manager::loaded_owner_membership_tests::loaded_membership_cancellation_releases_actual_map_guard",
+    "thread_manager::loaded_owner_membership_tests::stopped_but_still_mapped_native_runtime_cannot_commit_owner_activation"
+  ],
+  "ignored_child_fixture": "native_peer::tests::peer_lease_process_child",
+  "kind": "owned-history-v3-required-native-methods",
+  "native_targets": [
+    "//codex-rs/core:core-unit-tests",
+    "//codex-rs/tui:tui-unit-tests",
+    "//codex-rs/app-server:app-server-unit-tests",
+    "//codex-rs/models-manager:models-manager-unit-tests"
+  ],
+  "new_normal_methods": 25,
+  "not_compiled_or_executed": true,
+  "preserve_existing_catalog_methods": {
+    "app_server": 1,
+    "core": 30,
+    "total": 35,
+    "tui": 4
+  },
+  "required_combined_named_methods": {
+    "app_server": 6,
+    "core": 50,
+    "models_manager": 0,
+    "total": 60,
+    "tui": 4
+  },
+  "schema_version": 1,
+  "state": "ALL_UNRUN",
+  "unfiltered_default_targets": true
+}

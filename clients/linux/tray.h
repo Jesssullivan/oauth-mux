@@ -1,6 +1,8 @@
 #pragma once
 
 #include "omux_client.h"
+#include "codex_account_acquisition.h"
+#include "siwc_enrollment.h"
 #include <QDialog>
 #include <QJsonArray>
 #include <QLabel>
@@ -17,6 +19,9 @@ private:
     void refresh();
     void refreshReadiness();
     void applySnapshot(const QJsonObject &snapshot);
+    void showDetails(QTableWidget *table);
+    void showAccountDemand(const QJsonObject &account);
+    void invalidateAccountDemand(const QString &reason, bool changedRevisionOnly = false);
     void action(const QString &method, QJsonObject params);
     void connectSource();
     void enroll();
@@ -35,8 +40,12 @@ private:
                    const QStringList &fields);
     void closeEvent(QCloseEvent *event) override;
     OmuxClient client_;
+    std::unique_ptr<CodexAccountAcquisition> acquisition_;
+    std::unique_ptr<SiwcEnrollment> siwc_;
+    QPushButton *sourceSignIn_;
     QSystemTrayIcon tray_;
     QLabel *connection_;
+    QLabel *snapshotNotice_;
     QLabel *message_;
     QLabel *policy_;
     QLabel *service_;
@@ -46,6 +55,7 @@ private:
     QTableWidget *accounts_;
     QTableWidget *sources_;
     QLabel *sourceNotice_;
+    QLabel *sourceAcquisitionNotice_;
     QPushButton *sourceEnroll_;
     QPushButton *sourceReconcile_;
     QPushButton *sourceDisconnect_;
@@ -55,16 +65,20 @@ private:
     QTableWidget *leases_;
     QTableWidget *operations_;
     QTableWidget *integrations_;
+    QLabel *runtimeSelection_;
     QTableWidget *nativeThreads_;
     QTimer refreshTimer_;
     bool refreshing_ = false;
+    quint64 readinessQuery_ = 0;
     bool explicitSocket_ = false;
     bool connected_ = false;
     bool custodyAvailable_ = false;
+    bool snapshotRefreshSucceeded_ = false;
     qint64 revision_ = -1;
     QJsonObject snapshot_;
     QHash<QString, QString> integrationPaths_;
     QHash<QString, QString> accountLabels_;
     QString nativeSocket_;
+    QString acquisitionSourceSelection_;
     QList<QWidget *> mutationControls_;
 };

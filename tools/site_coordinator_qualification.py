@@ -20,7 +20,7 @@ BAZEL = Path('/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel'
 BAZEL_PACKAGE_WRAPPER = BAZEL.parent / 'bazel-9.0.1-linux-x86_64'
 BAZEL_NATIVE = BAZEL.parent / '.bazel-9.0.1-linux-x86_64-wrapped'
 JDK = Path('/nix/store/siln89j8b6k5wdzw4asl69bma0k96nns-openjdk-headless-21.0.10+7')
-SITE_VERSION = Path('/srv/fast-local/jess/git/omux.xoxd.ai/.bazelversion')
+SITE_VERSION_SHA256 = '59b003a1f3465ae6084432329f8265e860cbaac0bd4a92a4f3ea6b979a6eed66'
 NIX_BAZEL_VERSION = b'bazel 9.0.1- (@non-git)\n'
 NIX_BAZEL_VERSION_SHA256 = 'a48452b91b946cf12c2e9bd73072286709bcf2c810c06e10389f17cb1421d3ee'
 
@@ -157,16 +157,24 @@ def version_diagnostic(value):
             '; sha256=' + hashlib.sha256(value).hexdigest())
 
 
-def qualify(candidate_sha256, native_manifest, bootstrap_manifest, output, scratch):
+def declared_site_version(path):
+    """Read the declared public copy; never fall back to a shared checkout."""
+    selected = Path(path).resolve(strict=True)
+    content, facts = file_bytes(selected, 64)
+    require(content == b'9.0.1\n' and facts['sha256'] == SITE_VERSION_SHA256,
+            'declared site Bazel version bytes differ')
+    return content, facts
+
+
+def qualify(candidate_sha256, native_manifest, bootstrap_manifest, output, scratch, site_version, *, candidate_path=CANDIDATE, candidate_origin=None):
     require(candidate_sha256 == CANDIDATE_SHA256, 'candidate selection is not the fixed retained producer')
-    payload, candidate_meta = file_bytes(CANDIDATE, 65536)
+    payload, candidate_meta = file_bytes(Path(candidate_path).resolve(strict=True), 65536)
     require(candidate_meta['sha256'] == candidate_sha256, 'candidate receipt digest differs')
     candidate = json.loads(payload)
     require(candidate.get('status') == 'candidate-settings-only' and candidate.get('runtime_outputs_match') is True
             and candidate.get('bazel') == str(BAZEL) and candidate.get('java_home') == str(JDK)
             and candidate.get('execution_authority') is False, 'candidate authority differs')
-    version, version_meta = file_bytes(SITE_VERSION, 64)
-    require(version.strip() == b'9.0.1', 'site Bazel version differs')
+    version, version_meta = declared_site_version(site_version)
     manifests = {}
     native_bazel_binding = 'native manifest has no packages.bazel entry; candidate and exact immutable package bind Bazel'
     for name, selected in (('native', native_manifest), ('bootstrap', bootstrap_manifest)):
@@ -197,8 +205,12 @@ def qualify(candidate_sha256, native_manifest, bootstrap_manifest, output, scrat
         require(int(binaries[kind]['mode'], 8) & 0o111, 'coordinator binary not executable')
         binaries[kind]['path'] = command[0]
     versions = validate_versions(bounded_version(version_command('bazel'), scratch), bounded_version(version_command('java'), scratch))
+    payload_after, candidate_meta_after = file_bytes(Path(candidate_path).resolve(strict=True), 65536)
+    require(payload_after == payload and candidate_meta_after == candidate_meta, 'selected candidate changed')
+    version_after, version_meta_after = declared_site_version(site_version)
+    require(version_after == version and version_meta_after == version_meta, 'declared site version changed')
     report = {'schema_version': 1, 'status': 'version-and-byte-qualified-site-coordinator',
-              'candidate': str(CANDIDATE), 'candidate_sha256': candidate_sha256,
+              'candidate': str(candidate_origin or CANDIDATE), 'candidate_sha256': candidate_sha256,
               'bazel': str(BAZEL), 'java_home': str(JDK), 'bazel_version': '9.0.1', 'java_version': '21.0.10+7',
               'binary_versions_verified': True, 'binaries': binaries, 'manifest_metadata': manifests,
               'bazel_wrapper': wrapper_metadata,
@@ -218,13 +230,19 @@ def qualify(candidate_sha256, native_manifest, bootstrap_manifest, output, scrat
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--candidate-sha256', required=True)
+    parser.add_argument('--selection', required=True)
+    parser.add_argument('--selection-sha256-file', required=True)
+    parser.add_argument('--candidate-file', required=True)
     parser.add_argument('--native-manifest', required=True)
     parser.add_argument('--bootstrap-manifest', required=True)
+    parser.add_argument('--site-version', required=True)
     args = parser.parse_args()
-    qualify(args.candidate_sha256, args.native_manifest, args.bootstrap_manifest,
+    from site_coordinator_selection import projected
+    selected = projected(args.selection, args.selection_sha256_file, args.candidate_file)
+    qualify(selected['candidate']['sha256'], args.native_manifest, args.bootstrap_manifest,
             Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR']).resolve(strict=True) / 'site-coordinator-qualification',
-            Path(os.environ['TEST_TMPDIR']).resolve(strict=True))
+            Path(os.environ['TEST_TMPDIR']).resolve(strict=True), args.site_version,
+            candidate_path=args.candidate_file, candidate_origin=selected['candidate']['path'])
 
 
 if __name__ == '__main__':

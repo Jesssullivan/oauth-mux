@@ -39,6 +39,7 @@ PROBE_FAILURES = ("none", "receipt_absent", "invalid_receipt", "unsafe_path", "u
 READINESS_REASONS = ("ready", "observation_unknown", "observation_stale", "evidence_unobserved",
                      "synthetic_only", "native_evidence_missing", "channel_unknown", "channel_mismatch",
                      "missing", "pending", "incompatible", "vault_locked", "vault_key_lost",
+                     "vault_key_unavailable", "vault_access_denied", "vault_unavailable",
                      "authority_expired", "browser_required", "native_unsupported")
 SUBPHASES = ("readiness-command", "readiness-shared-result", "readiness-claims", "readiness-phases",
              "readiness-artifact", "readiness-service", "readiness-vault", "readiness-source",
@@ -52,11 +53,83 @@ FAULTS = ("Missing", "Locked", "Denied", "Cancelled", "Unavailable", "InvalidKey
           "loader-library-unavailable", "loader-symbol-unavailable", "startup-deadline-vault-pending",
           "startup-deadline-database-created", "startup-deadline-sockets-created", "keyring-exited",
           "daemon-segmentation-fault", "daemon-aborted", "daemon-other-exit")
+PUBLIC_EVIDENCE_LIMIT = 8192
+PUBLIC_MEMBERS = ("bin/omux", "bin/omuxd", "lib/omux/libexec/omux.bin", "lib/omux/libexec/omuxd.bin")
+PUBLIC_DIGEST_FIELDS = ("safe_refusal_terminal", "verification_completed_terminal", "samples_before_refusal",
+                        "samples_after_refusal", "samples_after_completion", "selected_status_reply_before_restart",
+                        "selected_status_reply_after_restart", "selected_refresh_reply_before_restart",
+                        "selected_refresh_reply_after_restart")
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def public_evidence_line(receipt: dict, core_only: bool) -> str:
+    """Allow only this fixture's finite public tuple, never arbitrary child output."""
+    require(type(receipt) is dict and set(receipt) == {
+        "schema_version", "kind", "lane", "capture_point", "caller_source_binding", "fixture_source_sha256",
+        "archive_sha256", "archive_bytes", "manifest_sha256", "manifest_bytes", "artifact_target",
+        "artifact_distribution", "artifact_channel", "artifact_status", "raw_source_revision", "raw_source_revision_present",
+        "raw_source_dirty", "installed_members", "observed_artifact", "verification"},
+        "installed public evidence shape changed")
+    require(type(receipt["schema_version"]) is int and receipt["schema_version"] == 1
+            and receipt["kind"] == "installed_private_custody_public_evidence"
+            and receipt["lane"] == ("core_only" if core_only else "full_qt")
+            and receipt["capture_point"] == "checked_restart_and_rollback_before_owned_uninstall"
+            and receipt["caller_source_binding"] == "enclosing_guard_receipt_only"
+            and receipt["artifact_target"] in {"x86_64-linux", "aarch64-linux"}
+            and receipt["artifact_status"] == "experimental"
+            and receipt["artifact_distribution"] == "portable-linux" and receipt["artifact_channel"] == "release",
+            "installed public evidence scope changed")
+    for name in ("fixture_source_sha256", "archive_sha256", "manifest_sha256"):
+        require(type(receipt[name]) is str and re.fullmatch(r"[0-9a-f]{64}", receipt[name]) is not None,
+                "installed public evidence digest changed")
+    for name in ("archive_bytes", "manifest_bytes"):
+        require(type(receipt[name]) is int and 0 < receipt[name] <= pack.MAX_BYTES,
+                "installed public evidence byte bound changed")
+    require(type(receipt["raw_source_dirty"]) is bool and type(receipt["raw_source_revision_present"]) is bool
+            and (receipt["raw_source_revision"] is None or type(receipt["raw_source_revision"]) is str
+                 and re.fullmatch(r"[0-9a-f]{40,64}", receipt["raw_source_revision"]) is not None)
+            and (receipt["raw_source_revision_present"] or receipt["raw_source_revision"] is None),
+            "installed raw public source fields changed")
+    members = receipt["installed_members"]
+    require(type(members) is dict and set(members) == set(PUBLIC_MEMBERS),
+            "installed public member set changed")
+    for member in members.values():
+        require(type(member) is dict and set(member) == {"sha256", "bytes", "format", "matches_verified_archive"}
+                and type(member["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", member["sha256"]) is not None
+                and type(member["bytes"]) is int and 4 <= member["bytes"] <= pack.MAX_BYTES
+                and member["format"] == "elf" and member["matches_verified_archive"] is True,
+                "installed public member facts changed")
+    require(receipt["observed_artifact"] == {"ownership": "installation_receipt", "payload": "matches",
+                                             "running_executable": "matches",
+                                             "scope": "checked_selected_startup_before_final_restart"},
+            "installed observed artifact facts changed")
+    verification = receipt["verification"]
+    require(type(verification) is dict and set(verification) == {
+        "refusal_schema_version", "completion_schema_version", "safe_refusal_count_delta",
+        "verification_completed_count_delta", "installation_success_measured", "end_to_end_latency_measured",
+        "achieved_slo", "digests"}
+        and type(verification["refusal_schema_version"]) is int and verification["refusal_schema_version"] == 2
+        and type(verification["completion_schema_version"]) is int and verification["completion_schema_version"] in {1, 2}
+        and type(verification["safe_refusal_count_delta"]) is int and verification["safe_refusal_count_delta"] == 1
+        and type(verification["verification_completed_count_delta"]) is int
+        and verification["verification_completed_count_delta"] == 1
+        and verification["installation_success_measured"] is False
+        and verification["end_to_end_latency_measured"] is False and verification["achieved_slo"] is False,
+        "installed verification evidence scope changed")
+    digests = verification["digests"]
+    require(type(digests) is dict and set(digests) == set(PUBLIC_DIGEST_FIELDS)
+            and all(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+                    for value in digests.values()), "installed verification evidence digests changed")
+    require(digests["selected_status_reply_before_restart"] == digests["selected_status_reply_after_restart"]
+            and digests["selected_refresh_reply_before_restart"] == digests["selected_refresh_reply_after_restart"],
+            "installed public restart digests changed")
+    encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    require(len(encoded.encode("ascii")) <= PUBLIC_EVIDENCE_LIMIT, "installed public evidence exceeded its bound")
+    return encoded
 
 
 def stop(process: subprocess.Popen, require_success: bool = False) -> None:
@@ -318,7 +391,7 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
         for phase, expected in (("artifact", "ready" if selected else "observation_unknown"),
                                 ("service", "observation_unknown"), ("vault", "ready"),
                                 ("source", "missing"), ("identity", "pending"), ("grant", "missing"),
-                                ("native", "observation_unknown")):
+                                ("native", "missing")):
             SUBPHASE = "readiness-" + phase
             READINESS_REASON = "unclassified"
             if rows[phase]["reason"] in READINESS_REASONS:
@@ -331,6 +404,8 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
                     PROBE_FAILURE = observed_failure
             require(rows[phase]["reason"] == expected,
                     "installed readiness collapsed custody into acquisition or native capability")
+        require(rows["native"]["action"] == "install_native_adapter",
+                "unconfigured installed fixture lost actionable native adapter gap")
         SUBPHASE = "setup-plan-command"
         plan = setup_command(["setup"], expected_pid)
         SUBPHASE = "setup-plan-fields"
@@ -382,10 +457,11 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
         refusal_revision = cli("system.health")["revision"]
         verification_before = cli("reliability.lifecycle")["setup_verification"]
         refusal = setup_command(["setup", "verify"], daemon_process.pid)
-        require(refusal.get("schema_version") == 1 and refusal.get("outcome") == "safe_refusal"
+        require(refusal.get("schema_version") == 2 and refusal.get("outcome") == "safe_refusal"
                 and refusal.get("refusal") == "installation_selection_required"
                 and isinstance(refusal.get("operation_id"), str) and len(refusal["operation_id"]) == 64
-                and refusal.get("elapsed_ns") is None
+                and type(refusal.get("elapsed_ns")) is int and refusal["elapsed_ns"] >= 0
+                and refusal.get("timing_scope") == "admission_to_terminal_before_commit_process_local"
                 and refusal.get("phases") == [{"outcome": "unknown", "reason": "observation_unknown"}] * 7,
                 "unselected installed verification manufactured successful phase evidence")
         refusal_params = {"operation_id": refusal["operation_id"], "expected_revision": refusal_revision}
@@ -398,6 +474,10 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
                 and verification_after["installation_selection_required_refusals"]
                 == verification_before["installation_selection_required_refusals"] + 1
                 and verification_after["verification_completed"] == verification_before["verification_completed"]
+                and sum(verification_after["refusal_timing"]["latency"])
+                == sum(verification_before["refusal_timing"]["latency"]) + 1
+                and verification_after["refusal_timing"]["missing_latency"]
+                == verification_before["refusal_timing"]["missing_latency"]
                 and verification_after["achieved_slo"] is False,
                 "installed refusal counted as completed verification or achieved SLO")
         require(cli("setup.refresh", refusal_params) == refusal,
@@ -500,7 +580,7 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
                     {"outcome": "action_required", "reason": "missing"},
                     {"outcome": "action_required", "reason": "pending"},
                     {"outcome": "action_required", "reason": "missing"},
-                    {"outcome": "unknown", "reason": "observation_unknown"}],
+                    {"outcome": "action_required", "reason": "missing"}],
                 "selected verification overclaimed service, enrollment or native readiness")
         selected_evidence = setup_command(["setup", "evidence"], daemon_process.pid)
         require(selected_evidence["provider_access"] is False and selected_evidence["refresh_pending"] is False
@@ -574,6 +654,89 @@ def inside(bundle: Path, keyring: Path, root: Path, core_only: bool = False) -> 
         require(rejected.returncode != 0 and b"RecoveryRollbackDetected" in rejected.stderr,
                 "installed daemon admitted an older restored database")
         require(authority.read_bytes() == authority_before, "rollback rejection reseeded recovery authority")
+        PHASE = "public-evidence"
+        # Retain the PUBLIC byte tuple while installed files still exist. No
+        # database, authority record, key, ciphertext, operation ID or path is
+        # exported. These hashes do not recover the archive after it is pruned.
+        installed_members = {}
+        for name in PUBLIC_MEMBERS:
+            expected = archive_files[name]
+            descriptor = os.open(prefix / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                initial = os.fstat(descriptor)
+                require(stat.S_ISREG(initial.st_mode) and initial.st_uid == os.getuid()
+                        and initial.st_nlink == 1 and initial.st_size == len(expected) <= pack.MAX_BYTES,
+                        "installed public evidence member custody changed")
+                digest = hashlib.sha256()
+                remaining = len(expected)
+                magic = b""
+                while remaining:
+                    chunk = os.read(descriptor, min(65536, remaining))
+                    require(bool(chunk), "installed public evidence member shortened")
+                    if len(magic) < 4:
+                        magic += chunk[:4 - len(magic)]
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                final = os.fstat(descriptor)
+                named = os.stat(prefix / name, follow_symlinks=False)
+                stable_fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+                require(os.read(descriptor, 1) == b""
+                        and all(getattr(initial, field) == getattr(final, field) == getattr(named, field)
+                                for field in stable_fields)
+                        and magic == b"\x7fELF" and digest.hexdigest() == pack.digest(expected),
+                        "installed public evidence member differs from verified archive")
+                installed_members[name] = {"sha256": digest.hexdigest(), "bytes": len(expected),
+                                           "format": "elf", "matches_verified_archive": True}
+            finally:
+                os.close(descriptor)
+        with Path(__file__).open("rb") as fixture_source:
+            source_bytes = fixture_source.read(256 * 1024 + 1)
+        require(0 < len(source_bytes) <= 256 * 1024, "installed fixture source exceeded public evidence bound")
+
+        def fact_digest(value: dict) -> str:
+            return pack.digest(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+        receipt = {
+            "schema_version": 1, "kind": "installed_private_custody_public_evidence",
+            "lane": "core_only" if core_only else "full_qt",
+            "capture_point": "checked_restart_and_rollback_before_owned_uninstall",
+            "caller_source_binding": "enclosing_guard_receipt_only",
+            "fixture_source_sha256": pack.digest(source_bytes),
+            "archive_sha256": pack.digest(payload), "archive_bytes": len(payload),
+            "manifest_sha256": pack.digest(archive_files["release-manifest.json"]),
+            "manifest_bytes": len(archive_files["release-manifest.json"]),
+            "artifact_target": manifest["target"], "artifact_distribution": manifest["distribution"],
+            "artifact_channel": manifest["channel"],
+            "artifact_status": manifest["product"]["status"],
+            "raw_source_revision": manifest["provenance"].get("sourceRevision"),
+            "raw_source_revision_present": "sourceRevision" in manifest["provenance"],
+            "raw_source_dirty": manifest["provenance"]["sourceDirty"],
+            "installed_members": installed_members,
+            "observed_artifact": {**{name: selected_evidence["probe"]["artifact"][name]
+                                     for name in ("ownership", "payload", "running_executable")},
+                                  "scope": "checked_selected_startup_before_final_restart"},
+            "verification": {
+                "refusal_schema_version": refusal["schema_version"],
+                "completion_schema_version": selected_result["schema_version"],
+                "safe_refusal_count_delta": verification_after["safe_refusals"] - verification_before["safe_refusals"],
+                "verification_completed_count_delta": selected_summary["verification_completed"] - verification_after["verification_completed"],
+                "installation_success_measured": selected_summary["installation_success_measured"],
+                "end_to_end_latency_measured": selected_summary["end_to_end_latency_measured"],
+                "achieved_slo": selected_summary["achieved_slo"],
+                "digests": {
+                    "safe_refusal_terminal": pack.digest(terminal_bytes_before_restart[refusal["operation_id"]]),
+                    "verification_completed_terminal": pack.digest(terminal_bytes_before_restart[selected_result["operation_id"]]),
+                    "samples_before_refusal": fact_digest(verification_facts(verification_before)),
+                    "samples_after_refusal": fact_digest(verification_facts(verification_after)),
+                    "samples_after_completion": fact_digest(verification_facts(selected_summary)),
+                    "selected_status_reply_before_restart": pack.digest(selected_status_bytes),
+                    "selected_status_reply_after_restart": pack.digest(restarted_status_bytes),
+                    "selected_refresh_reply_before_restart": pack.digest(selected_replay_bytes),
+                    "selected_refresh_reply_after_restart": pack.digest(restarted_replay_bytes),
+                },
+            },
+        }
+        print(public_evidence_line(receipt, core_only), flush=True)
         PHASE = "ownership-uninstall"
         uninstalled = install.uninstall(prefix, records)
         require(uninstalled["preserved"] == [] and len(uninstalled["removed"]) == len(record["files"]),
@@ -601,6 +764,8 @@ def main() -> int:
         return 0
     require(len(arguments) == 4 and "--inside" not in arguments, "declared bundle and isolated vault tools required")
     bundle, session, bus, keyring = (Path(value).resolve(strict=True) for value in arguments)
+    staged_public_line = None
+    staged_success_marker = None
     with tempfile.TemporaryDirectory(prefix="omux-i-", dir="/tmp") as temporary:
         root = Path(temporary)
         environment = os.environ.copy()
@@ -632,7 +797,16 @@ def main() -> int:
             marker = "OMUX_INSTALLED_CORE_PRIVATE_CUSTODY_OK" if core_only else "OMUX_INSTALLED_PRIVATE_CUSTODY_OK"
             require((marker + "\n").encode() in output,
                     "installed custody success marker missing")
-            print(marker)
+            lines = output.splitlines()
+            require(len(lines) == 2 and lines[1] == marker.encode() and len(lines[0]) <= PUBLIC_EVIDENCE_LIMIT,
+                    "installed public evidence line missing or ambiguous")
+            # Stage only the independently bounded allowlist. The child and
+            # private group are done; outer filesystem cleanup is still pending.
+            receipt = json.loads(lines[0])
+            encoded = public_evidence_line(receipt, core_only)
+            require(lines[0] == encoded.encode("ascii"), "installed public evidence is not canonical")
+            staged_public_line = encoded
+            staged_success_marker = marker
         else:
             # Forward only our finite phase names, never bus/vault output.
             for phase in ("keyring-startup", "initial-daemon-startup", "installed-cli-deduplication",
@@ -640,7 +814,7 @@ def main() -> int:
                           "installed-setup-verification", "installed-selected-setup-verification",
                           "installed-completed-verification-after-restart",
                           "installed-qt-connection", "durable-custody-inspection", "daemon-process-restart",
-                          "database-rollback-rejection", "ownership-uninstall", "private-context"):
+                          "database-rollback-rejection", "public-evidence", "ownership-uninstall", "private-context"):
                 marker = "installed private custody proof failed at " + phase
                 # The initial readiness name is a prefix of its restart name;
                 # forward only the exact finite phase emitted by the child.
@@ -669,7 +843,15 @@ def main() -> int:
             tag = re.search(rb"(?:^|\n)installed custody failure classification: ([A-Z][A-Za-z0-9]{0,63})(?:\n|$)", diagnostics)
             if tag is not None:
                 print("installed custody failure classification: " + tag[1].decode("ascii"), file=sys.stderr)
-        return code
+    # Context exit must succeed before a public terminal receipt or marker.
+    # A cleanup exception follows the existing finite failure path, with neither
+    # staged success line forwarded from captured child output.
+    if code == 0:
+        require(staged_public_line is not None and staged_success_marker is not None,
+                "installed public evidence was not staged")
+        print(staged_public_line)
+        print(staged_success_marker)
+    return code
 
 
 if __name__ == "__main__":

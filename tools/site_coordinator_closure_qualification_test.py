@@ -63,6 +63,22 @@ def evidence(inputs):
 
 
 class ClosureQualificationTest(unittest.TestCase):
+    def test_fresh_version_digest_is_inside_original_inventory_and_nar_digest(self):
+        selected = 'c' * 64
+        inventory, content, digest = qualification.closure_inventory(rows(), version_sha256=selected)
+        self.assertEqual(inventory['provenance']['binaryQualificationSha256'], selected)
+        self.assertEqual(digest, hashlib.sha256(content).hexdigest())
+        _, original, original_digest = qualification.closure_inventory(rows())
+        self.assertNotEqual(content, original)
+        self.assertNotEqual(digest, original_digest)
+        _, verified, verified_digest, nar = qualification.qualify_closure(rows(), qualification.NIX,
+            verifier=nar_receipt, observer=lambda path: ('immutable', path), version_sha256=selected)
+        self.assertEqual(verified, content)
+        self.assertEqual(verified_digest, digest)
+        self.assertEqual(nar['inventorySha256'], digest)
+        for bad in [None, '', True, ['c' * 64], 'c' * 63]:
+            with self.assertRaises(ValueError):qualification.closure_inventory(rows(), version_sha256=bad)
+
     def test_exact_readonly_snapshot_and_shared_cycle_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / 'db.sqlite'
@@ -159,6 +175,27 @@ class ClosureQualificationTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 qualification.validate_evidence(candidate, version, contents, b'8.6.0\n')
 
+    def test_declared_input_set_is_complete_bounded_and_has_no_shared_fallback(self):
+        paths = {name: Path('/owned/declared-site') / name for name in qualification.INPUTS}
+        version_path = Path('/owned/declared-site/bazelversion')
+        with patch.object(qualification.Path, 'resolve', autospec=True, side_effect=lambda path, strict=False: path), \
+                patch.object(qualification, 'file_bytes', return_value=(b'public fixture', {})) as reader, \
+                patch.object(qualification, 'declared_site_version', return_value=(b'9.0.1\n', {})) as version_reader:
+            contents, version = qualification.declared_site_inputs(paths, version_path)
+            self.assertEqual(set(contents), set(qualification.INPUTS))
+            self.assertEqual(version, b'9.0.1\n')
+            self.assertEqual(reader.call_count, len(paths))
+            for path in paths.values():
+                reader.assert_any_call(path, 1024 * 1024)
+            version_reader.assert_called_once_with(version_path)
+        for values in ({}, {**paths, 'unexpected': Path('/other')},
+                       {name: path for name, path in paths.items() if name != 'flake.lock'}, None):
+            with patch.object(qualification, 'file_bytes') as reader, \
+                    patch.object(qualification, 'declared_site_version') as version_reader, self.assertRaises(ValueError):
+                qualification.declared_site_inputs(values, version_path)
+            reader.assert_not_called()
+            version_reader.assert_not_called()
+
     def test_receipt_selection_never_falls_back_or_accepts_duplicate_keys(self):
         with patch.object(qualification, 'file_bytes') as reader:
             with self.assertRaises(ValueError):
@@ -180,15 +217,15 @@ class ClosureQualificationTest(unittest.TestCase):
             'rev': qualification.REVISION, 'narHash': qualification.SOURCE_NAR}}}}).encode()
         digests = {name: hashlib.sha256(value).hexdigest() for name, value in contents.items()}
         candidate, version = evidence(digests)
+        declared = {name: Path('/owned/declared-site') / name for name in qualification.INPUTS}
+        version_path = Path('/owned/declared-site/bazelversion')
         def read(path, maximum, immutable=False):
             selected = str(path)
             if selected == qualification.NIX:
                 self.assertTrue(immutable)
                 payload = b'\x7fELFfixture'
-            elif Path(path) == qualification.SITE / '.bazelversion':
-                payload = b'9.0.1\n'
             else:
-                payload = contents[Path(path).relative_to(qualification.SITE).as_posix()]
+                payload = contents[Path(path).relative_to('/owned/declared-site').as_posix()]
             return payload, {'sha256': hashlib.sha256(payload).hexdigest(), 'bytes': len(payload),
                              'mode': '0o555' if immutable else '0o644'}
         def receipt(path, selected, expected):
@@ -199,13 +236,15 @@ class ClosureQualificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(qualification, 'INPUTS', digests), \
                 patch.object(qualification, 'file_bytes', side_effect=read), \
+                patch.object(qualification, 'declared_site_version', return_value=(b'9.0.1\n', {})) as version_reader, \
                 patch.object(qualification, 'selected_receipt', side_effect=receipt), \
                 patch.object(qualification, 'current_binary_identities', return_value=identities), \
                 patch.object(qualification.Path, 'resolve', autospec=True, side_effect=lambda path, strict=False: path):
             output = Path(directory) / 'proof'
             result = qualification.produce(qualification.NIX, qualification.CANDIDATE_SHA256,
                 qualification.VERSION_RECEIPT_SHA256, output, snapshotter=snapshot,
-                verifier=nar_receipt, observer=lambda path: ('immutable', path))
+                verifier=nar_receipt, observer=lambda path: ('immutable', path),
+                site_inputs=declared, site_version_path=version_path)
             snapshot.assert_called_once_with(qualification.DATABASE, list(qualification.ROOTS))
             report_bytes = (output / 'site-coordinator-closure-qualification.json').read_bytes()
             report = json.loads(report_bytes)
@@ -222,6 +261,21 @@ class ClosureQualificationTest(unittest.TestCase):
             self.assertEqual(result['receipt_sha256'], hashlib.sha256(report_bytes).hexdigest())
             self.assertEqual(report['binary_qualification_sha256'], qualification.VERSION_RECEIPT_SHA256)
             self.assertNotIn('receipt_sha256', report)
+
+            self.assertEqual(version_reader.call_count, 2)
+            version_reader.assert_called_with(version_path)
+            original = contents['flake.nix']
+            def tampered_snapshot(database, roots):
+                contents['flake.nix'] = b'changed declared input after initial read'
+                return rows()
+            with self.assertRaises(ValueError):
+                qualification.produce(qualification.NIX, qualification.CANDIDATE_SHA256,
+                    qualification.VERSION_RECEIPT_SHA256, Path(directory) / 'refused',
+                    snapshotter=tampered_snapshot, verifier=nar_receipt,
+                    observer=lambda path: ('immutable', path), site_inputs=declared,
+                    site_version_path=version_path)
+            self.assertFalse((Path(directory) / 'refused').exists())
+            contents['flake.nix'] = original
 
     def test_evidence_write_is_exclusive_private_and_does_not_follow_final_symlink(self):
         with tempfile.TemporaryDirectory() as directory:

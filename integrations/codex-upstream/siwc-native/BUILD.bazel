@@ -1,0 +1,4 @@
+package(default_visibility = ["//visibility:public"])
+exports_files(["BUILD.bazel", "native-source-controls.json", "native-siwc-v4.patch", "native-delta-manifest.json", "expected-tests.json"])
+filegroup(name = "inputs", srcs = ["native-source-controls.json", "native-siwc-v4.patch", "native-delta-manifest.json", "expected-tests.json"])
+filegroup(name = "native_preimages", srcs = ['graph-preimages/MODULE.bazel', 'graph-preimages/codex-rs/Cargo.lock', 'graph-preimages/codex-rs/Cargo.toml', 'graph-preimages/codex-rs/core/BUILD.bazel.preimage', 'graph-preimages/codex-rs/core/Cargo.toml', 'graph-preimages/defs.bzl', 'preimages/codex-rs/core/src/auth_broker.rs', 'preimages/codex-rs/core/src/client.rs', 'preimages/codex-rs/core/src/lib.rs'], visibility = ["//tools:__pkg__"])

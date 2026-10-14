@@ -16,7 +16,7 @@ an adapter declaration nor a mock binding establishes native attachment.
 | --- | --- |
 | Identity | Independently verified provider, issuer, subject and tenant; labels and copied native hints cannot establish identity |
 | Account | Identity plus account type, preferences and admission lifecycle |
-| Source | Explicit authorization to acquire from a particular native store, input or browser context, including expiry |
+| Source | Explicit authorization for a native store, input, browser context or enrollment flow, including expiry |
 | Grant | Credential form, audience, scopes, purposes, generation, provider/custody expiry and renewal owner |
 | Observation | Typed value, resource, unit, window, bucket, provenance and freshness |
 | Binding | Native application/session authority and sticky account route |
@@ -30,8 +30,8 @@ permission. Unknown or stale observations cannot become invented readiness.
 
 ## Enrollment and provenance
 
-Only an authorized, connected, unexpired source may enroll. Acquisition reads
-only the declared private file or browser fields. Native file ownership,
+Only an authorized, connected, unexpired source may enroll. Native/browser import
+reads only the declared private file or browser fields. Native file ownership,
 permissions, no-follow traversal and stable reads precede import. A copied
 identity claim remains a candidate until a fixed provider identity reader verifies
 it independently. Verified identity determines deduplication across sources;
@@ -48,6 +48,146 @@ Manual API-key imports currently default to 30 days of custody; copied native
 and manual OAuth imports default to one hour. Explicit custody is bounded to
 one second through 30 days and cannot extend a known provider expiry. Expiry is
 checked again at admission and materialization, not only on initial import.
+
+### Planned Omux-owned ChatGPT-plan grants
+
+The [separate API-Responses profile](native-adapter-contract.md#planned-omux-owned-account-sign-in-and-api-responses-profile)
+uses Omux's own provider-issued registration. A typed enrollment-only profile,
+explicit consent, normal wrapping custody and the original bounded transaction
+permit registration/code exchange; runtime-issued registration and family facts
+are then checked before grant activation. Do not require an already-issued client
+ID before first dynamic registration, or treat enrollment permission as a ready
+grant. Persist single-use callback/issue transitions before dependent effects;
+unknown issued outcomes quarantine rather than replaying codes or spent tokens.
+
+Verify OIDC signature/JWKS, issuer, issued-client audience, expiry and the original
+nonce, then the granted request scopes and permitted account/workspace context.
+Decoded claims, labels, email or a client ID named as a tenant are not identity
+or entitlement. The existing native wham reader is not assumed authorized by
+the new API-audience grant. Keep registration/identity contexts distinct until
+verified linking evidence permits deduplication; public controls receive only
+redacted facts and opaque handles.
+
+Commit encrypted request-access and renewal grants as a bound pair under the
+same verified identity, source/consent and issuance lineage. Only request access
+is materializable; the paired refresh grant is not request authority. Encryption
+precedes SQLite insertion/journal/backup. One writer owns each renewable lineage,
+not every grant belonging to an account. Native/browser imports remain external;
+new registration, token shape or different hashes do not prove family independence.
+No native refresh token is cloned or implicitly transferred. Compatible accounts
+remain eligible by default; shared provider buckets/windows are counted once,
+and an extra grant/client supplies no extra quota.
+
+The provider's [session/refresh contract](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)
+uses the saved issued client ID and Form refresh with the declared resource.
+Omux's renewal worker must join that exact pair/profile/generation, spend once,
+verify successor identity and commit replacement ciphertext atomically. Qualify
+family/coexistence and omitted-successor/revocation policy; ambiguous rotation
+cannot restore a potentially spent token. Request streams already accepted or
+unknown stay replay-fenced, including quota errors arriving after stream opening.
+
+Current authorized implementation lanes, without assigning support coverage:
+
+| Lane | Owned implementation boundary |
+| --- | --- |
+| estate_account_lifecycle | `src/oauth_enrollment.zig`, `src/engine.zig`, `src/storage.zig`: callback/intents, one-shot issuance admission and paired encrypted store; callback/issue-authority additions require separate adoption and qualification. |
+| estate_renewal_resources | `src/transport.zig`: purpose-specific token/Form-refresh and bounded JWKS transport, not arbitrary control HTTP. |
+| estate_adapter_scope | Actual cryptographic OIDC/JWKS verification and registration/identity/context recipe; decoded native JWT payload is insufficient. |
+| estate_codex_native | Produced maintained `codex-rs/core/src/auth_broker.rs` and `client.rs`, composed through `integrations/codex-upstream/` and `tools/codex_native_*`: distinct API-Responses route, request serialization and same-manager/native-state preservation. |
+
+Completion requires actual registration and verified encrypted paired custody;
+single-writer renewal/restart/uncertainty and coexistence; exact native profile
+compilation/package and ordinary accepted-history resume; then real compatible
+same-process A/B handoff with unchanged tools/approvals and no accepted replay.
+Models, source receipts, catalog entries and intent preparation close none of
+those live gates. TIN-2078/2071/2063/3032/5338/5421/2057 retain their existing
+enrollment/custody/renewal/native/continuity scopes. This addition creates no new
+goal clock, shipped capability, achieved SLO/SLA or browser-extension requirement.
+
+Exact retained file-source reconciliation runs on the existing once-per-minute
+actor maintenance pass independently of alternative-route warming. Disabling
+warming does not disable authorized identity verification/enrollment or external
+access reacquisition; it still prevents speculative capacity-observation requests.
+The same source/forget/job-generation fences, import admission reservations,
+pending-import limit, provider deadline and custody ceilings apply. Missing files
+detach without erasing independent authority; malformed or unavailable sources
+cannot authorize imports or clear tombstones. This file-source policy separation does not implement refresh adoption or
+provider renewal. Supervised native reacquisition has its own authority below.
+
+Supervised fileless native sources have a separate actor-clock maintenance pass,
+independent of alternative-route warming. New verified connections retain their
+exact selected context ID/generation beside the original owner, endpoint, consent
+and origin. Older records without a context pin remain unverified; an advertised
+replacement cannot fill the missing authority. Consent expiry detaches the exact
+source without native IO. One read-only check at a time uses a two-second awake
+deadline, the original peer witness and selected owner, then the existing
+qualified installed-image and origin protocol. Only a qualified original image
+can discover a successor context; unqualified checks retain the exact old selector. It neither copies credentials nor
+calls a provider. Kernel-verified departure/replacement of the original owner or
+executable-image mismatch detaches that acquisition source. Store/owner declaration or origin change requires the independently selected executable
+image to verify before and after the response. An unsuccessful protocol channel
+is never reset: a post-response image check reopens only the same saved endpoint
+with the original peer witness, under the unchanged cutoff, using the existing
+installed-image verifier. Unqualified metadata or failed postverify cannot prove
+that change. Unsupported image/protocol, malformed response
+and inconclusive transport failure remain unverified. A timeout is not evidence
+of disappearance. Transport EOF is also inconclusive. Completion rechecks the
+original monotonic cutoff before any IO-failure-derived detach, plus source/forget
+generations, endpoint, runtime/registry/adapter epoch and custody before changing source status. It
+cannot supersede disconnect, forget or a newly connected source.
+
+Detachment retains independent grant custody, external renewal ownership,
+account identity/tenant, labels, pause/drain state and tombstones. Successful
+maintenance records only a historical observation: it does not extend consent,
+advance a grant, reconnect, restore spent authorization, reconstruct an
+acquisition lease on restart or replay accepted native work. The redacted
+`native_source_maintenance` snapshot field is the last process-local categorical
+observation, not current eligibility, a durable attempt denominator, renewal
+success or a live integration proof.
+
+A changed context is eligible for a separate automatic acquisition only when the
+opaque ID changes and generation increases, the same original peer/owner/image
+and authenticated origin verify, and consent/source/forget/runtime authority
+remain current. Before credential IO, the actor persists a secret-free operation
+ID, exact old authority, candidate context, job generation and original expiry.
+The old saved context remains unchanged until verified identity and encrypted
+grant adoption commit with the context successor in the same SQLite transaction.
+Ordinary imports still require exact saved-context equality; a new declaration
+alone cannot revive an older admission or transfer consent to a new owner.
+
+The acquisition has its own original awake cutoff: at most the native contract's
+13-second fallback, shortened by source/consent expiry. It does not extend the
+two-second observation. The copy request's existing authenticated expiry field
+carries the durable operation expiry, no later than original source/consent expiry
+and admission plus 13 seconds; saved consent is unchanged. Native pre-read and
+reply checks receive that tighter wall cutoff. Client timeout does not prove
+remote cancellation. The verified sealed-descriptor copy, fixed identity GET,
+final supervised native check and actual writer fence all retain that cutoff.
+Only one copy worker runs; pending/final import work keeps its existing bound and
+new automatic attempts are rate-limited to once per minute per source, with
+that admitted time retained across refusal/restart. Exact unchanged
+contexts never copy or submit an identity GET. A rewritten context still needs
+independent provider identity, including workspace switches with identical bytes.
+Verified same-identity, same-secret usable authority keeps its grant generation
+and custody ceilings; invalid, quarantined, expired or writer-conflicting
+predecessors cannot become usable through that shortcut. SQL renewal ownership
+must remain external, and ordinary replacement conflicts propagate unchanged.
+
+An issued request with lost reply, or interrupted process-local operation, leaves
+a durable unresolved owner. Maintenance exposes
+`NativeSourceOperationIndeterminateReconnectRequired`; it neither reconstructs
+a lease, reissues the copy nor records renewal success. This diagnosis does not
+expire or revoke a separately valid grant. Known pre-issue cancellation can
+retire only its own running job/intent. A running operation cannot be falsely
+cancelled as unissued. Explicit source disconnect ends the affected source's
+acquisition/grant authority using the existing policy; a new authorized native
+connection requires fresh consent and verified identity. Independent grants,
+account pause/drain state, history and tombstones keep their existing rules.
+
+These source semantics require their declared tests and ordinary installed
+qualified producer/origin/provider gates. They are not executed acquisition,
+renewal, ordinary resume or same-process handoff evidence. No native auth file,
+session/history file or accepted work is written or replayed by this route.
 
 ## Separate lifecycle operations
 
@@ -97,6 +237,36 @@ and deletion checks passed in the [safety evidence](../implementation/native-saf
 A genuine private macOS Keychain driver also passed against the locked SDK.
 Personal-session custody, production Darwin runtime and service behavior
 require separate receipts.
+
+When wrapping-key IO fails with a typed OS-vault error, credential-free local
+controls remain available. `Locked` retains its existing wire status/refusals;
+other vault failures report `vault_unavailable` and an exact redacted
+`custody_error`. Missing/invalid original keys require original-key restoration;
+denied/cancelled/unavailable access requires normal platform-access restoration.
+These retained diagnoses do not establish the current OS-vault state or permanent
+key loss. Database, corruption, allocation and other non-vault errors remain
+startup failures; error names alone cannot grant vault provenance.
+After normal platform-vault unlock or restoration, the user explicitly calls `custody.reopen`
+with no parameters or an empty object. The same daemon actor stages custody and
+loads the existing database using its recorded root; failed retry leaves custody
+unavailable. This action does not enroll a source or initiate a provider request.
+Until loading succeeds, `system.health` reports `metadata_loaded: false` and
+`account_count: null`, rather than asserting an empty account store. Its
+`vault_locked` status records the retained startup condition; setup vault evidence
+is stale diagnostic evidence, not a fresh observation that the OS vault remains
+locked. Existing custody retries retain the original database/directory physical
+identity and never switch to first key creation if that history disappears or is
+replaced. A genuinely fresh initial namespace, checked absent of the database and
+recovery siblings, may perform its original first key creation only while that
+same namespace and absence still hold at explicit retry. The storage writer
+checks that opening expectation before SQLite IO and retains its own exclusive
+creation/original-inode witness. Only that owned first creation can transition
+the actor to existing custody after a later staging failure; subsequent retries
+load the original key and created database. A raced file appearance cannot become
+first-install authority. First creation is not a replacement-key or
+permanent-loss recovery workflow. Full permanent-key-loss
+recovery into separately authorized fresh custody remains unimplemented.
+These are source semantics, not an installed normal-vault recovery proof.
 
 Each adopted refresh lineage has exactly one renewal writer. `src/storage.zig`
 records rotation intent before issuer contact and allows only the creator of
@@ -185,3 +355,14 @@ attachment where existing-process attachment is claimed, compatible handoff in
 the unchanged process and preserved native
 history/tools/approvals without routine prompts. These lifecycle predicates alone
 cannot establish that product outcome.
+
+The periodic successor copy path observes an independently changed authorized
+native source; it does not schedule the original native refresh-token writer.
+The maintained broker-bound model request path bypasses ambient native auth and
+refresh, and native prewarming/global account operations are fenced while broker
+custody is active. A separately qualified original-owner refresh progress path
+remains necessary for continued authority imported from that externally renewed
+native lineage when every request is broker-bound. Independently issued
+Omux-owned paired grants follow their separate enrollment/renewal contract above.
+External ownership is preserved; an access-only copy or successful source CAS
+does not prove that the original owner will refresh again.

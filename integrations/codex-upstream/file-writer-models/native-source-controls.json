@@ -1,0 +1,86 @@
+{
+  "binary_target": "//codex-rs/login:login-file-writer-storage-tests-bin",
+  "capabilities": {
+    "installed_qualified": false,
+    "issuer_qualified": false,
+    "models_compiled": false,
+    "models_passed": false,
+    "native_support": false,
+    "provider_evaluation": false,
+    "scheduler_enabled": false,
+    "source_qualified": false
+  },
+  "cargo_feature": "omux-native-file-writer-storage-models",
+  "delta": {
+    "manifest": {
+      "bytes": 2121,
+      "path": "integrations/codex-upstream/file-writer-models/native-model-manifest.json",
+      "sha256": "c914dfdf4dbdb4cae80e71bbb99a6bb6ae194420565f744de5ccd82a06266e5d"
+    },
+    "patch": {
+      "bytes": 5524,
+      "path": "integrations/codex-upstream/file-writer-models/native-model-target.patch",
+      "sha256": "0ccc8918280e3ee21d89e2804122f679a5b4c107b63cc2d477a25e114a3c40a0"
+    },
+    "paths": {
+      "codex-rs/login/BUILD.bazel": {
+        "after": {
+          "bytes": 4362,
+          "sha256": "6add5952945fa4e03c9610f47c4985bac605055bce5d65e06503871ce17fa049"
+        },
+        "before": {
+          "bytes": 436,
+          "sha256": "8b3be99f128d9b2cf25d79c87acdc1aa8d1d8658b45e0b45a0502e710fc04573"
+        }
+      },
+      "codex-rs/login/Cargo.toml": {
+        "after": {
+          "bytes": 1944,
+          "sha256": "e7965bcdc01bcb2bc8f8b075d8fea477df275e8e9d9db6e62c060e8d241ba548"
+        },
+        "before": {
+          "bytes": 1727,
+          "sha256": "eac796ff363ed2173f1fe8d0280a5d001182d57f10cfce4d6bebe8f92639568f"
+        }
+      },
+      "codex-rs/login/src/auth/default_client.rs": {
+        "after": {
+          "bytes": 17034,
+          "sha256": "9f5f619a2094cd9d424bc26b91a458e4152faf38900f4c28b3a50100be1fcbbd"
+        },
+        "before": {
+          "bytes": 16972,
+          "sha256": "ac6027a76b97bd7b3636075f74ebc3e6cd3b7fc867a8eb271e5ddb902ccb8889"
+        }
+      },
+      "codex-rs/login/src/auth/revoke.rs": {
+        "after": {
+          "bytes": 6278,
+          "sha256": "fd6ddeab6b7ea3e54eceb7d7780bdccb0c88283938dd119165be35be1301f639"
+        },
+        "before": {
+          "bytes": 6216,
+          "sha256": "db4490daaeb89bf781d05ceeeb53f2291e4729caea2b62a635d61c98e305223e"
+        }
+      }
+    }
+  },
+  "kind": "omux-native-file-writer-model-target-controls-v1",
+  "parent": {
+    "kind": "omux-native-source-file-writer-boundary-v1",
+    "source_configuration_sha256": "fe7f6abe165993978b67058bd83a2ea3e65c40c20a91c84556e33ee82102f31c",
+    "source_controller_sha256": "2bc51e0e63ca24165e9c041c4c924393626f7d47d455439347e4745e56501bb0",
+    "source_family_manifest_sha256": "a4cf94a0e851c5191d34930c839ff6b8a53d5d755736d6ac3f0b7850f4ef0551",
+    "storage_manifest_sha256": "90f2c3a533281b2ab600f2d54934da8825ed2f752943f444310061e98d5b29a0",
+    "storage_patch_sha256": "2d66433c887a40bb9a76b854e5c6b3f148dd96f9831231025cf60baa591d4706"
+  },
+  "qualified_parent_required": true,
+  "schema_version": 1,
+  "status": "DECLARED-DELTA-UNQUALIFIED",
+  "target": "//codex-rs/login:login-file-writer-storage-tests",
+  "tests": {
+    "bytes": 2620,
+    "path": "integrations/codex-upstream/file-writer-models/expected-tests.json",
+    "sha256": "0b96ca2d0b17bec9b402bcc8f73c910e6e9500c2c1d9392800183ae7627c3c24"
+  }
+}
