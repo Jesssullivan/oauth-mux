@@ -465,4 +465,54 @@ class RetainedDeliveryTests(unittest.TestCase):
         self.assertNotIn('native_siwc_content_publication.py',macro)
 
 
+
+    def test_history_role_type_rejects_unreviewed_subclass_before_any_io(self):
+        class Foreign(delivery.HistoryRetainedInputs):pass
+        with patch.object(family.Inputs,'__init__') as base:
+            with self.assertRaises(ValueError):Foreign(Path('/unqualified'),[])
+            base.assert_not_called()
+            owner=delivery.HistoryRetainedInputs(Path('/unqualified'),[])
+            self.assertIs(type(owner),delivery.HistoryRetainedInputs)
+            self.assertEqual(base.call_args.kwargs['_kind'],delivery.HISTORY_INPUT_KIND)
+            self.assertEqual(base.call_args.kwargs['_repository'],delivery.REPOSITORY)
+            owner=delivery.RetainedInputs(Path('/unqualified'),[])
+            self.assertEqual(base.call_args.kwargs['_kind'],delivery.INPUT_KIND)
+
+    def test_new_history_selector_has_no_source_ready_or_old_family_alias(self):
+        run=Path('/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/01234567-0123-0123-0123-0123456789ab')
+        row={'root':str(run/'native-content-retained'/delivery.LEAF),'receipt_sha256':'a'*64,
+            'receipt_bytes':1,'inventory_sha256':'b'*64,'producer':{'receipt':str(run/'receipt.json'),
+                'sha256':'c'*64,'source_commit':'d'*40,'graph_sha256':'e'*64},
+            'transport_receipt':{'sha256':'f'*64,'bytes':1},'source_phase_receipt':{'sha256':'1'*64,'bytes':1}}
+        value={'schema_version':1,'kind':delivery.HISTORY_SELECTION_KIND,'status':delivery.HISTORY_STATUS,
+            'catalog_controls_sha256':delivery.HISTORY_CONTROL_SHA,'source':row}
+        self.assertEqual(delivery.history_selection(value),value)
+        for wrong in ({**value,'kind':delivery.SELECTION_KIND},{**value,'status':delivery.STATUS},
+                {**value,'catalog_controls_sha256':model.catalog.CONTROL_SHA},{**value,'source':None},
+                {**value,'ready':True}):
+            with self.assertRaises(ValueError):delivery.history_selection(wrong)
+        changed=copy.deepcopy(value);changed['source']['root']=str(run/'output-base'/delivery.LEAF)
+        with self.assertRaises(ValueError):delivery.history_selection(changed)
+
+
+
+    def test_new_kind_actual_private_proofs_remain_pinned_and_late_replacement_refuses(self):
+        for mode in (0o400,0o600):
+            with tempfile.TemporaryDirectory() as temporary:
+                base=Path(temporary);row,runfiles,rows,run,outer=self.fixture(base,phase_mode=mode)
+                declaration=runfiles/'fixture_repo/source-inputs.json'
+                document=json.loads(declaration.read_bytes());document['kind']=delivery.HISTORY_INPUT_KIND
+                declaration.write_bytes(encoded(document))
+                before=set(os.listdir('/proc/self/fd'))
+                with self.scope(base),delivery.HistoryRetainedInputs(runfiles,rows) as inputs:
+                    accepted,required=delivery.guardian(row,inputs)
+                    self.assertEqual(accepted,outer);self.assertEqual(set(inputs.rows),required)
+                    self.assertFalse(Path(outer['output_base']).exists())
+                    actual=run/'source-phase-receipt.json'
+                    replacement=run/'phase-replacement';replacement.write_bytes(actual.read_bytes());replacement.chmod(mode)
+                    replacement.replace(actual)
+                    with self.assertRaises(ValueError):delivery.guardian(row,inputs)
+                self.assertEqual(set(os.listdir('/proc/self/fd')),before)
+
+
 if __name__=='__main__':unittest.main()

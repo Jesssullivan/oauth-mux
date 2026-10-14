@@ -14,6 +14,7 @@ import codex_native_siwc_catalog_content_source as content
 import codex_native_siwc_catalog_source_test as regression
 from codex_native_n10_source_intake_test import N10ContentIntakeTests
 from codex_transported_sdk_inputs_test import TransportedSDKTests
+from codex_native_owned_history_source_test import HistorySourceTests
 
 
 class ContentSourceTests(regression.CatalogSourceTests):

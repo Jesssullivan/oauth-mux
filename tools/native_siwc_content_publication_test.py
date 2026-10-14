@@ -371,4 +371,28 @@ class PublicationTests(unittest.TestCase):
             self.assertFalse(armed[0])
 
 
+
+    def test_new_history_report_keeps_complete_members_and_old_twelve_stays_closed(self):
+        inventory={'public/'+str(index):{'mode':'100644','sha256':'a'*64} for index in range(8557)}
+        report={'kind':'omux-native-siwc-catalog-content-source-v1',
+            'status':'verified-siwc-catalog-content-source-uncompiled','source_bytes':8557,
+            'tracked_files':8557,'patch_sha256':['a'*64]*12,'historical_ancestor_reexecution':False,
+            'native_runtime_qualified':False,'physical_mode_policy':'bazel-retained-export-all-regular-and-directories-0555-v1',
+            'source_inventory':inventory,'inventory_sha256':hashlib.sha256(json.dumps(inventory,sort_keys=True).encode()).hexdigest(),
+            'generated_hub':{name:{'sha256':'b'*64,'bytes':1} for name in ('BUILD.bazel','defs.bzl','data.bzl')}}
+        self.assertEqual(len(publication._members(report,b'public receipt')),8561)
+        changed=dict(report);changed['patch_sha256']=report['patch_sha256']+['a'*64]
+        with self.assertRaises(ValueError):publication._members(changed,b'public receipt')
+        changed.update(kind='omux-native-siwc-catalog-owned-history-source-v3',
+            status='verified-siwc-catalog-owned-history-source-uncompiled',
+            native_controls_sha256='9ae90d61ffab78afe467fcc1e9def2c0ada704ab1b458322e4257a1d0b2f9fbd',native_owned_history_controls_sha256='9ae90d61ffab78afe467fcc1e9def2c0ada704ab1b458322e4257a1d0b2f9fbd',
+            native_catalog_controls_sha256='1e1ca67e3a7e5e061da1a5d5e6636767295ed579c5c83846b5a165075f39ddab',
+            native_owned_history_manifest_sha256='d1b7bfc9bc81ccbc8672165e301f3000bc42b56a848758ab348f4e97d810b588',patch_sha256=['a'*64]*12+['030630425f378832d182333d46d95f8ba183f2de3a04ea34195fb2e9b4c98eb1'],patches=[{}]*13)
+        self.assertEqual(len(publication._members(changed,b'public receipt')),8561)
+        for key,value in (('native_controls_sha256','a'*64),('native_owned_history_manifest_sha256','a'*64),
+                ('patch_sha256',['a'*64]*13),('native_runtime_qualified',True),('tracked_files',1),
+                ('physical_mode_policy','arbitrary-mode')):
+            with self.assertRaises(ValueError):publication._members({**changed,key:value},b'public receipt')
+
+
 if __name__=='__main__':unittest.main()

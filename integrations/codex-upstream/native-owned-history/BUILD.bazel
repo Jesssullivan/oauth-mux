@@ -1,0 +1,5 @@
+exports_files(['BUILD.bazel', 'native-source-controls.json', 'native-owned-history-v3.patch', 'native-delta-manifest.json', 'expected-tests.json', 'source-composition.json'])
+
+filegroup(name = "inputs", srcs = ['native-source-controls.json', 'native-owned-history-v3.patch', 'native-delta-manifest.json', 'expected-tests.json', 'source-composition.json'], visibility = ["//tools:__pkg__"])
+
+filegroup(name = "native_preimages", srcs = ['preimages/codex-rs/app-server/src/message_processor.rs', 'preimages/codex-rs/app-server/src/owner_control.rs', 'preimages/codex-rs/app-server/src/request_processors/thread_processor.rs', 'preimages/codex-rs/core/src/codex_thread.rs', 'preimages/codex-rs/core/src/native_peer.rs', 'preimages/codex-rs/core/src/session/handlers.rs', 'preimages/codex-rs/core/src/session/mod.rs', 'preimages/codex-rs/core/src/session/session.rs', 'preimages/codex-rs/core/src/session/tests.rs', 'preimages/codex-rs/core/src/thread_manager.rs'], visibility = ["//tools:__pkg__"])

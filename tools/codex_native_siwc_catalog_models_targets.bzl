@@ -8,7 +8,7 @@ def codex_native_siwc_catalog_models_targets(source_sources, sdk_sources, parent
         src for src in native_acquisition_source_closure(source_sources, sdk_sources)
         if str(src) not in ("//delivery:portable.py", "codex_native_acquisition_bridge_material.py")
     ] + ["codex_native_source_file_writer.py", "guard_native_file_writer_source_reserved.py",
-        "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py", "codex_native_siwc_catalog_source.py", "codex_native_file_writer_models.py", "codex_native_siwc_catalog_models.py", "codex_native_siwc_content_delivery_inputs.py", "guard_native_siwc_catalog_source_reserved.py", "guard_native_siwc_catalog_content_source_reserved.py", "codex_native_n10_source_intake.py", "codex_native_siwc_catalog_content_source.py", "codex_transported_sdk_inputs.py"]).to_list()
+        "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py", "codex_native_siwc_catalog_source.py", "codex_native_file_writer_models.py", "codex_native_siwc_catalog_models.py", "codex_native_owned_history_source.py", "codex_native_siwc_content_delivery_inputs.py", "guard_native_siwc_catalog_source_reserved.py", "guard_native_siwc_catalog_content_source_reserved.py", "codex_native_n10_source_intake.py", "codex_native_siwc_catalog_content_source.py", "codex_transported_sdk_inputs.py"]).to_list()
     controls = [
         "//integrations/codex-upstream/siwc-native:inputs",
         "//integrations/codex-upstream/siwc-native-catalog:inputs",

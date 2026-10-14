@@ -349,7 +349,19 @@ class CapturedPublication:
 
 
 def _members(report, raw):
-    need(type(report) is dict and report['kind'] == 'omux-native-siwc-catalog-content-source-v1'
+    if type(report) is dict and report.get('kind') == 'omux-native-siwc-catalog-owned-history-source-v3':
+        need(report['status'] == 'verified-siwc-catalog-owned-history-source-uncompiled'
+            and report['native_controls_sha256'] == report['native_owned_history_controls_sha256'] == '9ae90d61ffab78afe467fcc1e9def2c0ada704ab1b458322e4257a1d0b2f9fbd'
+            and report['native_catalog_controls_sha256'] == '1e1ca67e3a7e5e061da1a5d5e6636767295ed579c5c83846b5a165075f39ddab'
+            and report['native_owned_history_manifest_sha256'] == 'd1b7bfc9bc81ccbc8672165e301f3000bc42b56a848758ab348f4e97d810b588'
+            and len(report['patch_sha256']) == len(report['patches']) == 13
+            and report['patch_sha256'][-1] == '030630425f378832d182333d46d95f8ba183f2de3a04ea34195fb2e9b4c98eb1'
+            and type(report['source_bytes']) is int and 0 < report['source_bytes'] <= MAX_BYTES
+            and report['tracked_files'] == 8557
+            and report['historical_ancestor_reexecution'] is False and report['native_runtime_qualified'] is False
+            and report['physical_mode_policy'] == 'bazel-retained-export-all-regular-and-directories-0555-v1')
+    else:
+        need(type(report) is dict and report['kind'] == 'omux-native-siwc-catalog-content-source-v1'
         and report['status'] == 'verified-siwc-catalog-content-source-uncompiled'
         and type(report['source_bytes']) is int and 0<report['source_bytes']<=MAX_BYTES
         and report['tracked_files'] == 8557 and len(report['patch_sha256']) == 12

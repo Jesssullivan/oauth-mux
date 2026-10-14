@@ -19,7 +19,11 @@ def _physical(ctx, value, directory = False):
 def _retained(ctx, config):
     # Separate content-only family. These repository reads derive declarations;
     # the action independently authenticates every selected raw SHA and witness.
-    _need(config["schema_version"] == 1 and config["status"] == "qualified-retained-catalog-content-source-hub-uncompiled" and _sha(config["catalog_controls_sha256"]))
+    history = config['kind'] == 'omux-native-siwc-catalog-owned-history-retained-selection-v3'
+    if history:
+        _need(config['schema_version'] == 1 and config['status'] == 'qualified-retained-catalog-owned-history-source-hub-uncompiled' and config['catalog_controls_sha256'] == '9ae90d61ffab78afe467fcc1e9def2c0ada704ab1b458322e4257a1d0b2f9fbd')
+    else:
+        _need(config["schema_version"] == 1 and config["status"] == "qualified-retained-catalog-content-source-hub-uncompiled" and _sha(config["catalog_controls_sha256"]))
     selected = config["source"]
     _need(type(selected) == "dict" and sorted(selected.keys()) == ["inventory_sha256", "producer", "receipt_bytes", "receipt_sha256", "root", "source_phase_receipt", "transport_receipt"] and _sha(selected["inventory_sha256"]) and _sha(selected["receipt_sha256"]) and type(selected["receipt_bytes"]) == "int" and 0 < selected["receipt_bytes"] and selected["receipt_bytes"] <= 8 * 1024 * 1024)
     producer = selected["producer"]
@@ -39,7 +43,10 @@ def _retained(ctx, config):
     _need(len(raw) == selected["receipt_bytes"])
     report = json.decode(raw)
     inventory = report.get("source_inventory")
-    _need(report.get("kind") == "omux-native-siwc-catalog-content-source-v1" and report.get("status") == "verified-siwc-catalog-content-source-uncompiled" and report.get("inventory_sha256") == selected["inventory_sha256"] and report.get("native_controls_sha256") == config["catalog_controls_sha256"] and type(inventory) == "dict" and len(inventory) == 8557 and len(report.get("patch_sha256", [])) == 12)
+    if history:
+        _need(report.get('kind') == 'omux-native-siwc-catalog-owned-history-source-v3' and report.get('status') == 'verified-siwc-catalog-owned-history-source-uncompiled' and report.get('inventory_sha256') == selected['inventory_sha256'] and report.get('native_controls_sha256') == report.get('native_owned_history_controls_sha256') == config['catalog_controls_sha256'] and report.get('native_owned_history_manifest_sha256') == 'd1b7bfc9bc81ccbc8672165e301f3000bc42b56a848758ab348f4e97d810b588' and type(inventory) == 'dict' and len(inventory) == 8557 and len(report.get('patch_sha256', [])) == 13 and report['patch_sha256'][-1] == '030630425f378832d182333d46d95f8ba183f2de3a04ea34195fb2e9b4c98eb1')
+    else:
+        _need(report.get("kind") == "omux-native-siwc-catalog-content-source-v1" and report.get("status") == "verified-siwc-catalog-content-source-uncompiled" and report.get("inventory_sha256") == selected["inventory_sha256"] and report.get("native_controls_sha256") == config["catalog_controls_sha256"] and type(inventory) == "dict" and len(inventory) == 8557 and len(report.get("patch_sha256", [])) == 12)
     outer_raw = ctx.read(outer_path)
     _need(len(outer_raw) <= 16 * 1024 * 1024)
     outer = json.decode(outer_raw)
@@ -99,7 +106,7 @@ def _retained(ctx, config):
         ctx.symlink(ctx.path(path), alias)
         rows.append({"path": path, "alias": alias})
         aliases.append(alias)
-    ctx.file("source-inputs.json", json.encode({"kind": "omux-native-siwc-catalog-retained-delivery-input-v1", "selection": selected, "inputs": rows}) + "\n", executable = False)
+    ctx.file("source-inputs.json", json.encode({"kind": ('omux-native-siwc-catalog-owned-history-retained-input-v3' if history else "omux-native-siwc-catalog-retained-delivery-input-v1"), "selection": selected, "inputs": rows}) + "\n", executable = False)
     aliases.append("source-inputs.json")
     ctx.file("BUILD.bazel", "\n".join(["package(default_visibility = [\"//visibility:public\"])", "exports_files({})".format(repr(aliases)), "filegroup(name = \"inputs\", srcs = {})".format(repr(aliases)), ""]), executable = False)
 
@@ -108,7 +115,7 @@ def _implementation(ctx):
     _need(len(raw) <= 16384)
     config = json.decode(raw)
     _need(type(config) == "dict" and sorted(config.keys()) == ["catalog_controls_sha256", "kind", "schema_version", "source", "status"])
-    if config["kind"] == "omux-native-siwc-catalog-retained-delivery-selection-v1":
+    if config["kind"] in ("omux-native-siwc-catalog-retained-delivery-selection-v1", "omux-native-siwc-catalog-owned-history-retained-selection-v3"):
         ctx.watch(ctx.path(ctx.attr.selection))
         _retained(ctx, config)
         return

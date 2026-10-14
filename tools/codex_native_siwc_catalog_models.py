@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 import codex_native_siwc_catalog_source as catalog
 import codex_native_siwc_catalog_content_source as content_catalog
+import codex_native_owned_history_source as history
 import codex_native_siwc_content_delivery_inputs as delivery
 import codex_native_file_writer_models as shared
 import codex_native_profile as native
@@ -25,7 +26,11 @@ TARGETS = ('//codex-rs/core:core-unit-tests', '//codex-rs/tui:tui-unit-tests',
     '//codex-rs/app-server:app-server-unit-tests', '//codex-rs/models-manager:models-manager-unit-tests')
 ROLES = ('core', 'tui', 'app-server', 'models-manager')
 EVIDENCE_NAMES = tuple(role + '-test.' + extension for role in ROLES for extension in ('log','xml')) + ('native-stdout.log','native-stderr.log')
+DELIVERY_STATUSES = (delivery.STATUS, delivery.HISTORY_STATUS)
+CONTENT_FAMILIES = (content_catalog, history)
 SOURCE_ROUTES = {
+    delivery.HISTORY_STATUS: (history, content_source_guard,
+        'codex_native_siwc_catalog_content_source_producer', 'native-siwc-catalog-content-source'),
     'qualified-catalog-source-hub-uncompiled': (catalog, source_guard,
         'codex_native_siwc_catalog_source_producer', 'native-siwc-catalog-source'),
     'qualified-catalog-content-source-hub-uncompiled': (content_catalog, content_source_guard,
@@ -42,6 +47,8 @@ SEMANTIC_FIELDS = ('kind','status','commit','qualified_parent','native_controls_
 
 def selection(raw):
     value = family.decode(raw)
+    if type(value) is dict and value.get('kind') == delivery.HISTORY_SELECTION_KIND:
+        return delivery.history_selection(value)
     if type(value) is dict and value.get('kind') == delivery.SELECTION_KIND:
         return delivery.selection(value,catalog.CONTROL_SHA)
     source.require(type(value) is dict and set(value) == {'schema_version','kind','status','catalog_controls_sha256','source'}
@@ -49,7 +56,7 @@ def selection(raw):
         and value['kind'] == 'omux-native-siwc-catalog-model-selection-v1'
         and value['catalog_controls_sha256'] == catalog.CONTROL_SHA)
     # Cold declaration is honest data, never a provisional success constructor.
-    source.require(value['status'] in SOURCE_ROUTES and value['status'] != delivery.STATUS and type(value['source']) is dict)
+    source.require(value['status'] in SOURCE_ROUTES and value['status'] not in DELIVERY_STATUSES and type(value['source']) is dict)
     row = value['source']
     source.require(set(row) == {'root','receipt_sha256','receipt_bytes','inventory_sha256','producer'}
         and type(row['receipt_bytes']) is int and 0 < row['receipt_bytes'] <= source.MAX_METADATA)
@@ -74,6 +81,17 @@ def expected_tests():
     source.require(len(by_target[TARGETS[0]]) == 30 and sum(map(len,by_target.values())) == 35
         and len(set(name for names in by_target.values() for name in names)) == 35)
     return by_target
+
+
+def history_expected_tests():
+    original = expected_tests()
+    added = history.test_contract(history.controls()[1])
+    result = dict(original)
+    result[TARGETS[0]] += tuple(added['core_unit_tests'])
+    result[TARGETS[2]] += tuple(added['app_server_unit_tests'])
+    source.require(tuple(map(len,result.values())) == (50,4,6,0)
+        and len({name for names in result.values() for name in names}) == 60)
+    return result
 
 
 def accept_log(raw, expected):
@@ -141,28 +159,33 @@ class ExtraOwners:
         # The main owner already bounded/held this exact repo mapping.
         rows = [row.split(',') for row in self.mapping_raw.decode().splitlines()]
         source.require(all(len(row) == 3 for row in rows))
-        if self.selected['status'] == delivery.STATUS:
-            self.inputs = self.stack.enter_context(delivery.RetainedInputs(runfiles,rows))
-        elif self.source_family is content_catalog:
+        if self.selected['status'] in DELIVERY_STATUSES:
+            self.inputs = self.stack.enter_context((delivery.HistoryRetainedInputs if self.source_family is history else delivery.RetainedInputs)(runfiles,rows))
+        elif self.source_family in CONTENT_FAMILIES:
             self.inputs = self.stack.enter_context(content_catalog.intake.ModelProofInputs(runfiles, rows))
             source.require(self.inputs.selection == self.row)
             self.inputs.admit_content_provenance(self.row)
         else:
             self.inputs = self.stack.enter_context(family.Inputs(runfiles,rows,_repository=REPOSITORY,_kind=INPUT_KIND))
         source.require(self.inputs.selection == self.row)
-        self.source_outer, required = (delivery.guardian(self.row,self.inputs) if self.selected['status'] == delivery.STATUS
+        self.source_outer, required = (delivery.guardian(self.row,self.inputs) if self.selected['status'] in DELIVERY_STATUSES
             else family.guardian(self.row,self.inputs,_guard=self.source_guard))
         old_report = self.inputs.read_json(Path(self.row['root'])/'source-receipt.json',self.row['receipt_sha256'],source.DEADLINE)
         expected_status = ('verified-siwc-catalog-source-uncompiled' if self.source_family is catalog
-            else content_catalog.STATUS)
+            else self.source_family.STATUS)
         source.require(old_report['kind'] == self.source_family.KIND and old_report['status'] == expected_status
             and old_report['inventory_sha256'] == self.row['inventory_sha256']
-            and len(old_report['patch_sha256']) == 12
+            and len(old_report['patch_sha256']) == (13 if self.source_family is history else 12)
             and all(old_report[name] is False for name in catalog.previous.FALSE_FLAGS)
             and all(old_report[field] == report[field] for field in SEMANTIC_FIELDS))
-        if self.source_family is content_catalog:
-            content_catalog.validate_report_method(old_report)
-            content_catalog.validate_report_method(report)
+        if self.source_family is history:
+            source.require(all(old_report[field] == report[field] for field in (
+                'native_catalog_controls_sha256','native_owned_history_controls_sha256',
+                'native_owned_history_manifest_sha256','native_owned_history_preimages',
+                'native_owned_history_afterimages','native_owned_history_test_contract')))
+        if self.source_family in CONTENT_FAMILIES:
+            self.source_family.validate_report_method(old_report)
+            self.source_family.validate_report_method(report)
             source.require(old_report['source_intake'] == report['source_intake'])
         self.captured = self.stack.enter_context(SelectedSource(Path(self.row['root']),self.row['receipt_sha256'],
             size=self.row['receipt_bytes'],modes=(0o444,0o555)))
@@ -171,7 +194,7 @@ class ExtraOwners:
         hub = published.hub
         source.require(type(hub) is dict and old_report['generated_hub'] == {
             name:{'sha256':source.sha(raw),'bytes':len(raw)} for name,raw in sorted(hub.items())})
-        if self.selected['status'] == delivery.STATUS:
+        if self.selected['status'] in DELIVERY_STATUSES:
             delivery.validate_members(self.inputs.publication,old_report,published.files,hub,self.captured.raw)
         source.verify_written(Path(self.row['root'])/'hub/source',{name:('100644',raw) for name,raw in hub.items()})
         members.update({'hub/source/'+name:('100644',raw) for name,raw in hub.items()})
@@ -192,7 +215,7 @@ class ExtraOwners:
         source.require(self.captured is not None and self.inputs is not None)
         self.captured.recheck()
         source.verify_written(self.captured.root/'hub/source',self.hub)
-        source.require((delivery.guardian(self.row,self.inputs) if self.selected['status'] == delivery.STATUS
+        source.require((delivery.guardian(self.row,self.inputs) if self.selected['status'] in DELIVERY_STATUSES
             else family.guardian(self.row,self.inputs,_guard=self.source_guard))[0] == self.source_outer)
         self.inputs.check_all(); self.evidence.full()
 
@@ -232,13 +255,14 @@ class ExtraOwners:
 
 
 def native_plan(published,sdk,report,work,cutoff):
-    source.require(not work.exists() and report['kind'] in (catalog.KIND, content_catalog.KIND) and len(report['patch_sha256']) == 12
+    source.require(not work.exists() and report['kind'] in (catalog.KIND, content_catalog.KIND, history.KIND)
+        and len(report['patch_sha256']) == (13 if report['kind'] == history.KIND else 12)
         and published.active and all(report[name] is False for name in catalog.previous.FALSE_FLAGS))
-    if report['kind'] == content_catalog.KIND:
+    if report['kind'] in (content_catalog.KIND, history.KIND):
         # Admit the concrete owner before SDK/publication/query IO or scratch
         # effects. The later full record/root join remains mandatory unchanged.
         source.require(type(sdk) is content_catalog.transported.HeldTransportedSDK)
-        content_catalog.validate_report_method(report)
+        (history if report['kind'] == history.KIND else content_catalog).validate_report_method(report)
     sdk.check(); published.full()
     mapping = sdk.mapping()
     tools = family.query_tools.verify_repository(family.query.QUERY_REPOSITORY,cutoff)
@@ -246,7 +270,7 @@ def native_plan(published,sdk,report,work,cutoff):
     work.mkdir(mode=0o700)
     candidate = SimpleNamespace(source=published.path/'source',root=work,lease=SimpleNamespace(output_base=work/'output-base'))
     export_root = family.query.EXPORT_ROOT
-    if report['kind'] == content_catalog.KIND:
+    if report['kind'] in (content_catalog.KIND, history.KIND):
         source.require(type(sdk) is content_catalog.transported.HeldTransportedSDK
             and 'original_sdk' not in report and report['transported_sdk'] == sdk.record())
         export_root = sdk.sdk_root
@@ -296,7 +320,7 @@ def native_child(extra,published,sdk,report,retained,inputs,entry,until,cutoff):
     work = temporary/'siwc-catalog-native-work'
     plan = native_plan(published,sdk,report,work,cutoff)
     source.require(family.producer_context() == report['producer_context'])
-    expected = expected_tests()
+    expected = history_expected_tests() if report['kind'] == history.KIND else expected_tests()
     streams = shared.ChildStreams(work/'driver-streams')
     extra.streams = streams
     try:
@@ -341,14 +365,15 @@ def native_child(extra,published,sdk,report,retained,inputs,entry,until,cutoff):
                 'transport_receipt':extra.row['transport_receipt'],'source_phase_receipt':extra.row['source_phase_receipt'],
                 'authority':'current-retained-content-and-historical-source-phase-only',
                 'original_action_sdk_custody_inherited':False,'source_qualification_extended':False}}
-                if extra.selected['status'] == delivery.STATUS else {}),
+                if extra.selected['status'] in DELIVERY_STATUSES else {}),
             'source':{'receipt_path':str(published.path/'source-receipt.json'),'receipt_sha256':source.sha(published.raw),
                 'inventory_sha256':report['inventory_sha256'],'patch_sha256':report['patch_sha256'],'graph_files':report['graph_files']},
             'generated_hub':report['generated_hub'],
-            **({'transported_sdk':report['transported_sdk']} if report['kind'] == content_catalog.KIND
+            **({'transported_sdk':report['transported_sdk']} if report['kind'] in (content_catalog.KIND, history.KIND)
                 else {'original_sdk':report['original_sdk']}),
             'sdk_input_qualification':report['sdk_input_qualification'],'plan':plan,
             'new_catalog_methods_passed':20,'original_v4_methods_passed':15,
+            **({'owned_history_methods_passed':25} if report['kind'] == history.KIND else {}),
             'normal_unit_target_regressions_passed':True,'default_cli_binary_qualified':False,
             'native_image_qualified':False,'installed_or_ordinary_native_qualified':False,'provider_qualified':False,
             'retained_evidence':{name:{'path':str(output/name),'sha256':source.sha(raw),'bytes':len(raw)} for name,raw in evidence.items()}}
@@ -385,7 +410,7 @@ def main():
             extra.short()
         source.require(len(results) == len(envelope) == 1 and envelope[0] == (entry, until))
         source.require(time.monotonic_ns()<entry+600*10**9 and time.monotonic_ns()<until)
-        print('native-siwc-catalog-models: twenty new and fifteen original SIWC methods passed on four normal unit targets; native image unqualified',flush=True)
+        print('native-siwc-catalog-models: selected named SIWC methods passed on four normal unit targets; native image unqualified',flush=True)
         source.require(time.monotonic_ns()<entry+600*10**9 and time.monotonic_ns()<until)
     finally:
         source.DEADLINE = family.query.DEADLINE = None

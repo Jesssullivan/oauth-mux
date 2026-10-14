@@ -14,6 +14,7 @@ def catalog_content_controls():
         "//integrations/codex-upstream:native_file_writer_storage_manifest",
         "//integrations/codex-upstream/siwc-native:inputs",
         "//integrations/codex-upstream/siwc-native-catalog:inputs",
+        "//integrations/codex-upstream/native-owned-history:inputs",
         # These are bounded recorded SDK/source provenance documents only.
         # They grant no current physical SOURCE9 or ancestor-custody authority.
         "//integrations/codex-upstream:native_acquisition_input_configuration",
@@ -39,7 +40,7 @@ def catalog_content_sources(source_sources, sdk_sources):
         "codex_native_source_file_writer.py", "guard_native_file_writer_source_reserved.py",
         "codex_native_file_writer_model_source.py", "codex_native_siwc_source.py",
         "codex_native_siwc_catalog_source.py", "codex_native_n10_source_intake.py",
-        "codex_native_siwc_catalog_content_source.py", "codex_transported_sdk_inputs.py",
+        "codex_native_siwc_catalog_content_source.py", "codex_native_owned_history_source.py", "codex_transported_sdk_inputs.py",
         "codex_original_sdk_inputs.py",  # Semantic code only, no physical SDK DATA.
         "guard_native_siwc_catalog_content_source_reserved.py",
     ]).to_list()
@@ -60,13 +61,15 @@ def codex_native_siwc_catalog_content_source_targets(source_sources, sdk_sources
         name = "codex_native_siwc_catalog_content_source_test",
         main = "codex_native_siwc_catalog_content_source_test.py",
         srcs = depset(sources + original_sdk_sources + ["codex_native_n10_source_intake_test.py", "codex_native_siwc_catalog_source_test.py",
-            "codex_transported_sdk_inputs_test.py", "codex_native_sdk_carrier_test.py"]).to_list(),
+            "codex_transported_sdk_inputs_test.py", "codex_native_sdk_carrier_test.py", "codex_native_owned_history_source_test.py"]).to_list(),
         data = catalog_content_controls() + [
+            "//integrations/codex-upstream/native-owned-history:native_preimages",
             "//integrations/codex-upstream/siwc-native:native_preimages",
             "//integrations/codex-upstream/siwc-native-catalog:native_preimages",
             "//integrations/codex-upstream/siwc-native:BUILD.bazel",
             "//integrations/codex-upstream/siwc-native-catalog:BUILD.bazel",
             "codex_native_siwc_catalog_source_targets.bzl", "codex_native_siwc_source_BUILD.snippet",
+            "codex_native_siwc_catalog_model_inputs.bzl",
         ],
         tags = ["manual", "no-remote", "no-cache"],
         timeout = "long",

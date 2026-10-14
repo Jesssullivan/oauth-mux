@@ -126,8 +126,16 @@ def refusal_diagnostic(error):
         '; truncated=' + ('1' if omitted else '0'))
 
 
+def selected_main():
+    # Closed tracked source recipe, not caller-supplied readiness or new env.
+    import codex_native_owned_history_source as history
+    choice = history.recipe(previous.declared(history.COMPOSITION,16384))
+    if choice == 'catalog-twelve-v1': return main()
+    return history.main()
+
+
 def entrypoint():
-    try: main()
+    try: selected_main()
     except REFUSAL_ERRORS as error:
         try: print(refusal_diagnostic(error), file=sys.stderr)
         finally:

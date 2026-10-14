@@ -18,6 +18,10 @@ source = family.source
 SELECTION_KIND = 'omux-native-siwc-catalog-retained-delivery-selection-v1'
 STATUS = 'qualified-retained-catalog-content-source-hub-uncompiled'
 INPUT_KIND = 'omux-native-siwc-catalog-retained-delivery-input-v1'
+HISTORY_SELECTION_KIND = 'omux-native-siwc-catalog-owned-history-retained-selection-v3'
+HISTORY_STATUS = 'qualified-retained-catalog-owned-history-source-hub-uncompiled'
+HISTORY_INPUT_KIND = 'omux-native-siwc-catalog-owned-history-retained-input-v3'
+HISTORY_CONTROL_SHA = '9ae90d61ffab78afe467fcc1e9def2c0ada704ab1b458322e4257a1d0b2f9fbd'
 REPOSITORY = 'omux_native_siwc_catalog_model_inputs'
 PUBLICATION_KIND = 'omux-native-siwc-content-retained-publication-v1'
 PHASE_KIND = 'omux-native-siwc-content-source-phase-v1'
@@ -50,6 +54,15 @@ def selection(value, control_sha):
     return value
 
 
+def history_selection(value):
+    closed(value, ('schema_version','kind','status','catalog_controls_sha256','source'))
+    source.require(type(value['schema_version']) is int and value['schema_version'] == 1
+        and value['kind'] == HISTORY_SELECTION_KIND and value['status'] == HISTORY_STATUS
+        and value['catalog_controls_sha256'] == HISTORY_CONTROL_SHA)
+    _row(value['source'])
+    return value
+
+
 def _row(row):
     closed(row, ('root','receipt_sha256','receipt_bytes','inventory_sha256',
         'producer','transport_receipt','source_phase_receipt'))
@@ -78,9 +91,11 @@ class _OwnedFD:
 
 class RetainedInputs(family.Inputs):
     """Role-specific private coordinator metadata; old Inputs mode policy is intact."""
+    KIND = INPUT_KIND
     def __init__(self, runfiles, rows):
+        source.require(type(self) in (RetainedInputs, HistoryRetainedInputs))
         self.role_modes = {}
-        super().__init__(runfiles, rows, _repository=REPOSITORY, _kind=INPUT_KIND)
+        super().__init__(runfiles, rows, _repository=REPOSITORY, _kind=self.KIND)
 
     def admit(self, selected):
         source.require(self.selection == selected)
@@ -114,6 +129,10 @@ class RetainedInputs(family.Inputs):
             and family.tenth.witness(os.fstat(parent)) == parent_anchor)
         self.held[str(path)] = (parent,fd,anchor,parent_anchor)
         return raw
+
+
+class HistoryRetainedInputs(RetainedInputs):
+    KIND = HISTORY_INPUT_KIND
 
 
 def _worker(value, identity):
@@ -293,7 +312,7 @@ def _publication(value, phase, row, evidence_pin, configuration):
 
 def guardian(row, inputs):
     """Authenticate closed historical phase facts plus current declared delivery bytes."""
-    source.require(type(inputs) is RetainedInputs and inputs.selection == row)
+    source.require(type(inputs) in (RetainedInputs, HistoryRetainedInputs) and inputs.selection == row)
     _row(row)
     inputs.admit(row)
     run, phase_path, publication_path = proof_paths(row)

@@ -351,4 +351,42 @@ class CatalogDriverTests(unittest.TestCase):
             finally: model.source.DEADLINE = model.family.query.DEADLINE = None
 
 
+
+    def test_history_contract_keeps_all_original_thirty_five_and_requires_new_twenty_five(self):
+        original=model.expected_tests();expected=model.history_expected_tests()
+        self.assertEqual(tuple(map(len,expected.values())),(50,4,6,0))
+        for target,names in original.items():self.assertEqual(expected[target][:len(names)],names)
+        for target,names in expected.items():
+            self.assertEqual(model.accept_log(self.log(names),names)['required_passed'],list(names))
+            if len(names)>len(original[target]):
+                with self.assertRaises(ValueError):model.accept_log(self.log(original[target]),names)
+
+    def test_new_history_selector_is_distinct_cold_and_old_kind_cannot_admit_it(self):
+        pending=json.loads(model.family.declared(model.SELECTION,16384))
+        self.assertIsNone(pending['source'])
+        with self.assertRaises(ValueError):model.selection(json.dumps(pending).encode())
+        run=Path('/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/01234567-0123-0123-0123-0123456789ab')
+        row={'root':str(run/'native-content-retained'/model.delivery.LEAF),'receipt_sha256':'a'*64,
+            'receipt_bytes':1,'inventory_sha256':'b'*64,'producer':{'receipt':str(run/'receipt.json'),
+                'sha256':'c'*64,'source_commit':'d'*40,'graph_sha256':'e'*64},
+            'transport_receipt':{'sha256':'f'*64,'bytes':1},'source_phase_receipt':{'sha256':'1'*64,'bytes':1}}
+        good={'schema_version':1,'kind':model.delivery.HISTORY_SELECTION_KIND,
+            'status':model.delivery.HISTORY_STATUS,'catalog_controls_sha256':model.history.CONTROL_SHA,'source':row}
+        self.assertEqual(model.selection(json.dumps(good).encode()),good)
+        for changed in ({**good,'kind':model.delivery.SELECTION_KIND},{**good,'status':model.delivery.STATUS},
+                {**good,'catalog_controls_sha256':model.catalog.CONTROL_SHA},{**good,'source':None}):
+            with self.assertRaises(ValueError):model.selection(json.dumps(changed).encode())
+
+    def test_history_native_plan_refuses_old_sdk_owner_before_any_effect(self):
+        report={'kind':model.history.KIND,'patch_sha256':['a'*64]*13,
+            **{name:False for name in model.catalog.previous.FALSE_FLAGS}}
+        published=Mock(active=True);sdk=Mock()
+        with tempfile.TemporaryDirectory() as temporary,patch.object(model.history,'validate_report_method') as validate, \
+                patch.object(model.native,'command_from_verified_inputs') as command:
+            work=Path(temporary)/'work'
+            with self.assertRaises(ValueError):model.native_plan(published,sdk,report,work,time.monotonic()+300)
+            self.assertFalse(work.exists());validate.assert_not_called();command.assert_not_called()
+            sdk.check.assert_not_called();published.full.assert_not_called()
+
+
 if __name__ == '__main__':unittest.main()
