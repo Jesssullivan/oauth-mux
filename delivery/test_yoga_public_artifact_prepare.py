@@ -664,7 +664,7 @@ class PreparationModels(unittest.TestCase):
     def test_join_does_not_hide_expected_name_replacement_during_real_fd_read(self):
         target=self.paths['observer'];alias=self.runner/self.roles['observer']
         other=self.physical/'replacement-observer';other.write_bytes(self.data['observer']);other.chmod(0o555)
-        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+        owner=None
         real_open=os.open;real_close=os.close;real_read=os.read
         opened=[];closed=[];changed=False;inode=target.stat().st_ino
         def opening(*args,**kwargs):
@@ -680,6 +680,7 @@ class PreparationModels(unittest.TestCase):
         try:
             with patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing),\
                     patch.object(model.os,'read',side_effect=read):
+                owner=model.Inputs(model.Clock(self.context),self.base,self.source)
                 with self.assertRaises(ValueError):
                     owner.read('replaced-observer',alias,target,aliases=(str(target),),content=True)
                 owner.close(ValueError('synthetic already-refused replacement'))
@@ -688,12 +689,13 @@ class PreparationModels(unittest.TestCase):
             self.assertNotIn('replaced-observer',owner.rows)
             for fd in opened:
                 with self.assertRaises(OSError):os.fstat(fd)
-        finally:owner.close(ValueError('synthetic refusal cleanup'))
+        finally:
+            if owner is not None:owner.close(ValueError('synthetic refusal cleanup'))
 
     def test_join_expiry_after_last_distinct_alias_walk_keeps_original_cutoff_and_fd_cleanup(self):
         target=self.paths['observer'];alias=self.runner/self.roles['observer']
-        owner=model.Inputs(model.Clock(self.context),self.base,self.source)
-        real_resolve=owner.resolve;real_open=os.open;real_close=os.close;real_read=os.read
+        owner=None
+        real_open=os.open;real_close=os.close;real_read=os.read
         opened=[];closed=[];reads=[];expired=False
         def resolve(path):
             nonlocal expired
@@ -708,19 +710,22 @@ class PreparationModels(unittest.TestCase):
         def read(fd,count):
             reads.append(fd);return real_read(fd,count)
         try:
-            with patch.object(owner,'resolve',side_effect=resolve),\
-                    patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing),\
+            with patch.object(model.os,'open',side_effect=opening),patch.object(model.os,'close',side_effect=closing),\
                     patch.object(model.os,'read',side_effect=read):
-                with self.assertRaises(ValueError):
-                    owner.read('late-observer',alias,target,aliases=(str(target),),content=True)
-                owner.close(ValueError('synthetic original-cutoff refusal'))
+                owner=model.Inputs(model.Clock(self.context),self.base,self.source)
+                real_resolve=owner.resolve
+                with patch.object(owner,'resolve',side_effect=resolve):
+                    with self.assertRaises(ValueError):
+                        owner.read('late-observer',alias,target,aliases=(str(target),),content=True)
+                    owner.close(ValueError('synthetic original-cutoff refusal'))
             self.assertTrue(expired)
             self.assertEqual(reads,[])
             self.assertEqual(closed,list(reversed(opened)))
             self.assertNotIn('late-observer',owner.rows)
             for fd in opened:
                 with self.assertRaises(OSError):os.fstat(fd)
-        finally:owner.close(ValueError('synthetic refusal cleanup'))
+        finally:
+            if owner is not None:owner.close(ValueError('synthetic refusal cleanup'))
 
 
     def test_live_root_membership_matches_legacy_prefix_rule_and_scales_with_depth(self):
