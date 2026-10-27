@@ -73,14 +73,34 @@ claims that the installed lifecycle has passed.
 ## Develop and validate
 
 All executable work uses Bazel/Bazelisk with tools from the locked Nix flake.
-Local sandboxed execution is the default; automated CI test/build/check lanes and
+`tinyland.repo.json` records `substrateMode: compatibility-local-only`, so local
+sandboxed execution is the default (local, non-qualifying). `--config=reapi` stays
+opt-in until the repo leaves that mode. Automated CI test/build/check lanes and
 legacy Just/Zig-build paths are removed.
 
 ```bash
+# Default: local, non-qualifying.
 nix develop --command bazelisk build //...
 nix develop --command bazelisk test //...
 nix develop --command bazelisk test //:docs_check
+
+# Opt-in REAPI. An operator rc must set --remote_executor and credentials.
+nix develop --command bazelisk build --config=reapi //...
+nix develop --command bazelisk test --config=reapi //...
+nix develop --command bazelisk test --config=reapi //:docs_check
 ```
+
+`--config=reapi` sets `--remote_local_fallback=false`: without a reachable
+executor it fails any action that must execute, and it runs no action on the
+client apart from Bazel internal actions. Cache hits still pass, including hits
+from local runs in the action cache or a host disk cache, so a green
+`--config=reapi` run is not remote-execution evidence by itself. Proof runs add
+`--config=reapi-proof` with a clean output root and `--disk_cache=`:
+`--remote_accept_cached=false` rejects remote cache hits only.
+
+`.bazelrc` sets `startup --max_idle_secs=120`, so the client Bazel server exits
+after 120 idle seconds unless a host `~/.bazelrc` or a launcher wrapper sets its
+own `--max_idle_secs`.
 
 The toolchain targets Zig **0.17.0**, verified in the
 [official release index](https://ziglang.org/download/index.json). Bazel declares compiler, library, test,

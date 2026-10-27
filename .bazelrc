@@ -1,4 +1,7 @@
 # Local sandboxed actions. RBE endpoints and credentials are runtime inputs.
+# Bound the client server: it exits after 120 idle seconds (TIN-5770) unless a
+# host ~/.bazelrc or a launcher wrapper sets its own --max_idle_secs.
+startup --max_idle_secs=120
 common --enable_bzlmod
 common --noenable_workspace
 common --registry=https://bcr.bazel.build
