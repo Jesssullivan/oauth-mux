@@ -115,16 +115,38 @@ through Bazel/Bazelisk, with tools provided by the locked Nix flake.** Reading
 files and ordinary repository inspection are not build/test execution.
 
 ```bash
+# Default: local, non-qualifying.
 nix develop --command bazelisk build //...
 nix develop --command bazelisk test //...
 nix develop --command bazelisk test //:docs_check
+
+# Opt-in REAPI. An operator rc must set --remote_executor and credentials.
+nix develop --command bazelisk build --config=reapi //...
+nix develop --command bazelisk test --config=reapi //...
+nix develop --command bazelisk test --config=reapi //:docs_check
 ```
 
-Local sandboxed execution is the proof default. Automatic CI test/build/check
-workflows are removed for the reset. Do not invoke Just, local `zig build`,
-standalone test scripts or the former GF proof dispatchers. Future RBE/REAPI must
-use the same declared action graph and digest-addressed execution inputs;
-endpoints and credentials belong in operator configuration, never source.
+`--config=reapi` sets `--remote_local_fallback=false`: without a reachable
+executor it fails any action that must execute, and it runs no action on the
+client apart from Bazel internal actions. Cache hits still pass, including hits
+from local runs in the action cache or a host disk cache, so a green
+`--config=reapi` run is not remote-execution evidence by itself. Proof runs add
+`--config=reapi-proof` with a clean output root and `--disk_cache=`:
+`--remote_accept_cached=false` rejects remote cache hits only.
+
+`.bazelrc` sets `startup --max_idle_secs=120`, so the client Bazel server exits
+after 120 idle seconds unless a host `~/.bazelrc` or a launcher wrapper sets its
+own `--max_idle_secs`.
+
+`tinyland.repo.json` records `substrateMode: compatibility-local-only`, so local
+sandboxed execution is the proof default for local predicates. `--config=reapi`
+stays opt-in until the repo leaves that mode. Label local runs local,
+non-qualifying: they are not remote-execution evidence. Automatic CI
+test/build/check workflows are removed for the reset. Do not invoke Just,
+local `zig build`, standalone test scripts or the former GF proof dispatchers.
+Future RBE/REAPI must use the same declared action graph and digest-addressed
+execution inputs; endpoints and credentials belong in operator configuration,
+never source.
 
 A passing unit/synthetic suite proves its stated predicates. A live continuity
 claim additionally requires exact application/version/commit evidence of ordinary
