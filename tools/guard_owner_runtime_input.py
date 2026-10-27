@@ -30,6 +30,12 @@ COMPANIONS = frozenset((
 
 
 def finite(profile, arguments, unrelated=()):
+    if profile == 'codex-live':
+        from guard_codex_live_profile import LABEL, selected
+        selected(arguments)
+        if arguments != ['test', LABEL] or any(unrelated):
+            raise ValueError('retained-input-profile')
+        return
     if (DIAGNOSTIC in arguments and set(arguments[1:]) - {DIAGNOSTIC} - COMPANIONS):
         raise ValueError("retained-diagnostic-profile")
     if (profile != "standard" or not arguments or arguments[0] not in ("build", "test")

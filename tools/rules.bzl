@@ -74,9 +74,9 @@ def _interpreted_impl(ctx):
             if len(templates) != 1:
                 fail("portable consumers require one declared native template module")
             bootstrap = PORTABLE_PYTHON_BOOTSTRAP
-            options = "-I -B -c " + _quote(bootstrap) + ' "$RUNFILES_ROOT/%s" ' % _runfile_key(ctx, templates[0])
+            options = "-I -B -X utf8 -c " + _quote(bootstrap) + ' "$RUNFILES_ROOT/%s" ' % _runfile_key(ctx, templates[0])
         else:
-            options = "-I -B -c " + _quote(bootstrap) + " "
+            options = "-I -B -X utf8 -c " + _quote(bootstrap) + " "
     else:
         options = "--preserve-symlinks --preserve-symlinks-main "
     ctx.actions.write(

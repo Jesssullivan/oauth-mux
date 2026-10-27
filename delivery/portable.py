@@ -17,9 +17,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-# Bazel provides this generated module from the declared static launcher ELF.
-# Missing modules fail the import: no source, shell or host-target fallback.
-import portable_launcher_template as _launcher_template
+# Pure ELF/closure validation is importable without packaging inputs.
+# Launcher generation still requires Bazel's actual declared static ELF below.
 
 _MAX_FILE = 128 * 1024 * 1024
 _MAX_BACKEND_FILE = 512 * 1024 * 1024
@@ -184,6 +183,9 @@ def channel_instance(channel: str | None) -> str | None:
 
 def _trusted_launcher(target: str | None) -> tuple[str, bytes, str]:
     """Select only the generated native target, never archive-owned code."""
+    # Mandatory package input, imported only when actual launcher bytes are needed.
+    # Absence refuses generation; there is no source/shell/host/fake fallback.
+    import portable_launcher_template as _launcher_template
     native_target = _launcher_template.TARGET
     selected = native_target if target is None else target
     if (type(_launcher_template.ABI) is not int or _launcher_template.ABI != 1

@@ -1,5 +1,14 @@
 # Provider-free native and browser continuation
 
+Current continuation: the October7 user instruction supersedes the earlier
+provider-free boundary with a five-hour real-account implementation checkpoint,
+05:48:41–10:48:41 UTC. See the
+[live-account work order](../agent-notes/2026-10-07-sess-omux-live-account-proof.md)
+and [new checkpoint](../../.goal/omux-live-account-proof-2026-10-07.json).
+Discovery/enrollment, reliable native startup and actual same-process account
+substitution now lead. The earlier provider-free clock/results below remain
+historical evidence; they are not the current execution boundary.
+
 User-ratified checkpoint: **2026-10-06 20:13:12 UTC to 2026-10-07 01:13:12 UTC**
 (October6 16:13:12–21:13:12 America/New_York).
 The original incomplete [fifteen-hour objective](../../.goal/omux-integrated-delivery-2026-10-05.json)

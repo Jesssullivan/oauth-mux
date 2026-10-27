@@ -58,6 +58,16 @@ def selected_fresh_inputs(profile, arguments, pristine, delta, validator):
 
 
 def selected_profile(profile, arguments, site_inputs=False, pack_input=False, recovery_input=False):
+    if profile == 'codex-native':
+        from codex_native_profile import MODES
+        if site_inputs or pack_input or recovery_input or not any(arguments == [v[0], *v[1]] for v in MODES.values()):
+            raise ValueError('native profile permits only finite selected mode')
+        return {'PrivateNetwork': 'yes'}
+    if profile == 'codex-live':
+        from guard_codex_live_profile import selected
+        if site_inputs or pack_input or recovery_input:
+            raise ValueError('codex-live-unrelated-inputs')
+        return selected(arguments)
     if profile == 'yoga-controller-delivery':
         from guard_yoga_delivery_profile import selected
         return selected(arguments, site=site_inputs, pack=pack_input,
@@ -121,11 +131,11 @@ def validate_coordination(profile, selected, state_root, *, arguments=None):
         if (not str(state_root).startswith('/srv/') or
                 selected is not None and Path(selected) != state_root):
             raise ValueError('Yoga requires one explicit local /srv state and coordination root')
-    if profile in ('standard', 'installed-browser') and selected is not None and Path(selected) != state_root:
+    if profile in ('standard', 'installed-browser', 'codex-live') and selected is not None and Path(selected) != state_root:
         if (Path(selected) != COORDINATION_DIRECTORY or
                 not str(state_root).startswith('/srv/fast-local/jess/state/')):
             raise ValueError('alternate standard coordination requires fixed home lock and fast state')
-    if profile in ('dependency-prefetch', 'codex-sdk'):
+    if profile in ('dependency-prefetch', 'codex-sdk', 'codex-native'):
         if selected is None or Path(selected) != COORDINATION_DIRECTORY:
             raise ValueError('dependency producer requires the existing controller coordination directory')
         if state_root == COORDINATION_DIRECTORY:
